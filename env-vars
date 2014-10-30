@@ -1,0 +1,8 @@
+
+export PATH="~/.rbenv/shims:~/.rbenv/bin:~/bin:/usr/local/bin:/usr/local/sbin:/usr/local/git/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH"
+
+export EDITOR="/usr/local/bin/vim"
+
+export SVN_EDITOR="/usr/local/bin/vim"
+export BUNDLER_EDITOR='/usr/local/bin/vim'
+export RUBYOPT="rubygems"
