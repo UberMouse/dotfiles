@@ -25,7 +25,6 @@ call vundle#end()            " required
 set t_Co=256
 syntax on
 set background=dark
-colorscheme solarized
 
 filetype plugin indent on    " required
 
@@ -44,6 +43,7 @@ filetype plugin indent on    " required
 
 let mapleader = ","
 
+set relativenumber 
 set number
 set expandtab
 set modelines=0
@@ -69,6 +69,9 @@ autocmd BufWritePre *.haml :%s/\s\+$//e
 autocmd BufWritePre *.html :%s/\s\+$//e
 autocmd BufWritePre *.scss :%s/\s\+$//e
 autocmd BufWritePre *.slim :%s/\s\+$//e
+
+autocmd StdinReadPre * let s:std_in=1
+autocmd VimEnter * if argc() == 0 && !exists("s:std_in") | NERDTree | endif
 
 au BufNewFile * set noeol
 au BufRead,BufNewFile *.go set filetype=go
