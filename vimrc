@@ -15,6 +15,9 @@ Plugin 'tpope/vim-bundler'
 Plugin 'tpope/vim-rake'
 Plugin 'tpope/vim-rails'
 
+Plugin 'tmhedberg/indent-motion'
+Plugin 'wincent/command-t'
+
 Plugin 'christoomey/vim-tmux-navigator'
 
 Plugin 'altercation/vim-colors-solarized'
@@ -61,6 +64,11 @@ set nobackup
 set hlsearch
 set ignorecase
 set smartcase
+set mouse=a
+set ttyfast
+set ttymouse=xterm2
+
+let NERDTreeQuitOnOpen=1 
 
 " Automatic formatting
 autocmd BufWritePre *.rb :%s/\s\+$//e
@@ -79,8 +87,6 @@ au BufRead,BufNewFile *.go set filetype=go
 " No show command
 autocmd VimEnter * set nosc
 
-" format the entire file
-nmap <leader>fef ggVG=
 
 " reload current file
 nmap <leader>r :e!<CR>
@@ -109,22 +115,6 @@ noremap <leader>yy "*Y
 " Preserve indentation while pasting text from the OS X clipboard
 noremap <leader>p :set paste<CR>:put  *<CR>:set nopaste<CR>
 
-" vim-spec
-nmap <BS> :call RunCurrentSpecFile()<CR>
-nmap \ :call RunNearestSpec()<CR>
-nmap <CR> :call RunLastSpec()<CR>
-map <leader>s :call RunAllSpecs()<CR>
-map <leader>a :call Send_to_Tmux("rake\n")<CR>
-map <leader>g :call Send_to_Tmux("grunt test\n")<CR>
-nmap ` :call Send_to_Tmux("npm test\n")<CR>
-
-let g:rspec_command = ':call Send_to_Tmux("bundle exec rspec {spec}\n")'
-let g:mocha_js_command = ':call Send_to_Tmux("mocha --recursive {spec}\n")'
-let g:mocha_coffee_command = ':call Send_to_Tmux("mocha -b --recursive --compilers coffee:coffee-script/register {spec}\n")'
-
-"switch to teaspoon
-nmap <leader>sp :let g:mocha_coffee_command = g:teaspoon_command<CR> :let g:mocha_js_command = g:teaspoon_command<CR>
-let g:teaspoon_command = ':call Send_to_Tmux("bundle exec rake teaspoon {spec}\n")'
 
 " tmux shortcuts
 map <leader>b :call Send_to_Tmux("bundle\n")<CR>
@@ -136,18 +126,4 @@ let NERDTreeHighlightCursorline=1
 let NERDTreeIgnore = ['tmp', '.yardoc', 'pkg', 'node_modules']
 
 " Syntastic
-let g:syntastic_mode_map = { 'mode': 'passive' }
-let g:syntastic_ruby_exec = '~/.rvm/rubies/ruby-2.0.0-p0/bin/ruby'
-
-" CtrlP
-nnoremap <silent> t :CtrlP<cr>
-let g:ctrlp_custom_ignore = '\v[\/]\.(git|hg|svn)$'
-set wildignore+=node_modules
-let g:ctrlp_working_path_mode = 2
-"let g:ctrlp_by_filename = 1
-let g:ctrlp_max_files = 600
-let g:ctrlp_max_depth = 5
-
-"matchit 
-runtime macros/matchit.vim
-
+let g:syntastic_ruby_exec = '~/.rbenv/shims/ruby'

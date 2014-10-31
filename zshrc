@@ -17,6 +17,7 @@ antigen theme https://gist.github.com/UberMouse/e69d92a78f07c2fc957a agnoster
 antigen apply
 
 source ~/dotfiles/env-vars
+source ~/dotfiles/alias-general
 
 function gi() { curl http://www.gitignore.io/api/\$@ ;}
 
