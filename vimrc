@@ -15,8 +15,7 @@ Plugin 'tpope/vim-bundler'
 Plugin 'tpope/vim-rake'
 Plugin 'tpope/vim-rails'
 
-Plugin 'tmhedberg/indent-motion'
-Plugin 'wincent/command-t'
+Plugin 'Shougo/unite.vim'
 
 Plugin 'christoomey/vim-tmux-navigator'
 
@@ -90,6 +89,9 @@ au BufRead,BufNewFile *.go set filetype=go
 " No show command
 autocmd VimEnter * set nosc
 
+
+" open Unite in fuzzy search mode
+nnoremap <Leader>f :Unite -start-insert file<CR>
 
 " reload current file
 nmap <leader>r :e!<CR>
