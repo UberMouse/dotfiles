@@ -1,1 +1,4 @@
 alias l=ls -ahG
+alias vimrc='vi ~/.vimrc'
+alias zshrc='vi ~/.zshrc'
+alias aliases='vi ~/dotfiles/alias-general'

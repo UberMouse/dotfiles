@@ -7,8 +7,8 @@ set rtp+=~/.vim/bundle/Vundle.vim
 call vundle#begin()
 Plugin 'gmarik/Vundle.vim'
 
-Plugin 'scrooloose/syntastic'
 Plugin 'scrooloose/nerdtree'
+Plugin 'Valloric/YouCompleteMe'
 
 Plugin 'vim-ruby/vim-ruby'
 Plugin 'tpope/vim-bundler'
@@ -20,7 +20,8 @@ Plugin 'wincent/command-t'
 
 Plugin 'christoomey/vim-tmux-navigator'
 
-Plugin 'altercation/vim-colors-solarized'
+Plugin 'bling/vim-airline'
+Plugin 'freeo/vim-kalisi'
 
 call vundle#end()            " required
 
@@ -28,6 +29,7 @@ call vundle#end()            " required
 set t_Co=256
 syntax on
 set background=dark
+colorscheme kalisi
 
 filetype plugin indent on    " required
 
@@ -69,6 +71,7 @@ set ttyfast
 set ttymouse=xterm2
 
 let NERDTreeQuitOnOpen=1 
+let g:airline_theme='kalisi'
 
 " Automatic formatting
 autocmd BufWritePre *.rb :%s/\s\+$//e
