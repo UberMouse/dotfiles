@@ -5,15 +5,18 @@ filetype off                  " required
 set rtp+=~/.vim/bundle/Vundle.vim
 
 call vundle#begin()
+
 Plugin 'gmarik/Vundle.vim'
 
 Plugin 'scrooloose/nerdtree'
 Plugin 'Valloric/YouCompleteMe'
+Plugin 'scrooloose/syntastic'
 
 Plugin 'vim-ruby/vim-ruby'
 Plugin 'tpope/vim-bundler'
 Plugin 'tpope/vim-rake'
 Plugin 'tpope/vim-rails'
+Plugin 'ecomba/vim-ruby-refactoring'
 
 Plugin 'Shougo/unite.vim'
 
@@ -72,14 +75,6 @@ set ttymouse=xterm2
 let NERDTreeQuitOnOpen=1 
 let g:airline_theme='kalisi'
 
-" Automatic formatting
-autocmd BufWritePre *.rb :%s/\s\+$//e
-autocmd BufWritePre *.go :%s/\s\+$//e
-autocmd BufWritePre *.haml :%s/\s\+$//e
-autocmd BufWritePre *.html :%s/\s\+$//e
-autocmd BufWritePre *.scss :%s/\s\+$//e
-autocmd BufWritePre *.slim :%s/\s\+$//e
-
 autocmd StdinReadPre * let s:std_in=1
 autocmd VimEnter * if argc() == 0 && !exists("s:std_in") | NERDTree | endif
 
@@ -91,7 +86,7 @@ autocmd VimEnter * set nosc
 
 
 " open Unite in fuzzy search mode
-nnoremap <Leader>f :Unite -start-insert file<CR>
+nnoremap <Leader>f :Unite -start-insert file_rec<CR>
 
 " reload current file
 nmap <leader>r :e!<CR>
@@ -108,7 +103,7 @@ nnoremap <C-L> <C-W><C-L>
 nnoremap <C-H> <C-W><C-H>
 
 " Tab between buffers
-noremap <tab> <c-w><c-w>
+"noremap <tab> <c-w><c-w>
 
 " Switch between last two buffers
 nnoremap <leader><leader> <C-^>
@@ -116,6 +111,9 @@ nnoremap <leader><leader> <C-^>
 " Yank text to the OS X clipboard
 noremap <leader>y "*y
 noremap <leader>yy "*Y
+
+" diff current file against last save
+nmap <leader>d :w !diff % -<CR>
 
 " Preserve indentation while pasting text from the OS X clipboard
 noremap <leader>p :set paste<CR>:put  *<CR>:set nopaste<CR>
@@ -129,6 +127,3 @@ map <leader>c :call Send_to_Tmux("clear\n")<CR>
 nmap <leader>n :NERDTreeToggle<CR>
 let NERDTreeHighlightCursorline=1
 let NERDTreeIgnore = ['tmp', '.yardoc', 'pkg', 'node_modules']
-
-" Syntastic
-let g:syntastic_ruby_exec = '~/.rbenv/shims/ruby'
