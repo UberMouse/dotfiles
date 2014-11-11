@@ -22,6 +22,7 @@ Plugin 'tpope/vim-endwise'
 Plugin 'AndrewRadev/splitjoin.vim'
 Plugin 'pangloss/vim-javascript'
 Plugin 'rizzatti/dash.vim'
+Plugin 'Lokaltog/powerline'
 
 Plugin 'vim-ruby/vim-ruby'
 Plugin 'kchmck/vim-coffee-script'
@@ -62,6 +63,14 @@ filetype plugin indent on    " required
 "
 
 let mapleader = ","
+
+set guifont=Inconsolata\ 
+let g:Powerline_symbols = 'fancy'
+set encoding=utf-8
+set t_Co=256
+set fillchars+=stl:\ ,stlnc:\
+set term=xterm-256color
+set termencoding=utf-8
 
 set relativenumber 
 set number
