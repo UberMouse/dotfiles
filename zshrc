@@ -11,7 +11,7 @@ antigen bundle command-not-found
 antigen bundle zsh-users/zsh-syntax-highlighting
 
 # Load the theme.
-antigen theme https://gist.github.com/UberMouse/e69d92a78f07c2fc957a agnoster
+antigen theme https://gist.github.com/UberMouse/eb671f0d46879a3c3a91 wild-cherry
 
 # Tell antigen that you're done.
 antigen apply
