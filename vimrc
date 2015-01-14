@@ -21,14 +21,17 @@ Plugin 'nathanaelkane/vim-indent-guides'
 Plugin 'tpope/vim-endwise'
 Plugin 'AndrewRadev/splitjoin.vim'
 Plugin 'pangloss/vim-javascript'
+Plugin 'mxw/vim-jsx'
 Plugin 'rizzatti/dash.vim'
 Plugin 'Lokaltog/powerline'
 
 Plugin 'vim-ruby/vim-ruby'
 Plugin 'kchmck/vim-coffee-script'
+Plugin 'mtscout6/vim-cjsx'
 Plugin 'tpope/vim-bundler'
 Plugin 'tpope/vim-rake'
 Plugin 'tpope/vim-rails'
+Plugin 'KurtPreston/vim-autoformat-rails'
 Plugin 'ecomba/vim-ruby-refactoring'
 Plugin 'Valloric/MatchTagAlways'
 
@@ -76,7 +79,7 @@ set expandtab
 set modelines=0
 set shiftwidth=2
 set clipboard=unnamed
-set synmaxcol=128
+set synmaxcol=512
 set ttyscroll=10
 set encoding=utf-8
 set tabstop=2
@@ -137,10 +140,15 @@ nmap <leader>gs :Gstatus<cr>
 nmap <leader>gc :Gcommit<cr>
 nmap <leader>gd :Gdiff<cr>
 
+" diff mappings
+nmap <leader>gg :diffget<cr>
+nmap <leader>gp :diffput<cr>
+nmap <leader>gu :diffupdate<cr>
+
 " Search for word under cursor in Dash.app
 nmap <leader>d <Plug>DashSearch
 nmap <leader>D <Plug>DashGlobalSearch
- 
+
 let NERDTreeQuitOnOpen=1 
 let g:airline_theme='kalisi'
 let g:airline_powerline_fonts = 1
@@ -148,14 +156,23 @@ let g:airline_powerline_fonts = 1
 autocmd StdinReadPre * let s:std_in=1
 
 au BufNewFile * set noeol
-au BufRead,BufNewFile *.go set filetype=go
 
 " No show command
 autocmd VimEnter * set nosc
 
+" Move lines up/down
+nnoremap <A-j> :m .+1<CR>==
+nnoremap <A-k> :m .-2<CR>==
+inoremap <A-j> <Esc>:m .+1<CR>==gi
+inoremap <A-k> <Esc>:m .-2<CR>==gi
+vnoremap <A-j> :m '>+1<CR>gv=gv
+vnoremap <A-k> :m '<-2<CR>gv=gv
 
 " open Unite in fuzzy search mode
 nnoremap <Leader>f :Unite -start-insert file_rec<CR>
+let s:file_rec_ignore_globs = ['node_modules']
+call unite#custom#source('file_rec', 'ignore_globs', s:file_rec_ignore_globs)
+call unite#custom#source('grep', 'ignore_globs', s:file_rec_ignore_globs)
 
 " reload current file
 nmap <leader>r :e!<CR>
