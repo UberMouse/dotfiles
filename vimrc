@@ -9,31 +9,24 @@ call vundle#begin()
 Plugin 'gmarik/Vundle.vim'
 
 Plugin 'scrooloose/nerdtree'
-Plugin 'Valloric/YouCompleteMe'
 Plugin 'scrooloose/syntastic'
 
-Plugin 'tpope/vim-fugitive'
-Plugin 'tpope/vim-speeddating'
 Plugin 'tpope/vim-surround'
 Plugin 'tpope/vim-commentary'
+Plugin 'joequery/Stupid-EasyMotion'
 Plugin 'airblade/vim-gitgutter'
 Plugin 'nathanaelkane/vim-indent-guides'
 Plugin 'tpope/vim-endwise'
 Plugin 'AndrewRadev/splitjoin.vim'
 Plugin 'pangloss/vim-javascript'
 Plugin 'mxw/vim-jsx'
-Plugin 'rizzatti/dash.vim'
 Plugin 'Lokaltog/powerline'
 
 Plugin 'vim-ruby/vim-ruby'
 Plugin 'kchmck/vim-coffee-script'
 Plugin 'mtscout6/vim-cjsx'
-Plugin 'tpope/vim-bundler'
-Plugin 'tpope/vim-rake'
 Plugin 'tpope/vim-rails'
 Plugin 'KurtPreston/vim-autoformat-rails'
-Plugin 'ecomba/vim-ruby-refactoring'
-Plugin 'Valloric/MatchTagAlways'
 
 Plugin 'Shougo/unite.vim'
 
@@ -81,6 +74,7 @@ set shiftwidth=2
 set clipboard=unnamed
 set synmaxcol=512
 set ttyscroll=10
+set backspace=2
 set encoding=utf-8
 set tabstop=2
 set wrap
@@ -148,6 +142,14 @@ nmap <leader>gu :diffupdate<cr>
 " Search for word under cursor in Dash.app
 nmap <leader>d <Plug>DashSearch
 nmap <leader>D <Plug>DashGlobalSearch
+
+" Stupid Easy Motion mappings
+map <C-w> <leader><leader>w
+imap <C-w> <leader><leader>w
+map <C-e> <leader><leader>W
+imap <C-e> <leader><leader>W
+map <A-f> <leader><leader>f
+imap <A-f> <leader><leader>f
 
 let NERDTreeQuitOnOpen=1 
 let g:airline_theme='kalisi'
