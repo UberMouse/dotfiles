@@ -18,8 +18,10 @@ antigen apply
 
 source ~/dotfiles/env-vars
 source ~/dotfiles/alias-general
-source ~/dotfiles/tmuxinator-completion.zsh
 
 function gi() { curl http://www.gitignore.io/api/\$@ ;}
 #setup rbenv autocomplete
 if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
+
+export NVM_DIR="/Users/taylor/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm

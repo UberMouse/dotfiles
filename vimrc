@@ -91,6 +91,8 @@ set mouse=a
 set ttyfast
 set ttymouse=xterm2
 set autoread 
+set splitbelow
+set splitright
 
 if exists('+breakindent')
   set breakindent " preserves the indent level of wrapped lines
@@ -113,6 +115,17 @@ let g:airline#extensions#tabline#enabled = 1
 imap kj <ESC>
 nmap <space> <leader>
 xmap <space> <leader>
+
+" hjkl in insert mode
+inoremap <A-h> <left>
+inoremap <A-j> <down>
+inoremap <A-k> <up>
+inoremap <A-l> <right>
+
+" insert line before/after current line in normal mode
+nmap <leader>o o<esc>k
+nmap <leader>O O<esc>j
+
 
 " Reload our .vimrc
 nmap <leader>~ :source ~/.vimrc<CR>:redraw!<CR>:AirlineRefresh<CR>:echo "~/.vimrc reloaded!"<CR>
@@ -172,7 +185,7 @@ vnoremap <A-k> :m '<-2<CR>gv=gv
 
 " open Unite in fuzzy search mode
 nnoremap <Leader>f :Unite -start-insert file_rec<CR>
-let s:file_rec_ignore_globs = ['node_modules']
+let s:file_rec_ignore_globs = ['node_modules/**']
 call unite#custom#source('file_rec', 'ignore_globs', s:file_rec_ignore_globs)
 call unite#custom#source('grep', 'ignore_globs', s:file_rec_ignore_globs)
 
