@@ -8,3 +8,5 @@ export BUNDLER_EDITOR='/usr/local/bin/vim'
 export RUBYOPT="rubygems"
 
 export STEAM_API_KEY='BE2DC879B4DFE16B0F428080031D7FF8'
+
+source ~/dotfiles/local-vars
