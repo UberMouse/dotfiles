@@ -17,6 +17,7 @@ Plugin 'joequery/Stupid-EasyMotion'
 Plugin 'airblade/vim-gitgutter'
 Plugin 'nathanaelkane/vim-indent-guides'
 Plugin 'tpope/vim-endwise'
+Plugin 'tpope/vim-fugitive'
 Plugin 'AndrewRadev/splitjoin.vim'
 Plugin 'pangloss/vim-javascript'
 Plugin 'mxw/vim-jsx'
@@ -115,6 +116,8 @@ let g:airline#extensions#tabline#enabled = 1
 imap kj <ESC>
 nmap <space> <leader>
 xmap <space> <leader>
+
+nmap <leader>rr :redraw!<CR>
 
 " hjkl in insert mode
 inoremap <A-h> <left>
