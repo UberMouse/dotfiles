@@ -18,8 +18,9 @@ antigen apply
 
 source ~/dotfiles/env-vars
 source ~/dotfiles/alias-general
+source ~/dotfiles/functions
+source ~/dotfiles/bookmarks.zsh
 
-function gi() { curl http://www.gitignore.io/api/\$@ ;}
 #setup rbenv autocomplete
 if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
 
