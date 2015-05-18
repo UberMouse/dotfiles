@@ -67,14 +67,6 @@ set breakindent " preserves the indent level of wrapped lines
 set showbreak=↪ " illustrate wrapped lines
 set wrap        " wrapping with breakindent is tolerable
 
-if exists('$TMUX')
-  let &t_SI = "\<Esc>Ptmux;\<Esc>\<Esc>]50;CursorShape=1\x7\<Esc>\\"
-  let &t_EI = "\<Esc>Ptmux;\<Esc>\<Esc>]50;CursorShape=0\x7\<Esc>\\"
-else
-  let &t_SI = "\<Esc>]50;CursorShape=1\x7"
-  let &t_EI = "\<Esc>]50;CursorShape=0\x7"
-endif
-
 " Airline.vim customizations
 set noshowmode " Hide mode line text since it's already in Airline
 let g:airline#extensions#tabline#enabled = 1
@@ -135,6 +127,9 @@ nmap <leader>v  :rightbelow vsp<cr>
 nmap <leader>h   :rightbelow sp<cr>
 
 "splits
+if has('nvim')
+  nmap <BS> <C-H>
+endif
 nnoremap <C-J> <C-W><C-J>
 nnoremap <C-K> <C-W><C-K>
 nnoremap <C-L> <C-W><C-L>
