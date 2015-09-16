@@ -7,6 +7,7 @@ Plug 'scrooloose/syntastic'
 
 Plug 'tpope/vim-surround'
 Plug 'tpope/vim-commentary'
+Plug 'tpope/vim-fugitive'
 Plug 'joequery/Stupid-EasyMotion'
 Plug 'airblade/vim-gitgutter'
 
@@ -48,6 +49,7 @@ set autoindent
 set backspace=indent,eol,start
 set complete-=i
 set smarttab
+set expandtab
 set relativenumber 
 set number
 set nrformats-=octal
@@ -66,6 +68,8 @@ set splitright
 set breakindent " preserves the indent level of wrapped lines
 set showbreak=↪ " illustrate wrapped lines
 set wrap        " wrapping with breakindent is tolerable
+set noswapfile
+set nobackup
 
 " Airline.vim customizations
 set noshowmode " Hide mode line text since it's already in Airline
