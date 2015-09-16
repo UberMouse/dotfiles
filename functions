@@ -1,0 +1,7 @@
+# vim: set ft=sh:
+
+function kill-by-name() {
+	ps -ef | grep "$1" | awk '{print $3}' | xargs kill
+}
+
+source ~/dotfiles/local-functions

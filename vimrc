@@ -173,8 +173,6 @@ let g:airline_powerline_fonts = 1
 
 autocmd StdinReadPre * let s:std_in=1
 
-au BufNewFile * set noeol
-
 " No show command
 autocmd VimEnter * set nosc
 

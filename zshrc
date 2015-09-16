@@ -6,6 +6,7 @@ antigen use oh-my-zsh
 # Bundles from the default repo (robbyrussell's oh-my-zsh).
 antigen bundle git
 antigen bundle command-not-found
+antigen-bundle git-flow
 
 # Syntax highlighting bundle.
 antigen bundle zsh-users/zsh-syntax-highlighting
@@ -18,8 +19,9 @@ antigen apply
 
 source ~/dotfiles/env-vars
 source ~/dotfiles/alias-general
+source ~/dotfiles/functions
+source ~/dotfiles/bookmarks.zsh
 
-function gi() { curl http://www.gitignore.io/api/\$@ ;}
 #setup rbenv autocomplete
 if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
 
@@ -31,10 +33,10 @@ export NVM_DIR="/Users/taylor/.nvm"
 setopt nosharehistory  
 
 function rubocop_git_modified() {
-  rubocop $(git status -uno --porcelain | awk -v ORS=' ' '{if(($1 == "M" || $1 == "A") && $2 != "Gemfile.lock" && match($2, /.*\.rb/)) print $2}')
+  watch 'rubocop $(git status -uno --porcelain | awk -v ORS=" " "{if((\$1 == \"M\" || \$1 == \"A\") && match(\$2, /.*\.rb/)) print \$2}")'
 }
 
 # added by travis gem
-[ -f /home/vagrant/.travis/travis.sh ] && source /home/vagrant/.travis/travis.sh
+[ -f ~/.travis/travis.sh ] && source ~/.travis/travis.sh
 
 [ -f ~/dotfiles/local.zshrc] && source ~/dotfiles/local.zshrc
