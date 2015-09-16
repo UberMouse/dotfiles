@@ -26,3 +26,15 @@ if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
 export NVM_DIR="/Users/taylor/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# prevents history bleeding across tmux panes
+setopt nosharehistory  
+
+function rubocop_git_modified() {
+  rubocop $(git status -uno --porcelain | awk -v ORS=' ' '{if(($1 == "M" || $1 == "A") && $2 != "Gemfile.lock" && match($2, /.*\.rb/)) print $2}')
+}
+
+# added by travis gem
+[ -f /home/vagrant/.travis/travis.sh ] && source /home/vagrant/.travis/travis.sh
+
+[ -f ~/dotfiles/local.zshrc] && source ~/dotfiles/local.zshrc
