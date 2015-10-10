@@ -1,6 +1,8 @@
-ln -fs `pwd`/vimrc ~/.vimrc
-ln -fs `pwd`/gvimrc ~/.gvimrc
-ln -fs `pwd`/rspec ~/.rspec
-ln -fs `pwd`/zshrc ~/.zshrc
-ln -fs `pwd`/tmux.conf ~/.tmux.conf
-ln -fs `pwd`/nvimrc ~/.nvimrc
+directory=$(dirname -- $(readlink -fn -- "$0"))
+
+ln -fs `directory`/vimrc ~/.vimrc
+ln -fs `directory`/gvimrc ~/.gvimrc
+ln -fs `directory`/rspec ~/.rspec
+ln -fs `directory`/zshrc ~/.zshrc
+ln -fs `directory`/tmux.conf ~/.tmux.conf
+ln -fs `directory`/nvimrc ~/.nvimrc
