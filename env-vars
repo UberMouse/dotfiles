@@ -9,4 +9,4 @@ export RUBYOPT="rubygems"
 
 export STEAM_API_KEY='BE2DC879B4DFE16B0F428080031D7FF8'
 export NVIM_TUI_ENABLE_CURSOR_SHAPE=1
-source ~/dotfiles/local-vars
+#source ~/dotfiles/local-vars
