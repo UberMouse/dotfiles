@@ -20,4 +20,11 @@ function new-rails-project() {
   $railsBin new . --skip-bundle --skip-javascript --skip-test-unit --skip-turbolinks
 }
 
+function docker-run() {
+  imageName=$1;
+  executableToRun=$2;
+
+  docker run --rm=true -t $imageName ${2:+"$2"}
+}
+
 source ~/dotfiles/local-functions
