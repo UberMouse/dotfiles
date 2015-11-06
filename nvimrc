@@ -35,7 +35,6 @@ let g:jsx_ext_required = 0
 
 filetype plugin indent on
 
-set t_Co=256
 syntax on
 set background=dark
 colorscheme kalisi
@@ -60,8 +59,6 @@ set tabstop=2
 set ignorecase
 set smartcase
 set mouse=a
-set ttyfast
-set ttymouse=xterm2
 set autoread 
 set splitbelow
 set splitright
@@ -191,10 +188,6 @@ endif
 
 if has('path_extra')
   setglobal tags-=./tags tags-=./tags; tags^=./tags;
-endif
-
-if &shell =~# 'fish$'
-  set shell=/bin/bash
 endif
 
 set autoread
