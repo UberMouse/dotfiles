@@ -27,4 +27,17 @@ function docker-run() {
   docker run --rm=true -t $imageName ${2:+"$2"}
 }
 
+tellme () {
+  "$@"
+
+  local result=$?
+  if [ $result -ne 0 ]; then
+    say "Failure"
+  else
+    say "Success"
+  fi
+
+  return $result
+}
+
 source ~/dotfiles/local-functions
