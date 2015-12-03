@@ -39,3 +39,4 @@ function rubocop_git_modified() {
 # added by travis gem
 [ -f ~/.travis/travis.sh ] && source ~/.travis/travis.sh
 
+[ -f ~/dotfiles/local-zshrc ] && source ~/dotfiles/local-zshrc
