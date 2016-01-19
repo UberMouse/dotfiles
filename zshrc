@@ -40,3 +40,5 @@ function rubocop_git_modified() {
 [ -f ~/.travis/travis.sh ] && source ~/.travis/travis.sh
 
 [ -f ~/dotfiles/local-zshrc ] && source ~/dotfiles/local-zshrc
+
+bindkey ' ' magic-space
