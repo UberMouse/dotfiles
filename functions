@@ -1,5 +1,8 @@
 # vim: set ft=sh:
 
+function command-exists() {
+    type "$1" &> /dev/null ;
+}
 function kill-by-name() {
 	ps -ef | grep "$1" | awk '{print $3}' | xargs kill
 }
@@ -27,7 +30,7 @@ function docker-run() {
   docker run --rm=true -t $imageName ${2:+"$2"}
 }
 
-tellme () {
+function tellme () {
   "$@"
 
   local result=$?
@@ -38,6 +41,10 @@ tellme () {
   fi
 
   return $result
+}
+
+function rubocop-git-modified() {
+  watch 'rubocop $(git status -uno --porcelain | awk -v ORS=" " "{if((\$1 == \"M\" || \$1 == \"A\") && match(\$2, /.*\.rb/)) print \$2}")'
 }
 
 source ~/dotfiles/local-functions

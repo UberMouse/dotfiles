@@ -32,10 +32,6 @@ export NVM_DIR="/Users/taylor/.nvm"
 # prevents history bleeding across tmux panes
 setopt nosharehistory  
 
-function rubocop_git_modified() {
-  watch 'rubocop $(git status -uno --porcelain | awk -v ORS=" " "{if((\$1 == \"M\" || \$1 == \"A\") && match(\$2, /.*\.rb/)) print \$2}")'
-}
-
 # added by travis gem
 [ -f ~/.travis/travis.sh ] && source ~/.travis/travis.sh
 
