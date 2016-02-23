@@ -47,4 +47,8 @@ function rubocop-git-modified() {
   watch 'rubocop $(git status -uno --porcelain | awk -v ORS=" " "{if((\$1 == \"M\" || \$1 == \"A\") && match(\$2, /.*\.rb/)) print \$2}")'
 }
 
+function commits-not-in-master() {
+  git log $(current_branch) ^master --no-merges 
+}
+
 source ~/dotfiles/local-functions
