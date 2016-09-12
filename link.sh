@@ -5,4 +5,3 @@ ln -fs ${directory}/zshrc ~/.zshrc
 ln -fs ${directory}/tmux.conf ~/.tmux.conf
 mkdir -p ~/.config/nvim
 ln -fs ${directory}/nvimrc ~/.config/nvim/init.vim
-ln -fs ${directory}/tmux.osx.conf ~/.tmux.osx.conf
