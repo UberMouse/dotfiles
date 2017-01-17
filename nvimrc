@@ -1,5 +1,3 @@
-let s:editor_root=expand("~/.nvim")
-
 call plug#begin('~/.nvim/plugged')
 
 Plug 'scrooloose/nerdtree'
@@ -40,6 +38,12 @@ set background=dark
 colorscheme kalisi
 let mapleader = ","
 
+highlight ExtraWhitespace ctermbg=red guibg=red
+match ExtraWhitespace /\s\+$/
+autocmd BufWinEnter * match ExtraWhitespace /\s\+$/
+autocmd InsertEnter * match ExtraWhitespace /\s\+\%#\@<!$/
+autocmd InsertLeave * match ExtraWhitespace /\s\+$/
+autocmd BufWinLeave * call clearmatches()
 
 set guifont=Inconsolata\ 
 let g:Powerline_symbols = 'fancy'
