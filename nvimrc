@@ -1,4 +1,4 @@
-call plug#begin('~/.nvim/plugged')
+call plug#begin('~/.config/nvim/plugged')
 
 Plug 'scrooloose/nerdtree'
 Plug 'scrooloose/syntastic'
@@ -13,7 +13,7 @@ Plug 'pangloss/vim-javascript', {'for': 'javascript'}
 Plug 'vim-ruby/vim-ruby', {'for': ['ruby', 'eruby']}
 Plug 'mxw/vim-jsx', {'for': 'javascript'}
 Plug 'tpope/vim-rails'
-Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': 'yes \| ./install' }
+Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
 
 Plug 'christoomey/vim-tmux-navigator'
 
@@ -45,7 +45,7 @@ autocmd InsertEnter * match ExtraWhitespace /\s\+\%#\@<!$/
 autocmd InsertLeave * match ExtraWhitespace /\s\+$/
 autocmd BufWinLeave * call clearmatches()
 
-set guifont=Inconsolata\ 
+set guifont=Inconsolata\
 let g:Powerline_symbols = 'fancy'
 
 set autoindent
@@ -53,7 +53,7 @@ set backspace=indent,eol,start
 set complete-=i
 set smarttab
 set expandtab
-set relativenumber 
+set relativenumber
 set number
 set nrformats-=octal
 set shiftwidth=2
@@ -63,7 +63,7 @@ set tabstop=2
 set ignorecase
 set smartcase
 set mouse=a
-set autoread 
+set autoread
 set splitbelow
 set splitright
 set breakindent " preserves the indent level of wrapped lines
@@ -112,7 +112,7 @@ imap <C-e> <leader><leader>W
 map <A-f> <leader><leader>f
 imap <A-f> <leader><leader>f
 
-let NERDTreeQuitOnOpen=1 
+let NERDTreeQuitOnOpen=1
 let g:airline_theme='kalisi'
 let g:airline_powerline_fonts = 1
 
