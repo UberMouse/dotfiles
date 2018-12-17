@@ -38,3 +38,9 @@ setopt nosharehistory
 [ -f ~/dotfiles/local-zshrc ] && source ~/dotfiles/local-zshrc
 
 bindkey ' ' magic-space
+
+# added by travis gem
+[ -f /Users/taylor/.travis/travis.sh ] && source /Users/taylor/.travis/travis.sh
+
+# Added by Krypton
+export GPG_TTY=$(tty)

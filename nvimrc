@@ -1,11 +1,13 @@
 call plug#begin('~/.config/nvim/plugged')
 
 Plug 'scrooloose/nerdtree'
-Plug 'scrooloose/syntastic'
+Plug 'w0rp/ale'
+Plug 'sbdchd/neoformat'
 
 Plug 'tpope/vim-surround'
 Plug 'tpope/vim-commentary'
 Plug 'tpope/vim-fugitive'
+Plug 'tpope/vim-sleuth'
 Plug 'joequery/Stupid-EasyMotion'
 Plug 'airblade/vim-gitgutter'
 
@@ -13,14 +15,21 @@ Plug 'pangloss/vim-javascript', {'for': 'javascript'}
 Plug 'vim-ruby/vim-ruby', {'for': ['ruby', 'eruby']}
 Plug 'mxw/vim-jsx', {'for': 'javascript'}
 Plug 'tpope/vim-rails'
+Plug 'leafgarland/typescript-vim'
+Plug 'Quramy/tsuquyomi'
+Plug 'Shougo/vimproc.vim', {'do' : 'make'}
 Plug 'junegunn/fzf', { 'dir': '~/.fzf', 'do': './install --all' }
+" Plug 'Valloric/YouCompleteMe', { 'do': './install.py' }
 
 Plug 'christoomey/vim-tmux-navigator'
 
-Plug 'bling/vim-airline'
+Plug 'vim-airline/vim-airline'
+Plug 'vim-airline/vim-airline-themes'
 Plug 'Lokaltog/powerline'
 
 Plug 'freeo/vim-kalisi'
+Plug 'rhysd/committia.vim'
+Plug 'wakatime/vim-wakatime'
 
 call plug#end()
 
@@ -31,11 +40,17 @@ let g:javascript_enable_domhtmlcss  = 1
 " vim-ruby
 let g:jsx_ext_required = 0
 
+let g:tsuquyomi_use_local_typescript = 1
+
 filetype plugin indent on
 
 syntax on
+
 set background=dark
 colorscheme kalisi
+let g:airline_theme='kalisi'
+let g:airline_powerline_fonts = 1
+
 let mapleader = ","
 
 highlight ExtraWhitespace ctermbg=red guibg=red
@@ -76,11 +91,29 @@ set nobackup
 set noshowmode " Hide mode line text since it's already in Airline
 let g:airline#extensions#tabline#enabled = 1
 
+filetype plugin on
+set omnifunc=syntaxcomplete#Complete
+
+if !exists("g:gui_oni")
+  autocmd FileType typescript call SetTypescriptConfiguration()
+endif
+
+function SetTypescriptConfiguration()
+  nmap <buffer> <leader>gd <Plug>(TsuDefinition)
+  nmap <buffer> <leader>gr <Plug>(TsuReferences)
+  nmap <buffer> <leader>rt <Plug>(TsuquyomiRenameSymbol)
+  nmap <buffer> <leader>st : <C-u>echo tsuquyomi#hint()<CR>
+endfunction
 imap kj <ESC>
 nmap <space> <leader>
 xmap <space> <leader>
+inoremap <C-x> <C-x><C-o>
 
 nmap <leader>rr :redraw!<CR>
+
+if !exists("g:gui_oni")
+  nmap <leader>rc :Neoformat<CR>
+endif
 
 " hjkl in insert mode
 inoremap <A-h> <left>
@@ -113,8 +146,6 @@ map <A-f> <leader><leader>f
 imap <A-f> <leader><leader>f
 
 let NERDTreeQuitOnOpen=1
-let g:airline_theme='kalisi'
-let g:airline_powerline_fonts = 1
 
 " Move lines up/down
 nnoremap <A-j> :m .+1<CR>==
@@ -150,11 +181,13 @@ nmap <leader>dd :w !diff % -<CR>
 " Preserve indentation while pasting text from the OS X clipboard
 noremap <leader>p :set paste<CR>:put  *<CR>:set nopaste<CR>
 
-nmap <leader>n :NERDTreeToggle<CR>
-let NERDTreeHighlightCursorline=1
-let NERDTreeIgnore = ['tmp', '.yardoc', 'pkg', 'node_modules']
+if !exists("g:gui_oni")
+  nmap <leader>n :NERDTreeToggle<CR>
+  let NERDTreeHighlightCursorline=1
+  let NERDTreeIgnore = ['tmp', '.yardoc', 'pkg', 'node_modules']
 
-nmap <leader>f :FZF<CR>
+  nmap <leader>f :FZF<CR>
+endif
 
 set ttimeout
 set ttimeoutlen=100
@@ -215,4 +248,19 @@ endif
 
 inoremap <C-U> <C-G>u<C-U>
 
+let g:committia_hooks = {}
+function! g:committia_hooks.edit_open(info)
+    " Additional settings
+    setlocal spell
+
+    " If no commit message, start with insert mode
+    if a:info.vcs ==# 'git' && getline(1) ==# ''
+        startinsert
+    end
+
+    " Scroll the diff window from insert mode
+    " Map <C-n> and <C-p>
+    imap <buffer><C-f> <Plug>(committia-scroll-diff-down-page)
+    imap <buffer><C-b> <Plug>(committia-scroll-diff-up-page)
+endfunction
 " vim:set ft=vim et sw=2:
