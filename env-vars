@@ -1,4 +1,4 @@
-export PATH=~/.rbenv/shims:~/.rbenv/bin:~/bin:/usr/local/bin:/usr/local/sbin:/usr/local/git/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH
+export PATH=~/.yarn/bin:~/.rbenv/shims:~/.rbenv/bin:~/bin:/usr/local/bin:/usr/local/sbin:/usr/local/git/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH
 
 export EDITOR=nvim
 
@@ -10,4 +10,4 @@ export STEAM_API_KEY='BE2DC879B4DFE16B0F428080031D7FF8'
 export NVIM_TUI_ENABLE_CURSOR_SHAPE=1
 export FZF_DEFAULT_COMMAND='ag -l -g ""'
 
-source ~/dotfiles/local-vars
+[ -f ~/dotfiles/local-vars ] && source ~/dotfiles/local-vars

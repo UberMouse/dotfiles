@@ -29,7 +29,6 @@ Plug 'Lokaltog/powerline'
 
 Plug 'freeo/vim-kalisi'
 Plug 'rhysd/committia.vim'
-Plug 'wakatime/vim-wakatime'
 
 call plug#end()
 
@@ -41,6 +40,7 @@ let g:javascript_enable_domhtmlcss  = 1
 let g:jsx_ext_required = 0
 
 let g:tsuquyomi_use_local_typescript = 1
+let g:neoformat_try_formatprg = 1
 
 filetype plugin indent on
 
@@ -172,7 +172,8 @@ nnoremap <C-L> <C-W><C-L>
 nnoremap <C-H> <C-W><C-H>
 
 " Yank text to the OS X clipboard
-noremap <leader>y "*y
+noremap <leader>y "+y
+noremap <leader>p "+p
 noremap <leader>yy "*Y
 
 " diff current file against last save
@@ -264,3 +265,10 @@ function! g:committia_hooks.edit_open(info)
     imap <buffer><C-b> <Plug>(committia-scroll-diff-up-page)
 endfunction
 " vim:set ft=vim et sw=2:
+
+augroup NeoformatAutoFormat
+    autocmd!
+    autocmd FileType javascript,javascript.jsx setlocal formatprg=prettier\
+                                             \--stdin\
+    autocmd BufWritePre *.js Neoformat
+augroup END

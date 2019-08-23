@@ -1,33 +1,14 @@
 # vim: set ft=sh:
 
 function command-exists() {
-    type "$1" &> /dev/null ;
+  type "$1" &> /dev/null ;
 }
 function kill-by-name() {
-	ps -ef | grep "$1" | awk '{print $3}' | xargs kill
+  ps -ef | grep "$1" | awk '{print $3}' | xargs kill
 }
 
 function show-chmod() {
   ls -l | awk '{k=0;for(i=0;i<=8;i++)k+=((substr($1,i+2,1)~/[rwx]/) *2^(8-i));if(k)printf("%0o ",k);print}'
-}
-
-function new-rails-project() {
-  railsType=$1;
-
-  if [[ $railsType == 'api' ]]; then
-    railsBin=rails-api
-  else
-    railsBin=rails
-  fi
-
-  $railsBin new . --skip-bundle --skip-javascript --skip-test-unit --skip-turbolinks
-}
-
-function docker-run() {
-  imageName=$1;
-  executableToRun=$2;
-
-  docker run --rm=true -t $imageName ${2:+"$2"}
 }
 
 function tellme () {
@@ -48,7 +29,7 @@ function rubocop-git-modified() {
 }
 
 function commits-not-in-master() {
-  git log $(current_branch) ^master --no-merges 
+  git log $(current_branch) ^master --no-merges
 }
 
-source ~/dotfiles/local-functions
+[ -f ~/dotfiles/local-functions ] && source ~/dotfiles/local-functions
