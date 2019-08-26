@@ -6,7 +6,7 @@ antigen use oh-my-zsh
 # Bundles from the default repo (robbyrussell's oh-my-zsh).
 antigen bundle git
 antigen bundle command-not-found
-antigen-bundle git-flow
+antigen bundle git-flow
 
 # Syntax highlighting bundle.
 antigen bundle zsh-users/zsh-syntax-highlighting
@@ -30,10 +30,6 @@ export NVM_DIR=~/.nvm
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
 nvm use default
 
-export PATH="/home/taylor/.pyenv/bin:$PATH"
-eval "$(pyenv init -)"
-eval "$(pyenv virtualenv-init -)"
-
 # prevents history bleeding across tmux panes
 setopt nosharehistory
 
@@ -49,3 +45,4 @@ bindkey ' ' magic-space
 
 # Added by Krypton
 export GPG_TTY=$(tty)
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
