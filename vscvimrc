@@ -1,0 +1,28 @@
+set clipboard=unnamedplus
+
+nmap <space> <leader>
+xmap <space> <leader>
+
+nmap <leader>w :w<CR>
+nmap <leader>q :q<CR>
+
+nmap <leader>v :vsplit<CR>
+nmap <leader>h :split<CR>
+
+
+nnoremap <C-J> :call VSCodeCall("workbench.action.navigateDown")<CR>
+nnoremap <C-K> :call VSCodeCall("workbench.action.navigateUp")<CR>
+nnoremap <C-L> :call VSCodeCall("workbench.action.navigateRight")<CR>
+nnoremap <C-H> :call VSCodeCall("workbench.action.navigateLeft")<CR>
+
+nnoremap <leader>f :call VSCodeCall("extension.fuzzySearch")<CR>
+nnoremap <leader>b :call VSCodeCall("workbench.action.toggleSidebarVisibility")<CR>
+
+nnoremap <leader>nt :call VSCodeCall("editor.action.goToTypeDefinition")<CR>
+nnoremap <leader>nd :call VSCodeCall("editor.action.goToDefinition")<CR>
+nnoremap <leader>no :call VSCodeCall("workbench.action.showAllEditors")<CR>
+
+nnoremap <silent> ? :<C-u>call VSCodeNotify('workbench.action.findInFiles', { 'query': expand('<cword>')})<CR>
+
+nnoremap <leader>rf :call VSCodeNotify("eslint.executeAutofix")<CR>
+nnoremap <leader>ri :call VSCodeNotify("editor.action.quickFix")<CR>
