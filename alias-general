@@ -12,5 +12,9 @@ alias binstall='bundle install --jobs $(sysctl -n hw.ncpu)'
 alias be='bundle exec'
 alias remove-branches-deleted-on-remote='git fetch -p && git branch -vv | awk '/: gone]/{print $1}' | xargs git branch -d'
 alias remove-branches-merged-to-master="git branch --merged master | grep -v '^[ *]*master$' | xargs git branch -d"
+alias docker-stats='docker ps -q | xargs  docker stats --no-stream'
+alias gmt='git machete traverse'
+alias gms='git machete status'
+alias gma='git machete add'
 
 [ -f ~/dotfiles/local-aliases ] && source ~/dotfiles/local-aliases

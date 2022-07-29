@@ -10,10 +10,13 @@ nmap <leader>v :vsplit<CR>
 nmap <leader>h :split<CR>
 
 
-nnoremap <C-J> :call VSCodeCall("workbench.action.navigateDown")<CR>
-nnoremap <C-K> :call VSCodeCall("workbench.action.navigateUp")<CR>
-nnoremap <C-L> :call VSCodeCall("workbench.action.navigateRight")<CR>
-nnoremap <C-H> :call VSCodeCall("workbench.action.navigateLeft")<CR>
+nnoremap <C-Down> :call VSCodeCall("workbench.action.navigateDown")<CR>
+nnoremap <C-Up> :call VSCodeCall("workbench.action.navigateUp")<CR>
+nnoremap <C-Right> :call VSCodeCall("workbench.action.navigateRight")<CR>
+nnoremap <C-Left> :call VSCodeCall("workbench.action.navigateLeft")<CR>
+
+nnoremap <leader>gf :call VSCodeCall("workbench.action.navigateForwardInNavigationLocations")<CR>
+nnoremap <leader>gb :call VSCodeCall("workbench.action.navigateBackInNavigationLocations")<CR>
 
 nnoremap <leader>f :call VSCodeCall("extension.fuzzySearch")<CR>
 nnoremap <leader>b :call VSCodeCall("workbench.action.toggleSidebarVisibility")<CR>

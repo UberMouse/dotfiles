@@ -22,9 +22,6 @@ source ~/dotfiles/alias-general
 source ~/dotfiles/functions
 source ~/dotfiles/bookmarks.zsh
 
-#setup rbenv autocomplete
-if which rbenv > /dev/null; then eval "$(rbenv init -)"; fi
-
 export NVM_DIR=~/.nvm
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
@@ -33,16 +30,25 @@ nvm use default
 # prevents history bleeding across tmux panes
 setopt nosharehistory
 
-# added by travis gem
-[ -f ~/.travis/travis.sh ] && source ~/.travis/travis.sh
-
 [ -f ~/dotfiles/local-zshrc ] && source ~/dotfiles/local-zshrc
 
 bindkey ' ' magic-space
 
-# added by travis gem
-[ -f /Users/taylor/.travis/travis.sh ] && source /Users/taylor/.travis/travis.sh
-
 # Added by Krypton
 export GPG_TTY=$(tty)
 [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+_rush_bash_complete()
+{
+  local word=${COMP_WORDS[COMP_CWORD]}
+
+  local completions
+  completions="$(rush tab-complete --position "${COMP_POINT}" --word "${COMP_LINE}" 2>/dev/null)"
+  if [ $? -ne 0 ]; then
+    completions=""
+  fi
+
+  COMPREPLY=( $(compgen -W "$completions" -- "$word") )
+}
+
+complete -f -F _rush_bash_complete rush

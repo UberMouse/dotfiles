@@ -266,9 +266,9 @@ function! g:committia_hooks.edit_open(info)
 endfunction
 " vim:set ft=vim et sw=2:
 
-augroup NeoformatAutoFormat
-    autocmd!
-    autocmd FileType javascript,javascript.jsx setlocal formatprg=prettier\
-                                             \--stdin\
-    autocmd BufWritePre *.js Neoformat
-augroup END
+" augroup NeoformatAutoFormat
+"     autocmd!
+"     autocmd FileType javascript,javascript.jsx setlocal formatprg=prettier\
+"                                              \--stdin\
+"     autocmd BufWritePre *.js Neoformat
+" augroup END
