@@ -16,5 +16,7 @@ alias docker-stats='docker ps -q | xargs  docker stats --no-stream'
 alias gmt='git machete traverse'
 alias gms='git machete status'
 alias gma='git machete add'
+alias gmc='git machete delete-unmanaged'
+alias gmd='git machete discover'
 
 [ -f ~/dotfiles/local-aliases ] && source ~/dotfiles/local-aliases

@@ -22,10 +22,7 @@ source ~/dotfiles/alias-general
 source ~/dotfiles/functions
 source ~/dotfiles/bookmarks.zsh
 
-export NVM_DIR=~/.nvm
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-nvm use default
 
 # prevents history bleeding across tmux panes
 setopt nosharehistory
@@ -52,3 +49,13 @@ _rush_bash_complete()
 }
 
 complete -f -F _rush_bash_complete rush
+
+# pnpm
+export PNPM_HOME="/home/ubermouse/.local/share/pnpm"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
+# pnpm end
+
+eval `keychain --eval --agents ssh id_ed25519`
