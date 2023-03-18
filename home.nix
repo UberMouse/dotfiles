@@ -87,6 +87,7 @@
     prefix = "C-Space";
     terminal = "screen-256color";
     keyMode = "vi";
+    shell = "${pkgs.zsh}/bin/zsh";
     
     plugins = with pkgs.tmuxPlugins; [
       yank
