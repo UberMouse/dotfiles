@@ -46,6 +46,7 @@
     nodejs-18_x
     nodePackages."@microsoft/rush"  
     nix-prefetch-git
+    git-machete
       
     # Apps
     slack
