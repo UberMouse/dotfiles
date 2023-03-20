@@ -2,7 +2,12 @@
   programs.zsh = {
     enable = true;
     autocd = true;
+    enableSyntaxHighlighting = true;
     
+    dirHashes = {
+      kawaka = "$HOME/code/kawaka";
+    };
+
     shellAliases = {
       l = "ls -ahG";
       szsh = "source ~/.zshrc";
