@@ -10,6 +10,7 @@
 
     shellAliases = {
       l = "ls -ahG";
+      e = "nvim";
       szsh = "source ~/.zshrc";
       gmt = "git machete traverse";
       gms = "git machete status";
