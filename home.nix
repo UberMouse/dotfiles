@@ -1,4 +1,4 @@
-{ config, pkgs, ... }:
+{ config, pkgs, lib, ... }:
 
 {
   nixpkgs.config.allowUnfreePredicate = (pkg: true);
@@ -23,6 +23,7 @@
   home.sessionVariables = {
     # Enables loading of .desktop files for nix controlled apps
     XDG_DATA_DIRS = "$HOME/.nix-profile/share:$XDG_DATA_DIRS";
+    LD_LIBRARY_PATH = "${lib.makeLibraryPath [ pkgs.libuuid ]}:$LD_LIBRARY_PATH";
   };
   
   home.packages = with pkgs; [
@@ -39,6 +40,7 @@
     fzf
     keychain
     xclip
+    libuuid
     
     # Dev
     nodejs-18_x
