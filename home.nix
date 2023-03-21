@@ -45,6 +45,7 @@
     # Dev
     nodejs-18_x
     nodePackages."@microsoft/rush"  
+    nodePackages."http-server"
     nix-prefetch-git
     git-machete
       
