@@ -17,6 +17,13 @@
       gma = "git machete add";
       gmc = "git machete delete-unmanaged";
       gmd = "git machete discover";
+      buildT = "rush build -T .";
+      buildt = "rush build -t .";
+      buildo = "rush build -o";
+      gcc = "gnome-control-center network";
+      tail-rimu-logs = "tail -f ~/.config/Koordinates/logs/*.log";
+      get-latest-rimu-log = "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
+      search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
       hms = "home-manager switch --flake ~/dotfiles#taylor --cores 10 -j 10";
     };
     

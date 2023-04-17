@@ -1,6 +1,6 @@
 # Bootstrap a new system
 
-1. Install Curl, Git & i3 `sudo apt install curl git i3`
+1. Install Curl, Git & i3 `sudo apt install curl git i3 docker`
 2. Clone this repository `git clone git@github.com:UberMouse/dotfiles.git ~/dotfiles`
 3. [Install Nix](https://github.com/DeterminateSystems/nix-installer)
 4. Enable Flakes `mkdir -p ~/.config/nix && echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf`

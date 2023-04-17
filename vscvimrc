@@ -18,7 +18,8 @@ nnoremap <C-Left> :call VSCodeCall("workbench.action.navigateLeft")<CR>
 nnoremap <leader>gf :call VSCodeCall("workbench.action.navigateForward")<CR>
 nnoremap <leader>gb :call VSCodeCall("workbench.action.navigateBack")<CR>
 
-nnoremap <leader>f :call VSCodeCall("extension.fuzzySearch")<CR>
+nnoremap <leader>f :call VSCodeCall("find-it-faster.findFiles")<CR>
+nnoremap <leader>s :call VSCodeCall("find-it-faster.findWithinFiles")<CR>
 nnoremap <leader>b :call VSCodeCall("workbench.action.toggleSidebarVisibility")<CR>
 
 nnoremap <leader>nt :call VSCodeCall("editor.action.goToTypeDefinition")<CR>

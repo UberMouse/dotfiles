@@ -41,6 +41,11 @@
     keychain
     xclip
     libuuid
+    rename
+    fd
+    ripgrep
+    bat
+    inotify-tools
     
     # Dev
     nodejs-18_x
@@ -48,10 +53,13 @@
     nodePackages."http-server"
     nix-prefetch-git
     git-machete
+    python310
+    python310Packages.pip
       
     # Apps
     slack
     vivaldi
+    qgis
   ];
   
   fonts.fontconfig = {
@@ -86,6 +94,8 @@
   programs.fzf = {
     enable = true;
     enableZshIntegration = true;
+    
+    defaultCommand = "fd";
 
     tmux.enableShellIntegration = true;
   };

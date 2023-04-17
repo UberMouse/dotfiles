@@ -13,10 +13,10 @@ in {
       };
       
       startup = [
+        { command = "append_layout /home/taylor/dotfiles/i3-workspaces/dev.json"; workspace = "3: dev"; }
         { command = "slack"; }
         { command = "vivaldi"; }
-        { command = "code"; }
-        { command = "gnome-terminal -e tmux"; }
+        { command = "gnome-terminal -e tmux"; workspace = "3: dev"; }
         { command = "setxkbmap -layout us"; }
       ];
       
