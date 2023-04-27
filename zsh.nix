@@ -43,6 +43,7 @@
       setxkbmap -layout us
       
       eval `keychain --eval --quiet --agents ssh id_ed25519`
+      eval "$(github-copilot-cli alias -- "$0")"
     '';
   };
 }

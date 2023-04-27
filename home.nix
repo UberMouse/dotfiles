@@ -51,6 +51,7 @@
     nodejs-18_x
     nodePackages."@microsoft/rush"  
     nodePackages."http-server"
+    nodePackages."@githubnext/github-copilot-cli"
     nix-prefetch-git
     git-machete
     python310
