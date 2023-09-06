@@ -15,7 +15,7 @@
   # You can update Home Manager without changing this value. See
   # the Home Manager release notes for a list of state version
   # changes in each release.
-  home.stateVersion = "22.11";
+  home.stateVersion = "23.05";
 
   # Let Home Manager install and manage itself.
   programs.home-manager.enable = true;
@@ -24,6 +24,9 @@
     # Enables loading of .desktop files for nix controlled apps
     XDG_DATA_DIRS = "$HOME/.nix-profile/share:$XDG_DATA_DIRS";
     LD_LIBRARY_PATH = "${lib.makeLibraryPath [ pkgs.libuuid ]}:$LD_LIBRARY_PATH";
+    PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+    KAWAKA_SKIP_PLAYWRIGHT_FIREFOX = "1";
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"; 
   };
   
   home.packages = with pkgs; [
@@ -52,15 +55,19 @@
     nodePackages."@microsoft/rush"  
     nodePackages."http-server"
     nodePackages."@githubnext/github-copilot-cli"
+    nodePackages.pnpm
     nix-prefetch-git
     git-machete
+    git-absorb
     python310
     python310Packages.pip
+    playwright-test
       
     # Apps
     slack
     vivaldi
     qgis
+    firefox
   ];
   
   fonts.fontconfig = {
@@ -128,10 +135,12 @@
 
   programs.gnome-terminal = {
     enable = true;
-    profile.taylor = {
-      default = true;
-      visibleName = "taylor";
-      font = "Roboto Mono for Powerline";
+    profile = {
+      "b1dcc9dd-5262-4d8d-a863-c897e6d979b9" = {
+        default = true;
+        visibleName = "taylor";
+        font = "Source Code Pro for Powerline";
+      };
     };
   };
 

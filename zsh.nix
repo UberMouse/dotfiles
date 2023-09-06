@@ -2,7 +2,7 @@
   programs.zsh = {
     enable = true;
     autocd = true;
-    enableSyntaxHighlighting = true;
+    syntaxHighlighting.enable = true;
     
     dirHashes = {
       kawaka = "$HOME/code/kawaka";
@@ -25,6 +25,7 @@
       get-latest-rimu-log = "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
       hms = "home-manager switch --flake ~/dotfiles#taylor --cores 10 -j 10";
+      show-trace = "npx playwright show-trace";
     };
     
     oh-my-zsh = {
@@ -44,6 +45,10 @@
       
       eval `keychain --eval --quiet --agents ssh id_ed25519`
       eval "$(github-copilot-cli alias -- "$0")"
+
+      function kill-all {
+        ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
+      }
     '';
   };
 }

@@ -4,16 +4,25 @@
   inputs = {
     # Specify the source of Home Manager and Nixpkgs.
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    playwright.url = "github:pietdevries94/playwright-web-flake/1.37.1";
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { nixpkgs, home-manager, ... }:
+  outputs = { nixpkgs, home-manager, playwright, ... }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      overlay = final: prev: {
+        inherit (playwright.packages.${system})
+          playwright-driver
+          playwright-test;
+      };
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ overlay ];
+      };
     in {
       homeConfigurations.taylor = home-manager.lib.homeManagerConfiguration {
         inherit pkgs;
