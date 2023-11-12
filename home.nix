@@ -76,6 +76,7 @@
 
   xdg = {
     enable = true;
+    mime.enable = true;
 
     mimeApps = {
       enable = true;
@@ -85,6 +86,16 @@
         "x-www-browser" = [ "vivaldi-stable.desktop" ];
         "x-scheme-handler/https" = [ "vivaldi-stable.desktop" ];
         "x-scheme-handler/http" = [ "vivaldi-stable.desktop" ];
+        "x-scheme-handler/koordinates" = [ "koordinates-dev-protocol.desktop" ];
+      };
+    };
+
+    desktopEntries = {
+      koordinates-dev-protocol = {
+        type = "Application";
+        name = "Koordinates dev protocol handler";
+        exec = "curl -X POST -H \"Content-Type: application/json\" -d \"{\"url\": \"%u\"}\" http://localhost:7281";
+        mimeType = ["x-scheme-handler/koordinates"];
       };
     };
   };
