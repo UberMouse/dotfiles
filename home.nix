@@ -23,7 +23,6 @@
   home.sessionVariables = {
     # Enables loading of .desktop files for nix controlled apps
     XDG_DATA_DIRS = "$HOME/.nix-profile/share:$XDG_DATA_DIRS";
-    LD_LIBRARY_PATH = "${lib.makeLibraryPath [ pkgs.libuuid ]}:$LD_LIBRARY_PATH";
     PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
     KAWAKA_SKIP_PLAYWRIGHT_FIREFOX = "1";
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"; 
