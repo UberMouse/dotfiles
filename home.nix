@@ -139,7 +139,7 @@
       "b1dcc9dd-5262-4d8d-a863-c897e6d979b9" = {
         default = true;
         visibleName = "taylor";
-        font = "Source Code Pro for Powerline";
+        font = "Source Code Pro for Powerline 10";
       };
     };
   };
