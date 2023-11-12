@@ -48,6 +48,9 @@
     ripgrep
     bat
     inotify-tools
+    unixtools.ifconfig
+    glibc
+    libuuid
     
     # Dev
     nodejs-18_x
@@ -61,12 +64,20 @@
     python310
     python310Packages.pip
     playwright-test
+    wasm-pack
+    rustup
+    pdal
+    jq
+    amazon-ecr-credential-helper
+    awscli2
+    gh
       
     # Apps
     slack
     vivaldi
     qgis
     firefox
+    chromium
   ];
   
   fonts.fontconfig = {
