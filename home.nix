@@ -83,7 +83,7 @@
   fonts.fontconfig = {
     enable = true;
   };
-
+  
   xdg = {
     enable = true;
     mime.enable = true;
@@ -104,7 +104,7 @@
       koordinates-dev-protocol = {
         type = "Application";
         name = "Koordinates dev protocol handler";
-        exec = "curl -X POST -H \"Content-Type: application/json\" -d \"{\"url\": \"%u\"}\" http://localhost:7281";
+        exec = "koordinates-dev-protocol %u";
         mimeType = ["x-scheme-handler/koordinates"];
       };
     };

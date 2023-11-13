@@ -34,6 +34,7 @@
           ./i3.nix
           ./neovim.nix
           ./zsh.nix
+          ./scriptBins.nix
         ];
       };
     };
