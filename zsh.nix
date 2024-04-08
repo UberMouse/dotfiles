@@ -2,10 +2,13 @@
   programs.zsh = {
     enable = true;
     autocd = true;
-    syntaxHighlighting.enable = true;
     
     dirHashes = {
       kawaka = "$HOME/code/kawaka";
+    };
+
+    syntaxHighlighting = {
+      enable = true;
     };
 
     shellAliases = {
@@ -26,6 +29,8 @@
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
       hms = "home-manager switch --flake ~/dotfiles#taylor --cores 10 -j 10";
       show-trace = "npx playwright show-trace";
+      heft = "node_modules/.bin/heft";
+      xclip = "xclip -selection clipboard";
     };
     
     oh-my-zsh = {
@@ -49,6 +54,8 @@
       function kill-all {
         ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
       }
+
+      eval "$(gh copilot alias -- zsh)"
     '';
   };
 }

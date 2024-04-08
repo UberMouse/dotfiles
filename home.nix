@@ -51,9 +51,10 @@
     unixtools.ifconfig
     glibc
     libuuid
+    tree
     
     # Dev
-    nodejs-18_x
+    nodejs_20
     nodePackages."@microsoft/rush"  
     nodePackages."http-server"
     nodePackages."@githubnext/github-copilot-cli"
@@ -62,15 +63,18 @@
     git-machete
     git-absorb
     python310
+    pdal
     python310Packages.pip
     playwright-test
     wasm-pack
     rustup
-    pdal
     jq
     amazon-ecr-credential-helper
-    awscli2
     gh
+    awscli2
+    yarn
+    delta
+    fx
       
     # Apps
     slack
@@ -78,6 +82,7 @@
     qgis
     firefox
     chromium
+    qdirstat
   ];
   
   fonts.fontconfig = {
@@ -116,7 +121,12 @@
     userEmail = "taylor.lodge@koordinates.com";
     
     extraConfig = {
-      pull.ff = "only";
+      pull.rebase = "true";
+      merge.conflictstyle = "zdiff3";
+      rebase.autosquash = "true";
+      rerere.enabled = "true";
+      core.pager = "delta";
+      diff.algorithm = "histogram";
     };
   };
   
@@ -128,7 +138,7 @@
 
     tmux.enableShellIntegration = true;
   };
-  
+
   programs.tmux = {
     enable = true;
     clock24 = true;
