@@ -52,6 +52,7 @@
     glibc
     libuuid
     tree
+    xautolock
     
     # Dev
     nodejs_20

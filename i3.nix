@@ -13,6 +13,7 @@ in {
       };
       
       startup = [
+        { command = "xautolock -time 5 -locker i3lock"; notification = false; }
         { command = "append_layout /home/taylor/dotfiles/i3-workspaces/dev.json"; workspace = "3: dev"; }
         { command = "slack"; }
         { command = "vivaldi"; }

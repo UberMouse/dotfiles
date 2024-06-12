@@ -56,6 +56,13 @@
       }
 
       eval "$(gh copilot alias -- zsh)"
+
+      (( ${"$"}{+commands[rush]} )) && {
+        _rush_completion() {
+          compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${"$"}{BUFFER}" 2>>/dev/null)
+        }
+        compdef _rush_completion rush
+      }
     '';
   };
 }
