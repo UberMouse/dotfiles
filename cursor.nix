@@ -1,0 +1,49 @@
+# Code from https://gist.github.com/lukalot/fcbf3216ad13b8303ab0947af0d5abd5
+{pkgs, ...}: let
+  pname = "cursor";
+  version = "0.39.6";
+
+  src = pkgs.fetchurl {
+    url = "https://download.todesktop.com/230313mzl4w4u92/cursor-0.39.6-build-240819ih4ta2fye-x86_64.AppImage";
+    hash = "sha256-huZTzIZFAYtGRMhXGC+1sd0l2s5913QkWM+QjCtsEl0=";
+  };
+  appimageContents = pkgs.appimageTools.extract {inherit pname version src;};
+in
+  with pkgs;
+    appimageTools.wrapType2 {
+      inherit pname version src;
+
+      extraInstallCommands = ''
+        install -m 444 -D ${appimageContents}/${pname}.desktop -t $out/share/applications
+        substituteInPlace $out/share/applications/${pname}.desktop \
+          --replace-quiet 'Exec=AppRun' 'Exec=${pname}'
+        cp -r ${appimageContents}/usr/share/icons $out/share
+
+        # Ensure the binary exists and create a symlink if it doesn't already exist
+        if [ -e ${appimageContents}/AppRun ]; then
+          install -m 755 -D ${appimageContents}/AppRun $out/bin/${pname}-${version}
+          if [ ! -L $out/bin/${pname} ]; then
+            ln -s $out/bin/${pname}-${version} $out/bin/${pname}
+          fi
+        else
+          echo "Error: Binary not found in extracted AppImage contents."
+          exit 1
+        fi
+      '';
+
+      extraBwrapArgs = [
+        "--bind-try /etc/nixos/ /etc/nixos/"
+      ];
+
+      # vscode likes to kill the parent so that the
+      # gui application isn't attached to the terminal session
+      dieWithParent = false;
+
+      extraPkgs = pkgs: [
+        unzip
+        autoPatchelfHook
+        asar
+        # override doesn't preserve splicing https://github.com/NixOS/nixpkgs/issues/132651
+        (buildPackages.wrapGAppsHook.override {inherit (buildPackages) makeWrapper;})
+      ];
+    }

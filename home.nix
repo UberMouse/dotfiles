@@ -81,6 +81,7 @@
     fx
     axel
     sysbench
+    (callPackage ./cursor.nix {})
 
     # Apps
     slack
