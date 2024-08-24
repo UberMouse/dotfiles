@@ -4,7 +4,7 @@
   inputs = {
     # Specify the source of Home Manager and Nixpkgs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    playwright.url = "github:pietdevries94/playwright-web-flake/1.41.0";
+    playwright.url = "github:pietdevries94/playwright-web-flake/1.46.0";
     home-manager = {
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
