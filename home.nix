@@ -1,11 +1,12 @@
-{ config, pkgs, lib, ... }:
+{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs, ... }:
 
 {
+  imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins.nix ];
   nixpkgs.config.allowUnfreePredicate = (pkg: true);
   # Home Manager needs a bit of information about you and the
   # paths it should manage.
-  home.username = "taylor";
-  home.homeDirectory = "/home/taylor";
+  home.username = "taylorl";
+  home.homeDirectory = "/home/taylorl";
 
   # This value determines the Home Manager release that your
   # configuration is compatible with. This helps avoid breakage
@@ -21,13 +22,14 @@
   programs.home-manager.enable = true;
 
   home.sessionVariables = {
-    # Enables loading of .desktop files for nix controlled apps
-    XDG_DATA_DIRS = "$HOME/.nix-profile/share:$XDG_DATA_DIRS";
     PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
     KAWAKA_SKIP_PLAYWRIGHT_FIREFOX = "1";
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1"; 
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
+    EDITOR = "nvim";
+    BROWSER = "vivaldi";
+    TERMINAL = "alacritty";
   };
-  
+
   home.packages = with pkgs; [
     # System
     git
@@ -54,10 +56,10 @@
     tree
     xautolock
     shellcheck
-    
+
     # Dev
     nodejs_20
-    nodePackages."@microsoft/rush"  
+    nodePackages."@microsoft/rush"
     nodePackages."http-server"
     nodePackages."@githubnext/github-copilot-cli"
     nodePackages.pnpm
@@ -79,7 +81,7 @@
     fx
     axel
     sysbench
-      
+
     # Apps
     slack
     vivaldi
@@ -88,18 +90,16 @@
     chromium
     qdirstat
   ];
-  
-  fonts.fontconfig = {
-    enable = true;
-  };
-  
+
+  fonts.fontconfig = { enable = true; };
+
   xdg = {
     enable = true;
     mime.enable = true;
 
     mimeApps = {
       enable = true;
-      
+
       defaultApplications = {
         "default-web-browser" = [ "vivaldi-stable.desktop" ];
         "x-www-browser" = [ "vivaldi-stable.desktop" ];
@@ -114,16 +114,16 @@
         type = "Application";
         name = "Koordinates dev protocol handler";
         exec = "koordinates-dev-protocol %u";
-        mimeType = ["x-scheme-handler/koordinates"];
+        mimeType = [ "x-scheme-handler/koordinates" ];
       };
     };
   };
-  
+
   programs.git = {
     enable = true;
     userName = "Taylor Lodge";
     userEmail = "taylor.lodge@koordinates.com";
-    
+
     extraConfig = {
       pull.rebase = "true";
       merge.conflictstyle = "zdiff3";
@@ -132,13 +132,26 @@
       core.pager = "delta";
       diff.algorithm = "histogram";
       init.defaultBranch = "main";
+
+      gpg = {
+        format = "ssh";
+      };
+      "gpg \"ssh\"" = {
+        program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
+      };
+      commit = {
+        gpgsign = true;
+      };
+      user = {
+        signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
+      };
     };
   };
-  
+
   programs.fzf = {
     enable = true;
     enableZshIntegration = true;
-    
+
     defaultCommand = "fd";
 
     tmux.enableShellIntegration = true;
@@ -153,34 +166,34 @@
     terminal = "screen-256color";
     keyMode = "vi";
     shell = "${pkgs.zsh}/bin/zsh";
-    
-    plugins = with pkgs.tmuxPlugins; [
-      yank
-      resurrect
-    ];
+
+    plugins = with pkgs.tmuxPlugins; [ yank resurrect ];
 
     extraConfig = ''
       bind h split-window -v -c "#{pane_current_path}"
       bind v split-window -h -c "#{pane_current_path}"
     '';
   };
-  
+
   programs.vscode = {
-    enable = true;
+    enable = true; 
+    package = unstable-pkgs.vscode-fhs;
   };
 
-  programs.gnome-terminal = {
+  programs.bash = { enable = true; };
+
+  programs.alacritty = {
     enable = true;
-    profile = {
-      "b1dcc9dd-5262-4d8d-a863-c897e6d979b9" = {
-        default = true;
-        visibleName = "taylor";
-        font = "Source Code Pro for Powerline 10";
-      };
+    settings = {
+
     };
   };
-
-  programs.bash = {
+  
+  programs.ssh = {
     enable = true;
+    extraConfig = ''
+      Host *
+          IdentityAgent ~/.1password/agent.sock
+    '';
   };
 }

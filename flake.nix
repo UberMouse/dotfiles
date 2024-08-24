@@ -1,40 +1,45 @@
 {
-  description = "Home Manager configuration of taylor";
+  description = "My NixOS Configuration";
 
   inputs = {
     # Specify the source of Home Manager and Nixpkgs.
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     playwright.url = "github:pietdevries94/playwright-web-flake/1.46.0";
     home-manager = {
-      url = "github:nix-community/home-manager";
+      url = "github:nix-community/home-manager/release-24.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs = { nixpkgs, home-manager, playwright, ... }:
+  outputs = { nixpkgs, home-manager, playwright, self, nixpkgs-unstable, ... }:
     let
       system = "x86_64-linux";
       overlay = final: prev: {
         inherit (playwright.packages.${system})
-          playwright-driver
-          playwright-test;
+          playwright-driver playwright-test;
       };
       pkgs = import nixpkgs {
         inherit system;
         overlays = [ overlay ];
       };
+      unstable-pkgs = import nixpkgs-unstable { inherit system; config.allowUnfree = true; };
     in {
-      homeConfigurations.taylor = home-manager.lib.homeManagerConfiguration {
-        inherit pkgs;
+      nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
+        inherit system;
+        specialArgs = { inherit unstable-pkgs; };
 
-        # Specify your home configuration modules here, for example,
-        # the path to your home.nix.
         modules = [
-          ./home.nix
-          ./i3.nix
-          ./neovim.nix
-          ./zsh.nix
-          ./scriptBins.nix
+          ./nixos.nix
+
+          home-manager.nixosModules.home-manager
+          {
+            home-manager.extraSpecialArgs = { inherit unstable-pkgs; };
+            home-manager.useGlobalPkgs = true;
+            home-manager.useUserPackages = true;
+
+            home-manager.users.taylorl = import ./home.nix;
+          }
         ];
       };
     };

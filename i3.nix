@@ -14,10 +14,10 @@ in {
       
       startup = [
         { command = "xautolock -time 5 -locker i3lock"; notification = false; }
-        { command = "append_layout /home/taylor/dotfiles/i3-workspaces/dev.json"; workspace = "3: dev"; }
+        { command = "append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json"; workspace = "3: dev"; }
         { command = "slack"; }
         { command = "vivaldi"; }
-        { command = "gnome-terminal -e tmux"; workspace = "3: dev"; }
+        { command = "alacritty -e tmux"; workspace = "3: dev"; }
         { command = "setxkbmap -layout us"; }
       ];
       
