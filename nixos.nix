@@ -18,6 +18,9 @@
   networking.extraHosts = ''
     127.0.0.1 my.dev.kx.gd
   '';
+
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
   # networking.wireless.enable = true;  # Enables wireless support via wpa_supplicant.
 
   # Configure network proxy if necessary
@@ -100,8 +103,11 @@
     # home-manager manages zsh so this check doesn't work
     ignoreShellProgramCheck = true;
   };
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-  
+
+  fonts.packages = with pkgs; [
+    (nerdfonts.override { fonts = [ "Meslo" ]; })
+  ];
+
   programs = {
     nix-ld.enable = true;
     
@@ -110,8 +116,6 @@
       enable = true;
     };
   };
-
-  services.lorri.enable = true;
 
   # Enable automatic login for the user.
   services.displayManager.autoLogin.enable = true;

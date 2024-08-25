@@ -36,7 +36,6 @@
     curl
     htop
     i3
-    powerline-fonts
     gcc
     gnumake
     perl
@@ -55,14 +54,14 @@
     libuuid
     tree
     xautolock
-    shellcheck
+    meslo-lgs-nf
 
     # Dev
     nodejs_20
     nodePackages."@microsoft/rush"
     nodePackages."http-server"
-    nodePackages."@githubnext/github-copilot-cli"
     nodePackages.pnpm
+    shellcheck
     nix-prefetch-git
     git-machete
     git-absorb
@@ -81,6 +80,9 @@
     fx
     axel
     sysbench
+    direnv
+    nixfmt-classic
+    zsh-powerlevel10k
     (callPackage ./cursor.nix {})
 
     # Apps
@@ -182,11 +184,19 @@
   };
 
   programs.bash = { enable = true; };
+  
+  programs.direnv = {
+    enable = true;
+    enableZshIntegration = true;
+
+    nix-direnv.enable = true;
+  };
 
   programs.alacritty = {
     enable = true;
     settings = {
-
+      colors.primary.background = "#1F1626";
+      font.normal.family = "MesloLGS NF";
     };
   };
   
