@@ -1,9 +1,6 @@
 { pkgs, ... }:
 
 {
-
-  home.file.".p10k.zsh".text = builtins.readFile ./p10k.zsh;
-
   programs.zsh = {
     enable = true;
     autocd = true;
@@ -50,7 +47,7 @@
     plugins = [
       {
         name = "powerlevel10k-config";
-        src = ./p10k.zsh;
+        src = ./p10k;
         file = "p10k.zsh";
       }
       {

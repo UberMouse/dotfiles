@@ -24,7 +24,6 @@ in {
         "2: slack" = [{ class="^Slack$"; }];
         "3: dev" = [{ class="^Cursor$"; }];
         "5: rimu" = [{ class="^Koordinates$"; }];
-        "6: 1password" = [{ class="^1Password$"; }];
       }; 
     };
     
