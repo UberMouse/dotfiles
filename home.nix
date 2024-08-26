@@ -84,6 +84,7 @@
     nixfmt-classic
     zsh-powerlevel10k
     (callPackage ./cursor.nix {})
+    (callPackage ./kart.nix {})
 
     # Apps
     slack
