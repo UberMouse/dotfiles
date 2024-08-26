@@ -61,6 +61,9 @@
   };
 
   services.displayManager = { defaultSession = "none+i3"; };
+  
+  # Fixes #!/bin/bash -> #!/usr/bin/env bash
+  services.envfs.enable = true;
 
   # Enable the GNOME Desktop Environment.
   services.xserver.displayManager.gdm.enable = true;
