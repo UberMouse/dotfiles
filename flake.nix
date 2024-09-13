@@ -5,7 +5,10 @@
     # Specify the source of Home Manager and Nixpkgs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
-    playwright.url = "github:pietdevries94/playwright-web-flake/1.47.0";
+    playwright = {
+      url = "github:pietdevries94/playwright-web-flake/1.47.0";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+    };
     home-manager = {
       url = "github:nix-community/home-manager/release-24.05";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -21,9 +24,8 @@
       };
       pkgs = import nixpkgs {
         inherit system;
-        overlays = [ overlay ];
       };
-      unstable-pkgs = import nixpkgs-unstable { inherit system; config.allowUnfree = true; };
+      unstable-pkgs = import nixpkgs-unstable { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
     in {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;

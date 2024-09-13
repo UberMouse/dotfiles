@@ -22,7 +22,7 @@
   programs.home-manager.enable = true;
 
   home.sessionVariables = {
-    PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
+    PLAYWRIGHT_BROWSERS_PATH = "${unstable-pkgs.playwright-driver.browsers}";
     KAWAKA_SKIP_PLAYWRIGHT_FIREFOX = "1";
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
     EDITOR = "nvim";
@@ -68,7 +68,6 @@
     python310
     pdal
     python310Packages.pip
-    playwright-test
     wasm-pack
     rustup
     jq
@@ -93,6 +92,8 @@
     firefox
     chromium
     qdirstat
+  ] ++ [
+    unstable-pkgs.playwright-test
   ];
 
   fonts.fontconfig = { enable = true; };
