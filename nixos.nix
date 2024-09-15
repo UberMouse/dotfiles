@@ -75,6 +75,9 @@
     variant = "";
   };
 
+  # Setup Staff VPN
+  services.openvpn.servers.staffVPN.config = '' config /root/nixos/openvpn/staff.conf '';
+
   # Enable CUPS to print documents.
   services.printing.enable = true;
 
