@@ -1,11 +1,11 @@
 # Code from https://gist.github.com/lukalot/fcbf3216ad13b8303ab0947af0d5abd5
 {pkgs, ...}: let
   pname = "cursor";
-  version = "0.40.3";
+  version = "0.41.2";
 
   src = pkgs.fetchurl {
     url = "https://downloader.cursor.sh/linux/appImage/x64";
-    hash = "sha256-qF9vqfvGRGDJ4dZxYzvRFdIKxt6ieiQXupPiOzkF4us=";
+    hash = "sha256-zBNNKpSzRKC0R8kscHyCNaMzA/czcYKrAM9vHv2tHsA=";
   };
   appimageContents = pkgs.appimageTools.extract {inherit pname version src;};
 in
