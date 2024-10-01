@@ -13,9 +13,13 @@
       url = "github:nix-community/home-manager/release-24.05";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    kolide-launcher = {
+      url = "github:/kolide/nix-agent/main";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { nixpkgs, home-manager, playwright, self, nixpkgs-unstable, ... }:
+  outputs = { nixpkgs, home-manager, playwright, self, nixpkgs-unstable, kolide-launcher, ... }:
     let
       system = "x86_64-linux";
       overlay = final: prev: {
@@ -29,11 +33,11 @@
     in {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit unstable-pkgs; };
+        specialArgs = { inherit unstable-pkgs;  };
 
         modules = [
           ./nixos.nix
-
+          kolide-launcher.nixosModules.kolide-launcher
           home-manager.nixosModules.home-manager
           {
             home-manager.extraSpecialArgs = { inherit unstable-pkgs; };
