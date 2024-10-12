@@ -1,49 +1,71 @@
-# Code from https://gist.github.com/lukalot/fcbf3216ad13b8303ab0947af0d5abd5
-{pkgs, ...}: let
+{
+  lib,
+  stdenvNoCC,
+  fetchurl,
+  appimageTools,
+  makeWrapper,
+  writeScript,
+}:
+let
   pname = "cursor";
-  version = "0.41.2";
-
-  src = pkgs.fetchurl {
-    url = "https://downloader.cursor.sh/linux/appImage/x64";
-    hash = "sha256-zBNNKpSzRKC0R8kscHyCNaMzA/czcYKrAM9vHv2tHsA=";
+  version = "0.42.1";
+  appKey = "230313mzl4w4u92";
+  src = fetchurl {
+    url = "https://download.todesktop.com/230313mzl4w4u92/cursor-0.42.1-build-241011i66p9fuvm-x86_64.AppImage";
+    hash = "sha256-o3lCzDSG/1G2JeeMIcHZyiUSgjxSeQJeD6HJCU8aUc4=";
   };
-  appimageContents = pkgs.appimageTools.extract {inherit pname version src;};
+  appimageContents = appimageTools.extractType2 { inherit version pname src; };
 in
-  with pkgs;
-    appimageTools.wrapType2 {
-      inherit pname version src;
+stdenvNoCC.mkDerivation {
+  inherit pname version;
 
-      extraInstallCommands = ''
-        install -m 444 -D ${appimageContents}/${pname}.desktop -t $out/share/applications
-        substituteInPlace $out/share/applications/${pname}.desktop \
-          --replace-quiet 'Exec=AppRun' 'Exec=${pname}'
-        cp -r ${appimageContents}/usr/share/icons $out/share
+  src = appimageTools.wrapType2 { inherit version pname src; };
 
-        # Ensure the binary exists and create a symlink if it doesn't already exist
-        if [ -e ${appimageContents}/AppRun ]; then
-          install -m 755 -D ${appimageContents}/AppRun $out/bin/${pname}-${version}
-          if [ ! -L $out/bin/${pname} ]; then
-            ln -s $out/bin/${pname}-${version} $out/bin/${pname}
-          fi
-        else
-          echo "Error: Binary not found in extracted AppImage contents."
-          exit 1
-        fi
-      '';
+  nativeBuildInputs = [ makeWrapper ];
 
-      extraBwrapArgs = [
-        "--bind-try /etc/nixos/ /etc/nixos/"
-      ];
+  installPhase = ''
+    runHook preInstall
 
-      # vscode likes to kill the parent so that the
-      # gui application isn't attached to the terminal session
-      dieWithParent = false;
+    mkdir -p $out/
+    cp -r bin $out/bin
 
-      extraPkgs = pkgs: [
-        unzip
-        autoPatchelfHook
-        asar
-        # override doesn't preserve splicing https://github.com/NixOS/nixpkgs/issues/132651
-        (buildPackages.wrapGAppsHook.override {inherit (buildPackages) makeWrapper;})
-      ];
-    }
+    mkdir -p $out/share/cursor
+    cp -a ${appimageContents}/locales $out/share/cursor
+    cp -a ${appimageContents}/resources $out/share/cursor
+    cp -a ${appimageContents}/usr/share/icons $out/share/
+    install -Dm 644 ${appimageContents}/cursor.desktop -t $out/share/applications/
+
+    substituteInPlace $out/share/applications/cursor.desktop --replace-fail "AppRun" "cursor"
+
+    wrapProgram $out/bin/cursor \
+      --add-flags "\''${NIXOS_OZONE_WL:+\''${WAYLAND_DISPLAY:+--ozone-platform-hint=auto --enable-features=WaylandWindowDecorations}} --no-update"
+
+    runHook postInstall
+  '';
+
+  passthru.updateScript = writeScript "update.sh" ''
+    #!/usr/bin/env nix-shell
+    #!nix-shell -i bash -p curl yq coreutils gnused common-updater-scripts
+    set -eu -o pipefail
+    latestLinux="$(curl -s https://download.todesktop.com/${appKey}/latest-linux.yml)"
+    version="$(echo "$latestLinux" | yq -r .version)"
+    filename="$(echo "$latestLinux" | yq -r '.files[] | .url | select(. | endswith(".AppImage"))')"
+    url="https://download.todesktop.com/${appKey}/$filename"
+    currentVersion=$(nix-instantiate --eval -E "with import ./. {}; code-cursor.version or (lib.getVersion code-cursor)" | tr -d '"')
+
+    if [[ "$version" != "$currentVersion" ]]; then
+      hash=$(nix-hash --to-sri --type sha256 "$(nix-prefetch-url "$url")")
+      update-source-version code-cursor "$version" "$hash" "$url" --source-key=src.src
+    fi
+  '';
+
+  meta = {
+    description = "AI-powered code editor built on vscode";
+    homepage = "https://cursor.com";
+    license = lib.licenses.unfree;
+    sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
+    maintainers = with lib.maintainers; [ sarahec ];
+    platforms = [ "x86_64-linux" ];
+    mainProgram = "cursor";
+  };
+}
