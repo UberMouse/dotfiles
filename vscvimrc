@@ -26,6 +26,8 @@ nnoremap <leader>nt :call VSCodeCall("editor.action.goToTypeDefinition")<CR>
 nnoremap <leader>nd :call VSCodeCall("editor.action.goToDefinition")<CR>
 nnoremap <leader>no :call VSCodeCall("workbench.action.showAllEditors")<CR>
 
+nnoremap <leader>td a/*?*/<ESC>
+
 nnoremap <silent> ? :<C-u>call VSCodeNotify('workbench.action.findInFiles', { 'query': expand('<cword>')})<CR>
 
 nnoremap <leader>rf :call VSCodeNotify("eslint.executeAutofix")<CR>

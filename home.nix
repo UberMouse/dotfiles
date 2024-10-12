@@ -83,6 +83,7 @@
     nixfmt-classic
     zsh-powerlevel10k
     unstable-pkgs.code-cursor
+    nixd
     (callPackage ./kart.nix {})
 
     # Apps
