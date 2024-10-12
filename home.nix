@@ -82,8 +82,8 @@
     direnv
     nixfmt-classic
     zsh-powerlevel10k
-    unstable-pkgs.code-cursor
     nixd
+    (callPackage ./cursor.nix {})
     (callPackage ./kart.nix {})
 
     # Apps
