@@ -6,7 +6,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     playwright = {
-      url = "github:pietdevries94/playwright-web-flake/1.47.0";
+      url = "github:pietdevries94/playwright-web-flake/1.48.0";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     home-manager = {
