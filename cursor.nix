@@ -11,8 +11,8 @@ let
   version = "0.42.1";
   appKey = "230313mzl4w4u92";
   src = fetchurl {
-    url = "https://download.todesktop.com/230313mzl4w4u92/cursor-0.42.1-build-241011i66p9fuvm-x86_64.AppImage";
-    hash = "sha256-o3lCzDSG/1G2JeeMIcHZyiUSgjxSeQJeD6HJCU8aUc4=";
+    url = "https://download.todesktop.com/230313mzl4w4u92/cursor-0.42.3-build-241016kxu9umuir-x86_64.AppImage";
+    hash = "sha256-GWkilBlpXube//jbxRjmKJjYcmB42nhMY8K0OgkvtwA=";
   };
   appimageContents = appimageTools.extractType2 { inherit version pname src; };
 in
