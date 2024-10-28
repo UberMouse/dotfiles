@@ -55,6 +55,8 @@
     tree
     xautolock
     meslo-lgs-nf
+    lsof
+    pstree
 
     # Dev
     nodejs_20

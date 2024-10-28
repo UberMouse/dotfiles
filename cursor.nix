@@ -8,11 +8,12 @@
 }:
 let
   pname = "cursor";
-  version = "0.42.1";
+  version = "0.42.3";
   appKey = "230313mzl4w4u92";
+  versionKey = "241016kxu9umuir";
   src = fetchurl {
-    url = "https://download.todesktop.com/230313mzl4w4u92/cursor-0.42.1-build-241011i66p9fuvm-x86_64.AppImage";
-    hash = "sha256-o3lCzDSG/1G2JeeMIcHZyiUSgjxSeQJeD6HJCU8aUc4=";
+    url = "https://download.todesktop.com/${appKey}/cursor-${version}-build-${versionKey}-x86_64.AppImage";
+    hash = "sha256-GWkilBlpXube//jbxRjmKJjYcmB42nhMY8K0OgkvtwA=";
   };
   appimageContents = appimageTools.extractType2 { inherit version pname src; };
 in
@@ -46,7 +47,7 @@ stdenvNoCC.mkDerivation {
   passthru.updateScript = writeScript "update.sh" ''
     #!/usr/bin/env nix-shell
     #!nix-shell -i bash -p curl yq coreutils gnused common-updater-scripts
-    set -eu -o pipefail
+    fset -eu -o pipefail
     latestLinux="$(curl -s https://download.todesktop.com/${appKey}/latest-linux.yml)"
     version="$(echo "$latestLinux" | yq -r .version)"
     filename="$(echo "$latestLinux" | yq -r '.files[] | .url | select(. | endswith(".AppImage"))')"
