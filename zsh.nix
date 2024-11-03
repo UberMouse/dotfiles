@@ -31,6 +31,7 @@
       show-trace = "npx playwright show-trace";
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
+      rf = "rm common/temp/rush*lock";
     };
 
     oh-my-zsh = {
