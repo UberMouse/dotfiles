@@ -68,6 +68,7 @@
     '';
 
     initExtra = ''
+      export PATH="$PATH:/home/taylorl/.pnpm-packages/bin"
       function kill-all {
         ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
       }

@@ -57,9 +57,11 @@
     meslo-lgs-nf
     lsof
     pstree
+    sysstat
+    rinetd
 
     # Dev
-    nodejs_20
+    nodejs_22
     nodePackages."@microsoft/rush"
     nodePackages."http-server"
     nodePackages.pnpm
