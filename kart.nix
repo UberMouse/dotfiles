@@ -19,7 +19,7 @@ in pkgs.stdenv.mkDerivation {
 
   # Required for runtime
   buildInputs = [
-    pkgs.openssl_3_2
+    pkgs.openssl_3
     pkgs.libz
     pkgs.libffi
     pkgs.stdenv.cc.cc.lib

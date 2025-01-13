@@ -22,9 +22,6 @@
   programs.home-manager.enable = true;
 
   home.sessionVariables = {
-    PLAYWRIGHT_BROWSERS_PATH = "${unstable-pkgs.playwright-driver.browsers}";
-    KAWAKA_SKIP_PLAYWRIGHT_FIREFOX = "1";
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = "1";
     EDITOR = "nvim";
     BROWSER = "vivaldi";
     TERMINAL = "alacritty";

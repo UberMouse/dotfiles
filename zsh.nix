@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, unstable-pkgs, ... }:
 
 {
   programs.zsh = {
@@ -68,7 +68,11 @@
     '';
 
     initExtra = ''
+      export PLAYWRIGHT_BROWSERS_PATH="${unstable-pkgs.playwright-driver.browsers}"
+      export KAWAKA_SKIP_PLAYWRIGHT_FIREFOX="1"
+      export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
       export PATH="$PATH:/home/taylorl/.pnpm-packages/bin"
+
       function kill-all {
         ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
       }
