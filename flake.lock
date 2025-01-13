@@ -5,11 +5,11 @@
         "systems": "systems"
       },
       "locked": {
-        "lastModified": 1689068808,
-        "narHash": "sha256-6ixXo3wt24N/melDWjq70UuHQLxGV8jZvooRanIHXw0=",
+        "lastModified": 1726560853,
+        "narHash": "sha256-X6rJYSESBVr3hBoH0WbKE5KvhPU5bloyZ2L4K60/fPQ=",
         "owner": "numtide",
         "repo": "flake-utils",
-        "rev": "919d646de7be200f3bf08cb76ae1f09402b6f9b4",
+        "rev": "c1dfcf08411b08f6b8615f7d8971a2bfa81d5e8a",
         "type": "github"
       },
       "original": {
@@ -100,16 +100,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1728433356,
-        "narHash": "sha256-KoAF4NoCFz6AHg0t0j6RRiVYBTPu3+cWiAo2nweVgBI=",
+        "lastModified": 1734009196,
+        "narHash": "sha256-SuRbOfPfpfKOzyWh2NzPjMEd1tACcwFstgnyo3KGvII=",
         "owner": "pietdevries94",
         "repo": "playwright-web-flake",
-        "rev": "eb892c97e8503b93ac6f6ccc59a3250d13f054af",
+        "rev": "e9b8178bde33be9fdd166d08abb230befdd71b61",
         "type": "github"
       },
       "original": {
         "owner": "pietdevries94",
-        "ref": "1.48.0",
+        "ref": "1.49.1",
         "repo": "playwright-web-flake",
         "type": "github"
       }
