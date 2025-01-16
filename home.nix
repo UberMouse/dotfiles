@@ -92,7 +92,7 @@
     vivaldi
     qgis
     firefox
-    chromium
+    google-chrome
     qdirstat
   ] ++ [
     unstable-pkgs.playwright-test
