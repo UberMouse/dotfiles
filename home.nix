@@ -56,6 +56,7 @@
     pstree
     sysstat
     rinetd
+    gnuplot
 
     # Dev
     nodejs_22
