@@ -8,13 +8,13 @@
 }:
 let
   pname = "cursor";
-  version = "0.45.4";
+  version = "0.45.7";
   appKey = "230313mzl4w4u92";
   # open https://download.todesktop.com/230313mzl4w4u92/latest-linux.yml to find
-  versionKey = "250126vgr3vztvj";
+  versionKey = "250130nr6eorv84";
   src = fetchurl {
     url = "https://download.todesktop.com/${appKey}/cursor-${version}-build-${versionKey}-x86_64.AppImage";
-    hash = "sha256-b1HQrhqusIOjYcvHqySKUH6EVdLwG4iP6UOp9eCUD1M=";
+    hash = "sha256-X/+6LtJzUJ6sx65agOYEfbVqmtakmc9xI6atVHTuM1o=";
   };
   appimageContents = appimageTools.extractType2 { inherit version pname src; };
 in
