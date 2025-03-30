@@ -85,7 +85,7 @@
     nixfmt-classic
     zsh-powerlevel10k
     nixd
-    (callPackage ./cursor.nix {})
+    code-cursor
     (callPackage ./kart.nix {})
 
     # Apps
