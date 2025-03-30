@@ -85,7 +85,6 @@
     nixfmt-classic
     zsh-powerlevel10k
     nixd
-    code-cursor
     (callPackage ./kart.nix {})
 
     # Apps
@@ -97,6 +96,7 @@
     qdirstat
   ] ++ [
     unstable-pkgs.playwright-test
+    unstable-pkgs.code-cursor
   ];
 
   fonts.fontconfig = { enable = true; };
