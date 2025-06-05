@@ -58,11 +58,6 @@
         export SSH_AUTH_SOCK
       '';
     };
-
-    xautolock = {
-      enable = true;
-      time = 5;
-    };
   };
 
   services.displayManager = { defaultSession = "none+i3"; };
