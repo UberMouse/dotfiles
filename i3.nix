@@ -13,7 +13,6 @@ in {
       };
       
       startup = [
-        { command = "xautolock -time 5 -locker i3lock"; notification = false; }
         { command = "slack"; }
         { command = "vivaldi"; }
         { command = "1password"; }

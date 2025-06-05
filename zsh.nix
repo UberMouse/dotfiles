@@ -32,6 +32,9 @@
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
       rf = "rm common/temp/rush*lock";
+      rush = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush.js";
+      rushx = "node /home/taylorl/code/kawaka/common/scripts/install-run-rushx.js";
+      rush-pnpm = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush-pnpm.js";
     };
 
     oh-my-zsh = {

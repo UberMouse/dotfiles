@@ -50,7 +50,6 @@
     glibc
     libuuid
     tree
-    xautolock
     meslo-lgs-nf
     lsof
     pstree
@@ -67,9 +66,9 @@
     nix-prefetch-git
     git-machete
     git-absorb
-    python310
+    python313
     pdal
-    python310Packages.pip
+    python313Packages.pip
     wasm-pack
     rustup
     jq
