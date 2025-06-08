@@ -35,6 +35,7 @@
       rush = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush.js";
       rushx = "node /home/taylorl/code/kawaka/common/scripts/install-run-rushx.js";
       rush-pnpm = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush-pnpm.js";
+      test-storybook = "rush test-storybook --include-phase-deps -o";
     };
 
     oh-my-zsh = {
