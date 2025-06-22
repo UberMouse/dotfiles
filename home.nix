@@ -95,7 +95,7 @@
     qdirstat
   ] ++ [
     unstable-pkgs.playwright-test
-    unstable-pkgs.code-cursor
+    unstable-pkgs.code-cursor-fhs
   ];
 
   fonts.fontconfig = { enable = true; };
