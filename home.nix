@@ -96,6 +96,7 @@
   ] ++ [
     unstable-pkgs.playwright-test
     unstable-pkgs.code-cursor-fhs
+    unstable-pkgs.claude-code
   ];
 
   fonts.fontconfig = { enable = true; };
