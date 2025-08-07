@@ -53,26 +53,31 @@
     enable = true;
     windowManager.i3 = {
       enable = true;
-      extraSessionCommands = ''
-        eval $(gnome-keyring-daemon --daemonize)
-        export SSH_AUTH_SOCK
-      '';
+      extraPackages = with pkgs; [
+        i3lock
+      ];
     };
-
-    xautolock = {
-      enable = true;
-      time = 5;
-    };
+    
+    # Start authentication agent for i3
+    displayManager.sessionCommands = ''
+      ${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1 &
+    '';
   };
 
   services.displayManager = { defaultSession = "none+i3"; };
+  
+  # Screen locker
+  programs.xss-lock = {
+    enable = true;
+    lockerCommand = "${pkgs.i3lock}/bin/i3lock -c 000000";
+  };
   
   # Fixes #!/bin/bash -> #!/usr/bin/env bash
   services.envfs.enable = true;
 
   # Enable the GNOME Desktop Environment.
   services.xserver.displayManager.gdm.enable = true;
-  services.xserver.desktopManager.gnome.enable = true;
+  # services.xserver.desktopManager.gnome.enable = true; # Disabled - using i3 only
 
   # Configure keymap in X11
   services.xserver.xkb = {
@@ -104,6 +109,13 @@
 
   # Enable touchpad support (enabled default in most desktopManager).
   # services.xserver.libinput.enable = true;
+  
+  # Enable gnome keyring for secure storage (needed by 1Password and other apps)
+  services.gnome.gnome-keyring.enable = true;
+  security.pam.services.gdm.enableGnomeKeyring = true;
+  
+  # Enable polkit for authentication dialogs
+  security.polkit.enable = true;
 
   # Define a user account. Don't forget to set a password with ‘passwd’.
   users.users.taylorl = {
