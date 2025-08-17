@@ -56,6 +56,7 @@
     sysstat
     rinetd
     gnuplot
+    nautilus
 
     # Dev
     nodejs_22
