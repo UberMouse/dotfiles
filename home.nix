@@ -57,6 +57,8 @@
     rinetd
     gnuplot
     nautilus
+    dunst
+    libnotify
 
     # Dev
     nodejs_22
@@ -212,5 +214,67 @@
       Host *
           IdentityAgent ~/.1password/agent.sock
     '';
+  };
+
+  services.dunst = {
+    enable = true;
+    settings = {
+      global = {
+        monitor = 0;
+        follow = "mouse";
+        geometry = "300x50-20+20";
+        indicate_hidden = true;
+        shrink = false;
+        transparency = 10;
+        notification_height = 0;
+        separator_height = 2;
+        padding = 8;
+        horizontal_padding = 8;
+        frame_width = 2;
+        frame_color = "#89b4fa";
+        separator_color = "frame";
+        sort = true;
+        idle_threshold = 120;
+        font = "MesloLGS NF 10";
+        line_height = 0;
+        markup = "full";
+        format = "<b>%s</b>\\n%b";
+        alignment = "left";
+        show_age_threshold = 60;
+        word_wrap = true;
+        ellipsize = "middle";
+        ignore_newline = false;
+        stack_duplicates = true;
+        hide_duplicate_count = false;
+        show_indicators = true;
+        icon_position = "left";
+        max_icon_size = 32;
+        sticky_history = true;
+        history_length = 20;
+        browser = "vivaldi";
+        always_run_script = true;
+        title = "Dunst";
+        class = "Dunst";
+        startup_notification = false;
+        verbosity = "mesg";
+        corner_radius = 5;
+      };
+      urgency_low = {
+        background = "#1F1626";
+        foreground = "#cdd6f4";
+        timeout = 10;
+      };
+      urgency_normal = {
+        background = "#1F1626";
+        foreground = "#cdd6f4";
+        timeout = 10;
+      };
+      urgency_critical = {
+        background = "#1F1626";
+        foreground = "#f38ba8";
+        frame_color = "#f38ba8";
+        timeout = 0;
+      };
+    };
   };
 }
