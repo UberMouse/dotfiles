@@ -88,6 +88,7 @@
     zsh-powerlevel10k
     nixd
     (callPackage ./kart.nix {})
+    uv
 
     # Apps
     slack
