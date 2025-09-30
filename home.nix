@@ -1,4 +1,4 @@
-{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs, ... }:
+{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs, unstable-small-pkgs, ... }:
 
 {
   imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins.nix ];
@@ -100,7 +100,7 @@
   ] ++ [
     unstable-pkgs.playwright-test
     unstable-pkgs.code-cursor-fhs
-    unstable-pkgs.claude-code
+    unstable-small-pkgs.claude-code
   ];
 
   fonts.fontconfig = { enable = true; };
