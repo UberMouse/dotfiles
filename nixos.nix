@@ -20,6 +20,7 @@
   '';
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.download-buffer-size = 134217728; # 128 MB (default is 64 MB)
 
   # networking.wireless.enable = true;  # Enables wireless support via wpa_supplicant.
 
@@ -92,7 +93,7 @@
   services.printing.enable = true;
 
   # Enable sound with pipewire.
-  hardware.pulseaudio.enable = false;
+  services.pulseaudio.enable = false;
   security.rtkit.enable = true;
   services.pipewire = {
     enable = true;
