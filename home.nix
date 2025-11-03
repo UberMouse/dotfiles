@@ -87,6 +87,7 @@
     zsh-powerlevel10k
     nixd
     (callPackage ./kart.nix {})
+    (callPackage ./claude-conversation-extractor.nix {})
     uv
 
     # Apps
