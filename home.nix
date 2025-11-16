@@ -99,7 +99,7 @@
     qdirstat
   ] ++ [
     unstable-pkgs.playwright-test
-    unstable-pkgs.code-cursor-fhs
+    unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
   ];
 
