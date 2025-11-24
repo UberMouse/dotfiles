@@ -75,7 +75,6 @@
     rustup
     jq
     amazon-ecr-credential-helper
-    gh
     awscli2
     yarn
     delta
@@ -98,6 +97,7 @@
     google-chrome
     qdirstat
   ] ++ [
+    unstable-pkgs.gh
     unstable-pkgs.playwright-test
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
