@@ -26,12 +26,13 @@
       overlay = final: prev: {
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
+        claude-code = final.callPackage ./packages/claude-code/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;
       };
       unstable-pkgs = import nixpkgs-unstable { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
-      unstable-small-pkgs = import nixpkgs-unstable-small { inherit system; config.allowUnfree = true; };
+      unstable-small-pkgs = import nixpkgs-unstable-small { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
     in {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;
