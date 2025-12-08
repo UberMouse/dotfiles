@@ -86,7 +86,6 @@
     zsh-powerlevel10k
     nixd
     (callPackage ./kart.nix {})
-    (callPackage ./claude-conversation-extractor.nix {})
     uv
 
     # Apps
@@ -133,10 +132,10 @@
 
   programs.git = {
     enable = true;
-    userName = "Taylor Lodge";
-    userEmail = "taylor.lodge@koordinates.com";
-
-    extraConfig = {
+    settings = {
+      user.name = "Taylor Lodge";
+      user.email = "taylor.lodge@koordinates.com";
+      user.signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
       pull.rebase = "true";
       merge.conflictstyle = "zdiff3";
       rebase.autosquash = "true";
@@ -144,19 +143,9 @@
       core.pager = "delta";
       diff.algorithm = "histogram";
       init.defaultBranch = "main";
-
-      gpg = {
-        format = "ssh";
-      };
-      "gpg \"ssh\"" = {
-        program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
-      };
-      commit = {
-        gpgsign = true;
-      };
-      user = {
-        signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
-      };
+      gpg.format = "ssh";
+      "gpg \"ssh\"".program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
+      commit.gpgsign = true;
     };
   };
 
@@ -211,10 +200,12 @@
   
   programs.ssh = {
     enable = true;
-    extraConfig = ''
-      Host *
-          IdentityAgent ~/.1password/agent.sock
-    '';
+    enableDefaultConfig = false;
+    matchBlocks."*" = {
+      extraOptions = {
+        IdentityAgent = "~/.1password/agent.sock";
+      };
+    };
   };
 
   services.dunst = {
