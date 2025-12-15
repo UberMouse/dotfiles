@@ -87,6 +87,7 @@
     nixd
     (callPackage ./kart.nix {})
     uv
+    ngrok
 
     # Apps
     slack
