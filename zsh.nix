@@ -21,6 +21,9 @@
       buildT = "rush build -T .";
       buildt = "rush build -t .";
       buildo = "rush build -o";
+      fbuildT = "rush fast-build -T .";
+      fbuildt = "rush fast-build -t .";
+      fbuildo = "rush fast-build -o";
       gcc = "gnome-control-center network";
       tail-rimu-logs = "tail -f ~/.config/Koordinates/logs/*.log";
       get-latest-rimu-log =
