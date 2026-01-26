@@ -88,6 +88,7 @@
     (callPackage ./kart.nix {})
     uv
     ngrok
+    buildkite-cli
 
     # Apps
     slack
