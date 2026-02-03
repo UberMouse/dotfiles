@@ -27,6 +27,7 @@
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
+        tabby-terminal = final.callPackage ./packages/tabby-terminal/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;

@@ -33,10 +33,10 @@ in {
 
         for_window [class="^Chromium-browser$"] move to workspace number 4
         for_window [class="^Koordinates$" window_role="devtools"] move to workspace number 6
-        
+
         # Scratchpad terminal
-        exec --no-startup-id "alacritty --class scratchpad-terminal"
-        for_window [class="^scratchpad-terminal$"] move to scratchpad
+        exec --no-startup-id tabby
+        for_window [class="^tabby$"] move to scratchpad
     '';
   };
 }

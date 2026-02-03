@@ -100,6 +100,7 @@
   ] ++ [
     unstable-pkgs.gh
     unstable-pkgs.playwright-test
+    unstable-pkgs.tabby-terminal
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
   ];
@@ -199,7 +200,7 @@
       font.normal.family = "MesloLGS NF";
     };
   };
-  
+
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;
