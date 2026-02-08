@@ -32,7 +32,12 @@
       pkgs = import nixpkgs {
         inherit system;
       };
-      unstable-pkgs = import nixpkgs-unstable { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
+      unstable-pkgs = import nixpkgs-unstable {
+        inherit system;
+        config.allowUnfree = true;
+        config.permittedInsecurePackages = [ "electron-37.10.3" ];
+        overlays = [ overlay ];
+      };
       unstable-small-pkgs = import nixpkgs-unstable-small { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
     in {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {

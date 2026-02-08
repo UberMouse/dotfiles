@@ -180,7 +180,7 @@
   };
 
   programs.vscode = {
-    enable = true; 
+    enable = false; 
     package = unstable-pkgs.vscode-fhs;
   };
 

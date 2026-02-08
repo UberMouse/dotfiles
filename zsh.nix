@@ -31,7 +31,7 @@
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
       hms =
         "sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10";
-      show-trace = "npx playwright@1.54.1 show-trace";
+      show-trace = "npx playwright@${unstable-pkgs.playwright-test.version} show-trace";
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
       rf = "rm common/temp/rush*lock";
