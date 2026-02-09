@@ -1,0 +1,2 @@
+- Make extensive use of the AskUserQuestion tool. Planning? Ask as many probing questions as needed, making sure any edge cases are understood. Writing code and have to make an important decision? Or need extra context to decide on something? Use the AskUserQuestion tool to get feedback
+- Whenever you add debug logging, ensure it is tagged with greppable string, and include a regex that will match all of the debug logging after you have added the logging. If you expand on the logging in follow up messages ensure the regex is updated and re-emitted.

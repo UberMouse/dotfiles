@@ -105,6 +105,8 @@
     unstable-small-pkgs.claude-code
   ];
 
+  home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
+
   fonts.fontconfig = { enable = true; };
 
   xdg = {
