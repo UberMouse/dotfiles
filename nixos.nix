@@ -148,6 +148,17 @@
   services.tailscale.enable = true;
   services.kolide-launcher.enable = true;
 
+  # Kill memory-hungry dev processes before system grinds to a halt
+  services.earlyoom = {
+    enable = true;
+    freeMemThreshold = 5;
+    freeSwapThreshold = 10;
+    enableNotifications = true;
+    extraArgs = [
+      "--prefer" "(tsgo --lsp|jest-worker)"
+    ];
+  };
+
   # Workaround for GNOME autologin: https://github.com/NixOS/nixpkgs/issues/103746#issuecomment-945091229
   systemd.services."getty@tty1".enable = false;
   systemd.services."autovt@tty1".enable = false;
