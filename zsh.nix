@@ -39,6 +39,7 @@
       rushx = "node /home/taylorl/code/kawaka/common/scripts/install-run-rushx.js";
       rush-pnpm = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush-pnpm.js";
       test-storybook = "rush test-storybook --include-phase-deps -o";
+      yolo-claude = "claude --allow-dangerously-skip-permissions";
     };
 
     oh-my-zsh = {
