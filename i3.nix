@@ -35,8 +35,8 @@ in {
         for_window [class="^Koordinates$" window_role="devtools"] move to workspace number 6
 
         # Scratchpad terminal
-        exec --no-startup-id tabby
-        for_window [class="^tabby$"] move to scratchpad
+        exec --no-startup-id ghostty
+        for_window [class="^com.mitchellh.ghostty$"] move to scratchpad
     '';
   };
 }

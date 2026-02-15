@@ -27,7 +27,6 @@
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
-        tabby-terminal = final.callPackage ./packages/tabby-terminal/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;
@@ -35,7 +34,6 @@
       unstable-pkgs = import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
-        config.permittedInsecurePackages = [ "electron-37.10.3" ];
         overlays = [ overlay ];
       };
       unstable-small-pkgs = import nixpkgs-unstable-small { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
