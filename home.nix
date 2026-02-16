@@ -89,6 +89,7 @@
     uv
     ngrok
     buildkite-cli
+    codex
 
     # Apps
     slack
@@ -228,6 +229,7 @@
         "14=#93d3c3"
         "15=#f8f8f8"
       ];
+      keybind = "ctrl+shift+x=close_surface";
     };
   };
 
