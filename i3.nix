@@ -27,7 +27,7 @@ in {
     };
     
     extraConfig = ''
-        exec --no-startup-id "i3-msg 'workspace \"3: dev\"; append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json'"
+        exec --no-startup-id "i3-msg 'workspace \"3: dev\"; split v; append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json'"
         exec cursor
         exec alacritty -e tmux
 
@@ -35,8 +35,8 @@ in {
         for_window [class="^Koordinates$" window_role="devtools"] move to workspace number 6
 
         # Scratchpad terminal
-        exec --no-startup-id ghostty
-        for_window [class="^com.mitchellh.ghostty$"] move to scratchpad
+        exec --no-startup-id alacritty --class scratchpad-terminal -e scratch-terminal
+        for_window [class="^scratchpad-terminal$"] move to scratchpad
     '';
   };
 }

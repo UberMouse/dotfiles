@@ -118,6 +118,16 @@
   # Enable polkit for authentication dialogs
   security.polkit.enable = true;
 
+  # Passwordless sudo via 1Password SSH agent (like passwordless SSH)
+  security.pam.rssh = {
+    enable = true;
+    settings = {
+      auth_key_file = "/etc/sudo-keys/$user";
+      ssh_agent_addr = "/home/$user/.1password/agent.sock";
+    };
+  };
+  security.pam.services.sudo.rssh = true;
+
   # Define a user account. Don't forget to set a password with ‘passwd’.
   users.users.taylorl = {
     isNormalUser = true;
@@ -184,7 +194,16 @@
       '';
       mode = "0755";
     };
+    "sudo-keys/taylorl" = {
+      text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA1L9W0vC2KwMVNQpxMo+iS0xg8W/8XVVS2x6RZHIJwT";
+      mode = "0644";
+    };
   };
+
+  # Preserve SSH_AUTH_SOCK through sudo for 1Password SSH agent auth
+  security.sudo.extraConfig = ''
+    Defaults env_keep += "SSH_AUTH_SOCK"
+  '';
 
   nix.gc.automatic = true;
   nix.gc.options = "--delete-older-than 21d";

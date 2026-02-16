@@ -66,31 +66,34 @@
       }
     ];
     
-    initContent = lib.mkBefore ''
-      # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
-      # Initialization code that may require console input (password prompts, [y/n]
-      # confirmations, etc.) must go above this block; everything else may go below.
-      if [[ -r "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh" ]]; then
-        source "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh"
-      fi
+    initContent = lib.mkMerge [
+      (lib.mkBefore ''
+        # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
+        # Initialization code that may require console input (password prompts, [y/n]
+        # confirmations, etc.) must go above this block; everything else may go below.
+        if [[ -r "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh" ]]; then
+          source "''${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-''${(%):-%n}.zsh"
+        fi
 
-      export PLAYWRIGHT_BROWSERS_PATH="${unstable-pkgs.playwright-driver.browsers}"
-      export KAWAKA_SKIP_PLAYWRIGHT_FIREFOX="1"
-      export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
-      export PATH="$PATH:/home/taylorl/.pnpm-packages/bin:/home/taylorl/.local/bin"
+        export PLAYWRIGHT_BROWSERS_PATH="${unstable-pkgs.playwright-driver.browsers}"
+        export KAWAKA_SKIP_PLAYWRIGHT_FIREFOX="1"
+        export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
+        export PATH="$PATH:/home/taylorl/.pnpm-packages/bin:/home/taylorl/.local/bin"
 
-      function kill-all {
-        ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
-      }
-
-      (( ${"$"}{+commands[rush]} )) && {
-        _rush_completion() {
-          compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
-            "$"
-          }{BUFFER}" 2>>/dev/null)
+        function kill-all {
+          ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
         }
-        compdef _rush_completion rush
-      }
-    '';
+      '')
+      (lib.mkAfter ''
+        (( ${"$"}{+commands[rush]} )) && {
+          _rush_completion() {
+            compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
+              "$"
+            }{BUFFER}" 2>>/dev/null)
+          }
+          compdef _rush_completion rush
+        }
+      '')
+    ];
   };
 }
