@@ -43,12 +43,26 @@
 
       if [ $# -lt 2 ]; then
         echo "Usage: rush-logs <package-name> <phase-name>"
+        echo "  Use '.' as package-name for the package in the current directory"
         echo "Example: rush-logs @kx/data-manager test-storybook"
         exit 1
       fi
 
       PACKAGE="$1"
       PHASE="$2"
+
+      # Resolve "." to the package name in the current directory
+      if [ "$PACKAGE" = "." ]; then
+        if [ ! -f "package.json" ]; then
+          echo "Error: No package.json found in current directory"
+          exit 1
+        fi
+        PACKAGE=$(${pkgs.jq}/bin/jq -r '.name' package.json)
+        if [ -z "$PACKAGE" ] || [ "$PACKAGE" = "null" ]; then
+          echo "Error: Could not read package name from package.json"
+          exit 1
+        fi
+      fi
 
       # Walk up from PWD looking for rush.json
       DIR="$PWD"
