@@ -19,12 +19,11 @@
                "y": 728
             },
             "marks": [],
-            "name": "Not Kawaka - Cursor",
+            "name": "Cursor",
             "percent": 0.599492671927847,
             "swallows": [
                {
-                    "class": "^Cursor$",
-                    "title": "^((?!kawaka).)*$"
+                    "class": "^Cursor$"
                }
             ],
             "type": "con"
@@ -40,12 +39,11 @@
                "y": 336
             },
             "marks": [],
-            "name": "kawaka - Cursor",
+            "name": "Cursor",
             "percent": 0.400507328072153,
             "swallows": [
                {
-                    "class": "^Cursor$",
-                    "title": ".*kawaka.*"
+                    "class": "^Cursor$"
                }
             ],
             "type": "con"
