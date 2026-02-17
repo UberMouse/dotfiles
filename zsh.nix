@@ -35,7 +35,6 @@
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
       rf = "rm common/temp/rush*lock";
-      rush = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush.js";
       rushx = "node /home/taylorl/code/kawaka/common/scripts/install-run-rushx.js";
       rush-pnpm = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush-pnpm.js";
       test-storybook = "rush test-storybook --include-phase-deps -o";
@@ -85,14 +84,39 @@
         }
       '')
       (lib.mkAfter ''
-        (( ${"$"}{+commands[rush]} )) && {
-          _rush_completion() {
-            compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
-              "$"
-            }{BUFFER}" 2>>/dev/null)
-          }
-          compdef _rush_completion rush
+        rush() {
+          node /home/taylorl/code/kawaka/common/scripts/install-run-rush.js "$@"
         }
+
+        _rush_completion() {
+          compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
+            "$"
+          }{BUFFER}" 2>>/dev/null)
+        }
+        compdef _rush_completion rush
+
+        _rush_logs_completion() {
+          local dir="$PWD" rush_root=""
+          while [[ "$dir" != "/" ]]; do
+            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
+            dir="$(dirname "$dir")"
+          done
+          [[ -z "$rush_root" ]] && return
+
+          case $CURRENT in
+            2)
+              local -a packages
+              packages=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r '.projects[].packageName') )
+              compadd -- "${"$"}{packages[@]}"
+              ;;
+            3)
+              local -a phases
+              phases=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/common/config/rush/command-line.json" | jq -r '.phases[].name | sub("^_phase:";"")') )
+              compadd -- "${"$"}{phases[@]}"
+              ;;
+          esac
+        }
+        compdef _rush_logs_completion rush-logs
       '')
     ];
   };
