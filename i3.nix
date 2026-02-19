@@ -10,6 +10,7 @@ in {
 
       keybindings = lib.mkOptionDefault {
         "${mod}+t" = "scratchpad show";
+        "${mod}+Shift+s" = "exec --no-startup-id maim -s | xclip -selection clipboard -t image/png";
       };
       
       startup = [

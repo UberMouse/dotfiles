@@ -39,6 +39,7 @@
     fzf
     keychain
     xclip
+    maim
     libuuid
     rename
     fd
