@@ -12,6 +12,8 @@ NixOS dotfiles repository using Nix Flakes. The entire system (OS config + user 
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 ```
 
+You can run this yourself
+
 This is also aliased as `hms` in the shell.
 
 ## Architecture

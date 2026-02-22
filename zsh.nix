@@ -78,6 +78,8 @@
         export KAWAKA_SKIP_PLAYWRIGHT_FIREFOX="1"
         export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
         export PATH="$PATH:/home/taylorl/.pnpm-packages/bin:/home/taylorl/.local/bin"
+        export CLAUDE_CODE_DISABLE_1M_CONTEXT=1
+        export CLAUDE_CODE_DISABLE_AUTO_MEMORY=0
 
         function kill-all {
           ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
