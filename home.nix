@@ -102,6 +102,7 @@
   ] ++ [
     unstable-pkgs.gh
     unstable-pkgs.playwright-test
+    unstable-pkgs.agent-browser
 
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code

@@ -7,7 +7,7 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nixpkgs-unstable-small.url = "github:NixOS/nixpkgs/nixos-unstable-small";
     playwright = {
-      url = "github:pietdevries94/playwright-web-flake/1.54.1";
+      url = "github:pietdevries94/playwright-web-flake/1.58.2";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     home-manager = {
@@ -27,6 +27,7 @@
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
+        agent-browser = final.callPackage ./packages/agent-browser/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;
