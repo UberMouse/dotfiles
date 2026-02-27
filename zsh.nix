@@ -119,6 +119,48 @@
           esac
         }
         compdef _rush_logs_completion rush-logs
+
+        navigate-to() {
+          if [[ $# -lt 1 ]]; then
+            echo "Usage: navigate-to <package-name>"
+            return 1
+          fi
+
+          local dir="$PWD" rush_root=""
+          while [[ "$dir" != "/" ]]; do
+            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
+            dir="$(dirname "$dir")"
+          done
+
+          if [[ -z "$rush_root" ]]; then
+            echo "Error: Could not find rush.json in any parent directory"
+            return 1
+          fi
+
+          local project_folder
+          project_folder=$(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r --arg pkg "$1" '.projects[] | select(.packageName == $pkg) | .projectFolder')
+
+          if [[ -z "$project_folder" ]]; then
+            echo "Error: Package '$1' not found in rush.json"
+            return 1
+          fi
+
+          cd "$rush_root/$project_folder"
+        }
+
+        _navigate_to_completion() {
+          local dir="$PWD" rush_root=""
+          while [[ "$dir" != "/" ]]; do
+            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
+            dir="$(dirname "$dir")"
+          done
+          [[ -z "$rush_root" ]] && return
+
+          local -a packages
+          packages=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r '.projects[].packageName') )
+          compadd -- "${"$"}{packages[@]}"
+        }
+        compdef _navigate_to_completion navigate-to
       '')
     ];
   };
