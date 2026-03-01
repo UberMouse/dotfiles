@@ -8,7 +8,6 @@
     nixpkgs-unstable-small.url = "github:NixOS/nixpkgs/nixos-unstable-small";
     playwright = {
       url = "github:pietdevries94/playwright-web-flake/1.58.2";
-      inputs.nixpkgs.follows = "nixpkgs-unstable";
     };
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
