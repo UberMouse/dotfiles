@@ -99,5 +99,45 @@
 
       ${pkgs.bat}/bin/bat "$LOG_PATH"
     '')
+    (pkgs.writeScriptBin "rush" ''
+      #!/usr/bin/env bash
+      set -e
+      DIR="$PWD"
+      while [ "$DIR" != "/" ]; do
+        [ -f "$DIR/common/scripts/install-run-rush.js" ] && exec node "$DIR/common/scripts/install-run-rush.js" "$@"
+        DIR="$(dirname "$DIR")"
+      done
+      echo "Error: Could not find install-run-rush.js in any parent directory" >&2
+      exit 1
+    '')
+    (pkgs.writeScriptBin "rushx" ''
+      #!/usr/bin/env bash
+      set -e
+      DIR="$PWD"
+      while [ "$DIR" != "/" ]; do
+        [ -f "$DIR/common/scripts/install-run-rushx.js" ] && exec node "$DIR/common/scripts/install-run-rushx.js" "$@"
+        DIR="$(dirname "$DIR")"
+      done
+      echo "Error: Could not find install-run-rushx.js in any parent directory" >&2
+      exit 1
+    '')
+    (pkgs.writeScriptBin "rush-pnpm" ''
+      #!/usr/bin/env bash
+      set -e
+      DIR="$PWD"
+      while [ "$DIR" != "/" ]; do
+        [ -f "$DIR/common/scripts/install-run-rush-pnpm.js" ] && exec node "$DIR/common/scripts/install-run-rush-pnpm.js" "$@"
+        DIR="$(dirname "$DIR")"
+      done
+      echo "Error: Could not find install-run-rush-pnpm.js in any parent directory" >&2
+      exit 1
+    '')
+    (pkgs.writeScriptBin "bk" ''
+      #!/usr/bin/env bash
+      set -e
+      export BUILDKITE_ORGANIZATION_SLUG="koordinates"
+      export BUILDKITE_API_TOKEN="$(op read --account koordinates.1password.com "op://Employee/buildkite-api-token/api-token")"
+      exec ${pkgs.buildkite-cli}/bin/bk "$@"
+    '')
   ];
 }

@@ -62,7 +62,7 @@
 
     # Dev
     nodejs_22
-    nodePackages."@microsoft/rush"
+
     nodePackages."http-server"
     nodePackages.pnpm
     shellcheck
@@ -89,7 +89,7 @@
     (callPackage ./kart.nix {})
     uv
     ngrok
-    buildkite-cli
+
     codex
 
     # Apps

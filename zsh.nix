@@ -84,35 +84,6 @@
         }
       '')
       (lib.mkAfter ''
-        _find_rush_script() {
-          local script_name="$1"
-          local dir="$PWD"
-          while [[ "$dir" != "/" ]]; do
-            [[ -f "$dir/common/scripts/$script_name" ]] && { echo "$dir/common/scripts/$script_name"; return 0; }
-            dir="$(dirname "$dir")"
-          done
-          echo "Error: Could not find $script_name in any parent directory" >&2
-          return 1
-        }
-
-        rush() {
-          local script
-          script=$(_find_rush_script "install-run-rush.js") || return 1
-          node "$script" "$@"
-        }
-
-        rushx() {
-          local script
-          script=$(_find_rush_script "install-run-rushx.js") || return 1
-          node "$script" "$@"
-        }
-
-        rush-pnpm() {
-          local script
-          script=$(_find_rush_script "install-run-rush-pnpm.js") || return 1
-          node "$script" "$@"
-        }
-
         _rush_completion() {
           compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
             "$"
