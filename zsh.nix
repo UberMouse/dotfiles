@@ -35,8 +35,6 @@
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
       rf = "rm common/temp/rush*lock";
-      rushx = "node /home/taylorl/code/kawaka/common/scripts/install-run-rushx.js";
-      rush-pnpm = "node /home/taylorl/code/kawaka/common/scripts/install-run-rush-pnpm.js";
       test-storybook = "rush test-storybook --include-phase-deps -o";
       yolo-claude = "claude --allow-dangerously-skip-permissions";
     };
@@ -86,8 +84,33 @@
         }
       '')
       (lib.mkAfter ''
+        _find_rush_script() {
+          local script_name="$1"
+          local dir="$PWD"
+          while [[ "$dir" != "/" ]]; do
+            [[ -f "$dir/common/scripts/$script_name" ]] && { echo "$dir/common/scripts/$script_name"; return 0; }
+            dir="$(dirname "$dir")"
+          done
+          echo "Error: Could not find $script_name in any parent directory" >&2
+          return 1
+        }
+
         rush() {
-          node /home/taylorl/code/kawaka/common/scripts/install-run-rush.js "$@"
+          local script
+          script=$(_find_rush_script "install-run-rush.js") || return 1
+          node "$script" "$@"
+        }
+
+        rushx() {
+          local script
+          script=$(_find_rush_script "install-run-rushx.js") || return 1
+          node "$script" "$@"
+        }
+
+        rush-pnpm() {
+          local script
+          script=$(_find_rush_script "install-run-rush-pnpm.js") || return 1
+          node "$script" "$@"
         }
 
         _rush_completion() {
