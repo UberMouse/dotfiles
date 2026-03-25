@@ -27,6 +27,7 @@
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
         agent-browser = final.callPackage ./packages/agent-browser/package.nix {};
+        plannotator = final.callPackage ./packages/plannotator/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;
