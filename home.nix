@@ -104,6 +104,7 @@
     unstable-pkgs.playwright-test
     unstable-pkgs.playwright-cli
     unstable-pkgs.plannotator
+    unstable-pkgs.grackle
 
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code

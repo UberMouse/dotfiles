@@ -78,6 +78,7 @@
         export PATH="$PATH:/home/taylorl/.pnpm-packages/bin:/home/taylorl/.local/bin"
         export CLAUDE_CODE_DISABLE_1M_CONTEXT=1
         export CLAUDE_CODE_DISABLE_AUTO_MEMORY=0
+        export GRACKLE_URL=http://localhost:7434
 
         function kill-all {
           ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
