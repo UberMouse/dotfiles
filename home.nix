@@ -102,7 +102,7 @@
   ] ++ [
     unstable-pkgs.gh
     unstable-pkgs.playwright-test
-    unstable-pkgs.agent-browser
+    unstable-pkgs.playwright-cli
     unstable-pkgs.plannotator
 
     unstable-small-pkgs.code-cursor-fhs

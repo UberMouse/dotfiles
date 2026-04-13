@@ -30,7 +30,7 @@
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
-        agent-browser = final.callPackage ./packages/agent-browser/package.nix {};
+        playwright-cli = final.callPackage ./packages/playwright-cli/package.nix {};
         plannotator = final.callPackage ./packages/plannotator/package.nix {};
       };
       pkgs = import nixpkgs {
