@@ -33,6 +33,7 @@
         playwright-cli = final.callPackage ./packages/playwright-cli/package.nix {};
         plannotator = final.callPackage ./packages/plannotator/package.nix {};
         grackle = final.callPackage ./packages/grackle/package.nix {};
+        monodex = final.callPackage ./packages/monodex/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;

@@ -1,0 +1,12 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 1234567..abcdefg 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -19,7 +19,7 @@ exclude = [
+
+ [dependencies]
+ # ML/Embeddings
+-ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
++ort = { version = "2.0.0-rc.12" }
+ tokenizers = "0.22.2"
+ hf-hub = "0.5.0"

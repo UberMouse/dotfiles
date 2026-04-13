@@ -105,12 +105,26 @@
     unstable-pkgs.playwright-cli
     unstable-pkgs.plannotator
     unstable-pkgs.grackle
+    unstable-pkgs.monodex
 
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
   ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
+
+  xdg.configFile."monodex/config.json".text = builtins.toJSON {
+    qdrant = {
+      url = "http://localhost:6333";
+      collection = "monodex";
+    };
+    catalogs = {
+      kawaka = {
+        type = "monorepo";
+        path = "~/code/kawaka";
+      };
+    };
+  };
 
   fonts.fontconfig = { enable = true; };
 
