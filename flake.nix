@@ -7,7 +7,11 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     nixpkgs-unstable-small.url = "github:NixOS/nixpkgs/nixos-unstable-small";
     playwright = {
-      url = "github:pietdevries94/playwright-web-flake/1.58.2";
+      # Pentusha's fork — pinned to 1.59.1 (auto-update 2026-04-11).
+      # Upstream pietdevries94 is stuck on 1.59.0 and is missing `hyphen` from
+      # webkit's buildInputs, so autoPatchelf fails on libhyphen.so.0.
+      # Switch back to pietdevries94 once it merges a fix.
+      url = "github:Pentusha/playwright-web-flake/7dc3142cbecb769843182d18eb851338a550c209";
     };
     home-manager = {
       url = "github:nix-community/home-manager/release-25.11";
