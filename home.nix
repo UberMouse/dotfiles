@@ -90,8 +90,6 @@
     uv
     ngrok
 
-    codex
-
     # Apps
     slack
     vivaldi
@@ -109,6 +107,7 @@
 
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
+    unstable-small-pkgs.codex
   ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
