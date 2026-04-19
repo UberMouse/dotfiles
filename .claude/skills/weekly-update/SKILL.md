@@ -15,21 +15,29 @@ Orchestrates the recurring weekly update: claude-code package, plannotator packa
 npm view @anthropic-ai/claude-code version
 ```
 
-Compare against the current version in `packages/claude-code/package.nix`. If already at the latest version, skip to step 3.
+Compare against the current version in `packages/claude-code/package.nix`. If already at the latest version, skip to step 4.
 
 ### 2. Update Claude Code
 
 Invoke the `update-claude-code` skill via the Skill tool, passing the target version. Follow that skill's full process including the npmDepsHash build-fail-extract cycle — handle it automatically without prompting the user.
 
-### 3. Check Latest Plannotator Version
+### 3. Summarize Claude Code Changes
+
+If claude-code was updated in step 2, summarize the changelog entries between the old and new versions. The tarball extracted to `/tmp/claude-code-update/` in the `update-claude-code` skill contains `CHANGELOG.md`.
+
+Read `/tmp/claude-code-update/CHANGELOG.md`, extract the entries for every version strictly greater than the old version and up to and including the new version, and present a concise summary to the user before continuing. Group by version with the most notable changes highlighted.
+
+Skip this step if claude-code was not updated.
+
+### 4. Check Latest Plannotator Version
 
 ```bash
 curl -fsSL "https://api.github.com/repos/backnotprop/plannotator/releases/latest" | grep '"tag_name"' | cut -d'"' -f4
 ```
 
-Compare against the current version in `packages/plannotator/package.nix` (the `version` field, noting the GitHub tag has a `v` prefix). If already at the latest version, skip to step 5.
+Compare against the current version in `packages/plannotator/package.nix` (the `version` field, noting the GitHub tag has a `v` prefix). If already at the latest version, skip to step 6.
 
-### 4. Update Plannotator
+### 5. Update Plannotator
 
 Get the new binary hash:
 
@@ -42,26 +50,26 @@ Edit `packages/plannotator/package.nix`:
 - `version` → new version (without `v` prefix)
 - `src.hash` → SRI hash from above
 
-### 5. Check Latest Grackle Nightly
+### 6. Check Latest Grackle Nightly
 
 ```bash
 TOKEN=$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=repository:nick-pape/grackle:pull" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 curl -fsSL -H "Authorization: Bearer $TOKEN" "https://ghcr.io/v2/nick-pape/grackle/tags/list" | python3 -c "import sys,json; tags=json.load(sys.stdin)['tags']; nightlies=[t for t in tags if t.startswith('nightly-')]; print(sorted(nightlies)[-1])"
 ```
 
-Compare against the current image tag in `grackle.nix`. If already at the latest nightly, skip to step 7.
+Compare against the current image tag in `grackle.nix`. If already at the latest nightly, skip to step 8.
 
-### 6. Update Grackle
+### 7. Update Grackle
 
 Edit `grackle.nix` — update the image tag in the `image` field (e.g., `nightly-20260412` → `nightly-20260415`).
 
-### 7. Update Flake Inputs
+### 8. Update Flake Inputs
 
 ```bash
 cd ~/dotfiles && nix flake update
 ```
 
-### 8. Rebuild System
+### 9. Rebuild System
 
 ```bash
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
@@ -69,7 +77,7 @@ sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 
 This is also the verification step — if the build succeeds, everything is working.
 
-### 9. Commit
+### 10. Commit
 
 Stage all changed files and commit with a summary message. Format:
 
@@ -94,4 +102,4 @@ weekly update: grackle nightly-YYYYMMDD → nightly-YYYYMMDD, flake inputs
 - If claude-code is already at the latest version, skip straight to the plannotator check — don't treat it as an error.
 - If plannotator is already at the latest version, skip straight to the Grackle check — don't treat it as an error.
 - If Grackle is already at the latest nightly, skip straight to flake update — don't treat it as an error.
-- The `nixos-rebuild switch` in step 8 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill.
+- The `nixos-rebuild switch` in step 9 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill.
