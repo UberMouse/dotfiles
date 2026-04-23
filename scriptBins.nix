@@ -90,14 +90,53 @@
       # Strip scope from package name: @kx/data-manager -> data-manager
       SHORT_NAME="''${PACKAGE##*/}"
 
-      LOG_PATH="$RUSH_ROOT/$PROJECT_FOLDER/rush-logs/$SHORT_NAME._phase_$PHASE.log"
+      LOGS_DIR="$RUSH_ROOT/$PROJECT_FOLDER/rush-logs"
+      LOG_PATH="$LOGS_DIR/$SHORT_NAME._phase_$PHASE.log"
 
-      if [ ! -f "$LOG_PATH" ]; then
+      if [ -f "$LOG_PATH" ]; then
+        exec ${pkgs.bat}/bin/bat "$LOG_PATH"
+      fi
+
+      # Sharded: collect shard logs sorted numerically by shard index.
+      SHARD_PREFIX="$SHORT_NAME._phase_''${PHASE}_shard_"
+      mapfile -t SHARDS < <(
+        ${pkgs.coreutils}/bin/ls -1 "$LOGS_DIR" 2>/dev/null \
+          | ${pkgs.gnugrep}/bin/grep -E "^''${SHARD_PREFIX}[0-9]+\.log$" \
+          | ${pkgs.gawk}/bin/awk -v p="$SHARD_PREFIX" '{ n=$0; sub("^"p,"",n); sub("\\.log$","",n); print n"\t"$0 }' \
+          | ${pkgs.coreutils}/bin/sort -n -k1,1 \
+          | ${pkgs.coreutils}/bin/cut -f2
+      )
+
+      if [ ''${#SHARDS[@]} -eq 0 ]; then
         echo "Error: Log file not found: $LOG_PATH"
+        echo "       (and no shard logs matching ''${SHARD_PREFIX}<N>.log)"
         exit 1
       fi
 
-      ${pkgs.bat}/bin/bat "$LOG_PATH"
+      if [ ! -t 1 ]; then
+        for f in "''${SHARDS[@]}"; do
+          N="''${f#$SHARD_PREFIX}"
+          N="''${N%.log}"
+          echo "===== shard $N ====="
+          ${pkgs.coreutils}/bin/cat "$LOGS_DIR/$f"
+          echo
+        done
+        exit 0
+      fi
+
+      printf '%s\n' "''${SHARDS[@]}" \
+        | ${pkgs.fzf}/bin/fzf \
+            --preview "${pkgs.bat}/bin/bat --color=always --style=plain \"$LOGS_DIR\"/{}" \
+            --preview-window=right:85% \
+            --prompt="shard> " \
+            --disabled \
+            --bind 'ctrl-g:preview-bottom' \
+            --bind 'g:preview-top' \
+            --bind 'G:preview-bottom' \
+            --bind 'ctrl-d:preview-half-page-down' \
+            --bind 'ctrl-u:preview-half-page-up' \
+            --bind 'ctrl-f:preview-page-down' \
+            --bind 'ctrl-b:preview-page-up'
     '')
     (pkgs.writeScriptBin "rush" ''
       #!/usr/bin/env bash
