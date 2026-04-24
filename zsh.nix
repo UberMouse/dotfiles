@@ -37,6 +37,7 @@
       rf = "rm common/temp/rush*lock";
       test-storybook = "rush test-storybook --include-phase-deps -o";
       yolo-claude = "claude --allow-dangerously-skip-permissions";
+      package-scripts = "cat package.json | jq .scripts";
     };
 
     oh-my-zsh = {
