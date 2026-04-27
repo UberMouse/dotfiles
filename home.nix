@@ -196,6 +196,11 @@
     extraConfig = ''
       bind h split-window -v -c "#{pane_current_path}"
       bind v split-window -h -c "#{pane_current_path}"
+
+      # Send the same command to all panes/windows/sessions
+      bind E command-prompt -p "Command:" \
+             "run \"tmux list-panes -a -F '##{session_name}:##{window_index}.##{pane_index}' \
+                    | xargs -I PANE tmux send-keys -t PANE '%1' Enter\""
     '';
   };
 
