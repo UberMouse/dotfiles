@@ -93,10 +93,6 @@ weekly update: claude-code X.Y.Z → A.B.C, flake inputs
 weekly update: grackle nightly-YYYYMMDD → nightly-YYYYMMDD, flake inputs
 ```
 
-## Temporary Workarounds
-
-- **Cursor hash overlay (added 2026-04-13):** A `cursor-hash-fix` overlay was added to `flake.nix` to work around an upstream AppImage hash mismatch in nixpkgs-unstable-small for `code-cursor` 3.0.16. On the next weekly update, check if the build succeeds without it — if so, remove the `cursor-hash-fix` overlay and the reference to it in the `unstable-small-pkgs` overlays list.
-
 ## Key Notes
 
 - If claude-code is already at the latest version, skip straight to the plannotator check — don't treat it as an error.

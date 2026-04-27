@@ -6,7 +6,7 @@
 
   virtualisation.oci-containers.backend = "docker";
   virtualisation.oci-containers.containers.grackle = {
-    image = "ghcr.io/nick-pape/grackle:nightly-20260419";
+    image = "ghcr.io/nick-pape/grackle:nightly-20260427";
     autoStart = true;
     ports = [
       "3000:3000"   # Web UI
