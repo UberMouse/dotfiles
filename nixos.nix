@@ -159,7 +159,6 @@
   
   services.tailscale.enable = true;
   services.kolide-launcher.enable = true;
-  services.qdrant.enable = true;
 
   # Kill memory-hungry dev processes before system grinds to a halt
   services.earlyoom = {

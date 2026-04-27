@@ -112,15 +112,11 @@
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
 
-  xdg.configFile."monodex/config.json".text = builtins.toJSON {
-    qdrant = {
-      url = "http://localhost:6333";
-      collection = "monodex";
-    };
+  home.file.".monodex/config.json".text = builtins.toJSON {
     catalogs = {
       kawaka = {
         type = "monorepo";
-        path = "~/code/kawaka";
+        path = "/home/taylorl/code/kawaka";
       };
     };
   };

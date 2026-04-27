@@ -4,31 +4,33 @@
   fetchFromGitHub,
   pkg-config,
   cmake,
+  protobuf,
   openssl,
   onnxruntime,
 }:
 
 rustPlatform.buildRustPackage rec {
   pname = "monodex";
-  version = "0.1.0-unstable-2026-04-10";
+  version = "0.1.0-unstable-2026-04-26";
 
   src = fetchFromGitHub {
     owner = "microsoft";
     repo = "monodex";
-    rev = "8ec71b16328639332bacdf70b699dbaf8d02a382";
-    hash = "sha256-TSFmRMsHKbPoYmAWXCBJ4jU0fRztbP6TV5Y+jm9CAVM=";
+    rev = "66bc38818cace6fb9a809f74486570b4a6329757";
+    hash = "sha256-FHDOMoLkSRgE237rbDWN5g47mUUjrjBK5+fLTkpe5YQ=";
   };
 
   cargoPatches = [
     ./disable-download-binaries.patch
   ];
 
-  cargoHash = "sha256-SoqWIKyDYBw/KV3tQ1jgahKuqZf5PtzK1k5r4V6rAUo=";
+  cargoHash = "sha256-AEoMEKeIKJnHNV6J6VKfyrxYk8y5Hdp4sxyUhc4lF4U=";
 
   nativeBuildInputs = [
     pkg-config
     cmake
     rustPlatform.bindgenHook
+    protobuf
   ];
 
   buildInputs = [
@@ -43,7 +45,6 @@ rustPlatform.buildRustPackage rec {
     patchelf --add-rpath ${onnxruntime}/lib $out/bin/monodex
   '';
 
-  # Tests require qdrant running
   doCheck = false;
 
   meta = with lib; {
