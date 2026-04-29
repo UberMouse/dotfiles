@@ -7,7 +7,6 @@
 {
   imports = [ # Include the results of the hardware scan.
     ./work-vm.nix
-    ./grackle.nix
   ];
 
   # Bootloader.

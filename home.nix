@@ -102,7 +102,6 @@
     unstable-pkgs.playwright-test
     unstable-pkgs.playwright-cli
     unstable-pkgs.plannotator
-    unstable-pkgs.grackle
     unstable-pkgs.monodex
     unstable-pkgs.ccstatusline
 
