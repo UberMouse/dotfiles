@@ -104,6 +104,7 @@
     unstable-pkgs.plannotator
     unstable-pkgs.grackle
     unstable-pkgs.monodex
+    unstable-pkgs.ccstatusline
 
     unstable-small-pkgs.code-cursor-fhs
     unstable-small-pkgs.claude-code
@@ -118,6 +119,10 @@
         type = "monorepo";
         path = "/home/taylorl/code/kawaka";
       };
+    };
+    embeddingModel = {
+      modelInstances = 2;
+      threadsPerInstance = 2;
     };
   };
 

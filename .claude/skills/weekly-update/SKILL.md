@@ -1,11 +1,11 @@
 ---
 name: weekly-update
-description: Use when performing the weekly system update - updating claude-code, plannotator, grackle, nix flake inputs, and rebuilding the NixOS system
+description: Use when performing the weekly system update - updating claude-code, plannotator, grackle, ccstatusline, nix flake inputs, and rebuilding the NixOS system
 ---
 
 # Weekly Update
 
-Orchestrates the recurring weekly update: claude-code package, plannotator package, grackle container image, flake inputs, and system rebuild.
+Orchestrates the recurring weekly update: claude-code package, plannotator package, grackle container image, ccstatusline package, flake inputs, and system rebuild.
 
 ## Process
 
@@ -63,13 +63,34 @@ Compare against the current image tag in `grackle.nix`. If already at the latest
 
 Edit `grackle.nix` — update the image tag in the `image` field (e.g., `nightly-20260412` → `nightly-20260415`).
 
-### 8. Update Flake Inputs
+### 8. Check Latest ccstatusline Version
+
+```bash
+npm view ccstatusline version
+```
+
+Compare against the current version in `packages/ccstatusline/package.nix`. If already at the latest version, skip to step 10.
+
+### 9. Update ccstatusline
+
+Get the new tarball hash:
+
+```bash
+nix-prefetch-url --unpack "https://registry.npmjs.org/ccstatusline/-/ccstatusline-${VERSION}.tgz"
+nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
+```
+
+Edit `packages/ccstatusline/package.nix`:
+- `version` → new version
+- `src.hash` → SRI hash from above
+
+### 10. Update Flake Inputs
 
 ```bash
 cd ~/dotfiles && nix flake update
 ```
 
-### 9. Rebuild System
+### 11. Rebuild System
 
 ```bash
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
@@ -77,12 +98,12 @@ sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 
 This is also the verification step — if the build succeeds, everything is working.
 
-### 10. Commit
+### 12. Commit
 
 Stage all changed files and commit with a summary message. Format:
 
 ```
-weekly update: claude-code X.Y.Z → A.B.C, plannotator X.Y.Z → A.B.C, grackle nightly-YYYYMMDD → nightly-YYYYMMDD, flake inputs
+weekly update: claude-code X.Y.Z → A.B.C, plannotator X.Y.Z → A.B.C, grackle nightly-YYYYMMDD → nightly-YYYYMMDD, ccstatusline X.Y.Z → A.B.C, flake inputs
 ```
 
 Omit any component that was already current:
@@ -91,11 +112,13 @@ Omit any component that was already current:
 weekly update: flake inputs
 weekly update: claude-code X.Y.Z → A.B.C, flake inputs
 weekly update: grackle nightly-YYYYMMDD → nightly-YYYYMMDD, flake inputs
+weekly update: ccstatusline X.Y.Z → A.B.C, flake inputs
 ```
 
 ## Key Notes
 
 - If claude-code is already at the latest version, skip straight to the plannotator check — don't treat it as an error.
 - If plannotator is already at the latest version, skip straight to the Grackle check — don't treat it as an error.
-- If Grackle is already at the latest nightly, skip straight to flake update — don't treat it as an error.
-- The `nixos-rebuild switch` in step 9 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill.
+- If Grackle is already at the latest nightly, skip straight to the ccstatusline check — don't treat it as an error.
+- If ccstatusline is already at the latest version, skip straight to flake update — don't treat it as an error.
+- The `nixos-rebuild switch` in step 11 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill.
