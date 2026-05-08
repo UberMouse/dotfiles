@@ -284,13 +284,9 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
       const registry = await ensureRegistry(state, ctx.cwd);
       const runtime = ensureRuntime(state, ctx.cwd, registry);
       const current = runtime.current();
-      if (!current) {
-        return { content: [{ type: "text", text: "No active Changeflow workflow." }], details: {}, isError: true };
-      }
-      return {
-        content: [{ type: "text", text: `Workflow: ${current.metadata.id}\nState: ${current.metadata.state}\nArtifacts: ${current.metadata.artifactsDir}` }],
-        details: { metadata: current.metadata },
-      };
+      const pendingMainAgentTask = runtime.pendingMainAgentTask();
+      const details = { metadata: current?.metadata, pendingMainAgentTask, editPolicy: runtime.currentEditPolicy() };
+      return { content: [{ type: "text", text: current ? JSON.stringify(details, null, 2) : "No active Changeflow workflow." }], details };
     },
   });
 
@@ -358,18 +354,13 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
       const runtime = ensureRuntime(state, ctx.cwd, registry);
-      const current = runtime.current();
-      if (!current) {
-        return { content: [{ type: "text", text: "No active Changeflow workflow." }], details: {}, isError: true };
+      try {
+        runtime.completeMainAgentTask(params.task_id, params.output);
+        return { content: [{ type: "text", text: `Completed main-agent task ${params.task_id}.` }], details: { taskId: params.task_id } };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { content: [{ type: "text", text: message }], details: { taskId: params.task_id }, isError: true };
       }
-
-      // The actual main task completion would be handled by the actor adapters
-      // For now, we provide a placeholder implementation
-      return {
-        content: [{ type: "text", text: `Main task completion not yet implemented. Task ID: ${params.task_id}` }],
-        details: { taskId: params.task_id, output: params.output },
-        isError: true,
-      };
     },
   });
 

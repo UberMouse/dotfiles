@@ -48,6 +48,14 @@ export class ChangeflowRuntime {
     return this.active.definition.statePolicies?.[this.active.metadata.state]?.editPolicy ?? "artifactsOnly";
   }
 
+  completeMainAgentTask(taskId: string, output: unknown): void {
+    this.actorAdapters.completeMainAgentTask(taskId, output);
+  }
+
+  pendingMainAgentTask() {
+    return this.actorAdapters.pendingMainAgentTask();
+  }
+
   async start(input: StartWorkflowInput): Promise<WorkflowRuntimeSnapshot> {
     const definition = this.requireWorkflow(input.workflowDefinitionId);
     const id = `${Date.now()}-${this.slugify(input.description)}`;
