@@ -1,12 +1,14 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createActor, type Actor, type AnyActorLogic, type Snapshot } from "xstate";
+import { createActorAdapters, type ActorAdapterDependencies, type ActorAdapters } from "./actors.js";
 import { appendEvent, createWorkflowPaths, readEvents, readSnapshot, readWorkflowMetadata, writeSnapshot, writeWorkflowMetadata, type WorkflowPaths } from "./storage.js";
 import { parseWorkflowEvent, type TrustedWorkflowDefinition, type WorkflowMetadata, type WorkflowRuntimeSnapshot } from "./types.js";
 
 export type ChangeflowRuntimeOptions = {
   cwd: string;
   workflows: readonly TrustedWorkflowDefinition[];
+  actorAdapters?: ActorAdapterDependencies;
   now?: () => string;
 };
 
@@ -23,12 +25,14 @@ export class ChangeflowRuntime {
   private readonly workflows = new Map<string, TrustedWorkflowDefinition>();
   private readonly cwd: string;
   private readonly now: () => string;
+  private readonly actorAdapters: ActorAdapters;
   private active?: { metadata: WorkflowMetadata; paths: WorkflowPaths; definition: TrustedWorkflowDefinition; actor: Actor<AnyActorLogic> };
   private eventSeq = 0;
 
   constructor(options: ChangeflowRuntimeOptions) {
     this.cwd = options.cwd;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.actorAdapters = createActorAdapters(options.actorAdapters ?? { runChildAgent: async () => { throw new Error("No child-agent adapter configured."); } });
     for (const workflow of options.workflows) this.workflows.set(workflow.id, workflow);
   }
 
@@ -43,7 +47,7 @@ export class ChangeflowRuntime {
     const paths = createWorkflowPaths(join(this.cwd, ".pi", "changeflow"), id);
     await mkdir(paths.root, { recursive: true });
 
-    const logic = definition.createActorLogic({ runtime: this.noopCapabilities(), actors: this.noopActorFactories(), actions: {} });
+    const logic = definition.createActorLogic({ runtime: this.capabilities(paths), actors: this.actorAdapters, actions: {} });
     const actor = createActor(logic);
     actor.start();
 
@@ -61,6 +65,9 @@ export class ChangeflowRuntime {
     };
 
     this.active = { metadata, paths, definition, actor };
+    actor.subscribe((snapshot) => {
+      void this.persistObservedSnapshot(snapshot.value, actor.getPersistedSnapshot());
+    });
     await writeWorkflowMetadata(paths, metadata);
     await writeSnapshot(paths, 1, actor.getPersistedSnapshot());
     await this.append("out", "workflow.started", { event: { type: "workflow.started", description: input.description }, snapshotSeq: 1 });
@@ -74,10 +81,13 @@ export class ChangeflowRuntime {
     const events = await readEvents(paths);
     this.eventSeq = events.reduce((max, e) => Math.max(max, e.seq), 0);
     const snapshot = await readSnapshot(paths, metadata.latestSnapshotSeq) as Snapshot<unknown>;
-    const logic = definition.createActorLogic({ runtime: this.noopCapabilities(), actors: this.noopActorFactories(), actions: {} });
+    const logic = definition.createActorLogic({ runtime: this.capabilities(paths), actors: this.actorAdapters, actions: {} });
     const actor = createActor(logic, { snapshot });
     actor.start();
     this.active = { metadata, paths, definition, actor };
+    actor.subscribe((snapshot) => {
+      void this.persistObservedSnapshot(snapshot.value, actor.getPersistedSnapshot());
+    });
     return this.currentOrThrow();
   }
 
@@ -143,23 +153,45 @@ export class ChangeflowRuntime {
     return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "change";
   }
 
-  private noopCapabilities() {
+  private capabilities(paths: WorkflowPaths) {
     return {
-      log: () => undefined,
-      writeArtifact: () => undefined,
-      setStatus: () => undefined,
-      emitToPi: () => undefined,
-      queueMainAgentMessage: () => undefined,
+      log: (message: string, details?: unknown) => {
+        void this.append("effect", "runtime.log", { event: { message, details } });
+      },
+      writeArtifact: (path: string, content: string) => {
+        const fullPath = join(paths.artifactsDir, path);
+        mkdir(dirname(fullPath), { recursive: true })
+          .then(() => writeFile(fullPath, content, "utf-8"))
+          .then(() => this.append("effect", "artifact.write", { event: { path } }))
+          .catch((error) => {
+            void this.append("effect", "artifact.write.failed", {
+              event: { path },
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      },
+      setStatus: (label: string) => {
+        void this.append("effect", "status.set", { event: { label } });
+      },
+      emitToPi: (message: string, level: "info" | "warning" | "error" = "info") => {
+        void this.append("effect", "pi.emit", { event: { message, level } });
+      },
+      queueMainAgentMessage: (message: string) => {
+        void this.append("effect", "mainAgent.queueMessage", { event: { message } });
+      },
     };
   }
 
-  private noopActorFactories() {
-    return {
-      childAgent: () => Promise.resolve(undefined),
-      mainAgent: () => Promise.resolve(undefined),
-      plannotatorReview: () => Promise.resolve(undefined),
-      askUser: () => Promise.resolve(undefined),
-      runScript: () => Promise.resolve(undefined),
-    };
+  private async persistObservedSnapshot(stateValue: unknown, snapshot: Snapshot<unknown>): Promise<void> {
+    if (!this.active) return;
+    const state = this.snapshotState(stateValue);
+    if (state === this.active.metadata.state) return;
+    const snapshotSeq = this.active.metadata.latestSnapshotSeq + 1;
+    this.active.metadata.state = state;
+    this.active.metadata.updatedAt = this.now();
+    this.active.metadata.latestSnapshotSeq = snapshotSeq;
+    await writeWorkflowMetadata(this.active.paths, this.active.metadata);
+    await writeSnapshot(this.active.paths, snapshotSeq, snapshot);
+    await this.append("out", "snapshot.observed", { snapshotSeq, state });
   }
 }
