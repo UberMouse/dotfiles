@@ -1,4 +1,5 @@
-{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs, unstable-small-pkgs, ... }:
+{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs
+, unstable-small-pkgs, ... }:
 
 {
   imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins.nix ];
@@ -26,91 +27,107 @@
     TERMINAL = "alacritty";
   };
 
-  home.packages = with pkgs; [
-    # System
-    git
-    curl
-    htop
-    i3
-    gcc
-    gnumake
-    perl
-    openvpn
-    fzf
-    keychain
-    xclip
-    maim
-    libuuid
-    rename
-    fd
-    ripgrep
-    bat
-    inotify-tools
-    unixtools.ifconfig
-    glibc
-    libuuid
-    tree
-    meslo-lgs-nf
-    lsof
-    pstree
-    sysstat
-    rinetd
-    gnuplot
-    nautilus
-    dunst
-    libnotify
+  home.packages = with pkgs;
+    [
+      # System
+      git
+      curl
+      htop
+      i3
+      gcc
+      gnumake
+      perl
+      openvpn
+      fzf
+      keychain
+      xclip
+      maim
+      libuuid
+      rename
+      fd
+      ripgrep
+      bat
+      inotify-tools
+      unixtools.ifconfig
+      glibc
+      libuuid
+      tree
+      meslo-lgs-nf
+      lsof
+      pstree
+      sysstat
+      rinetd
+      gnuplot
+      nautilus
+      dunst
+      libnotify
 
-    # Dev
-    nodejs_22
+      # Dev
+      nodejs_22
 
-    nodePackages."http-server"
-    nodePackages.pnpm
-    shellcheck
-    nix-prefetch-git
-    git-machete
-    git-absorb
-    python313
-    pdal
-    python313Packages.pip
-    wasm-pack
-    rustup
-    jq
-    amazon-ecr-credential-helper
-    awscli2
-    yarn
-    delta
-    fx
-    axel
-    sysbench
-    direnv
-    nixfmt-classic
-    zsh-powerlevel10k
-    nixd
-    (callPackage ./kart.nix {})
-    uv
-    ngrok
+      nodePackages."http-server"
+      nodePackages.pnpm
+      shellcheck
+      nix-prefetch-git
+      git-machete
+      git-absorb
+      python313
+      pdal
+      python313Packages.pip
+      wasm-pack
+      rustup
+      jq
+      amazon-ecr-credential-helper
+      awscli2
+      yarn
+      delta
+      fx
+      axel
+      sysbench
+      direnv
+      nixfmt-classic
+      zsh-powerlevel10k
+      nixd
+      (callPackage ./kart.nix { })
+      uv
+      ngrok
 
-    # Apps
-    slack
-    vivaldi
-    qgis
-    firefox
-    google-chrome
-    qdirstat
-  ] ++ [
-    unstable-pkgs.gh
-    unstable-pkgs.playwright-test
-    unstable-pkgs.playwright-cli
-    unstable-pkgs.plannotator
-    unstable-pkgs.monodex
-    unstable-pkgs.ccstatusline
+      # Apps
+      slack
+      vivaldi
+      qgis
+      firefox
+      google-chrome
+      qdirstat
+    ] ++ [
+      unstable-pkgs.gh
+      unstable-pkgs.playwright-test
+      unstable-pkgs.playwright-cli
+      unstable-pkgs.plannotator
+      unstable-pkgs.monodex
+      unstable-pkgs.ccstatusline
+      unstable-pkgs.pi-coding-agent
 
-    unstable-small-pkgs.code-cursor-fhs
-    unstable-small-pkgs.claude-code
-    unstable-small-pkgs.codex
-  ];
+      unstable-small-pkgs.code-cursor-fhs
+      unstable-small-pkgs.claude-code
+      unstable-small-pkgs.codex
+    ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
+
+  home.file.".pi/agent/extensions".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/dotfiles/pi/extensions";
+  home.file.".pi/agent/skills".source = ./pi/skills;
+  home.file.".pi/agent/prompts".source = ./pi/prompts;
+  home.file.".pi/agent/themes".source = ./pi/themes;
+  home.file.".pi/agent/settings.json".text = builtins.toJSON {
+    defaultProvider = "openai-codex";
+    defaultModel = "gpt-5.5";
+    defaultThinkingLevel = "medium";
+    packages = [
+      "npm:pi-web-access@0.10.6"
+      "npm:@plannotator/pi-extension@0.19.4"
+    ];
+  };
 
   home.file.".monodex/config.json".text = builtins.toJSON {
     catalogs = {
@@ -158,7 +175,8 @@
     settings = {
       user.name = "Taylor Lodge";
       user.email = "taylor.lodge@koordinates.com";
-      user.signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
+      user.signingKey =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
       pull.rebase = "true";
       merge.conflictstyle = "zdiff3";
       rebase.autosquash = "true";
@@ -167,7 +185,8 @@
       diff.algorithm = "histogram";
       init.defaultBranch = "main";
       gpg.format = "ssh";
-      "gpg \"ssh\"".program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
+      "gpg \"ssh\"".program =
+        "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
       commit.gpgsign = true;
     };
   };
@@ -194,6 +213,8 @@
     plugins = with pkgs.tmuxPlugins; [ yank resurrect ];
 
     extraConfig = ''
+      set -g extended-keys on
+
       bind h split-window -v -c "#{pane_current_path}"
       bind v split-window -h -c "#{pane_current_path}"
 
@@ -205,12 +226,12 @@
   };
 
   programs.vscode = {
-    enable = false; 
+    enable = false;
     package = unstable-pkgs.vscode-fhs;
   };
 
   programs.bash = { enable = true; };
-  
+
   programs.direnv = {
     enable = true;
     enableZshIntegration = true;
@@ -226,14 +247,11 @@
     };
   };
 
-
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;
     matchBlocks."*" = {
-      extraOptions = {
-        IdentityAgent = "~/.1password/agent.sock";
-      };
+      extraOptions = { IdentityAgent = "~/.1password/agent.sock"; };
     };
   };
 

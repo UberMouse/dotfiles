@@ -34,6 +34,7 @@
         plannotator = final.callPackage ./packages/plannotator/package.nix {};
         monodex = final.callPackage ./packages/monodex/package.nix {};
         ccstatusline = final.callPackage ./packages/ccstatusline/package.nix {};
+        pi-coding-agent = final.callPackage ./packages/pi-coding-agent/package.nix {};
       };
       pkgs = import nixpkgs {
         inherit system;

@@ -1,0 +1,142 @@
+{
+  "id": "1777612596689-lets-migrate-as-much-contextual-workflow-informa",
+  "title": "lets-migrate-as-much-contextual-workflow-informa",
+  "description": "lets migrate as much contextual workflow information out of the code and into defined meta properties on the workflow, ie things like \"this state can be exited automatically\" or \"this state requires human approval\", and they can be multiple things like \"this state opens plannotator at the end\" so you can combine to make \"human approval with plan notator\". With the meta params accepting arguments so you can specify ie that plannotator is launched to review a specific plan, or in diff mode etc",
+  "cwd": "/home/taylorl/dotfiles",
+  "state": "user_validation",
+  "createdAt": "2026-05-01T05:16:36.689Z",
+  "updatedAt": "2026-05-01T05:29:14.618Z",
+  "artifactsDir": "/home/taylorl/dotfiles/.pi/changeflow/1777612596689-lets-migrate-as-much-contextual-workflow-informa",
+  "machineDefinition": {
+    "id": "changeflow.mvp",
+    "initial": "idle",
+    "states": {
+      "idle": {
+        "on": {
+          "START": "research"
+        }
+      },
+      "research": {
+        "on": {
+          "RESEARCH_COMPLETE": "high_level_planning"
+        }
+      },
+      "high_level_planning": {
+        "on": {
+          "HIGH_LEVEL_PLAN_SUBMITTED": "high_level_user_review"
+        }
+      },
+      "high_level_agent_review": {
+        "on": {
+          "AGENT_APPROVED": "high_level_user_review",
+          "AGENT_REJECTED": "high_level_revision"
+        }
+      },
+      "high_level_user_review": {
+        "on": {
+          "USER_APPROVED": "detailed_planning",
+          "USER_REJECTED": "high_level_revision"
+        }
+      },
+      "high_level_revision": {
+        "on": {
+          "HIGH_LEVEL_PLAN_SUBMITTED": "high_level_user_review"
+        }
+      },
+      "detailed_planning": {
+        "on": {
+          "DETAILED_PLAN_SUBMITTED": "detailed_user_review"
+        }
+      },
+      "detailed_agent_review": {
+        "on": {
+          "AGENT_APPROVED": "detailed_user_review",
+          "AGENT_REJECTED": "detailed_planning"
+        }
+      },
+      "detailed_user_review": {
+        "on": {
+          "USER_APPROVED": "execution_ordering",
+          "USER_REJECTED": "detailed_planning"
+        }
+      },
+      "execution_ordering": {
+        "on": {
+          "ORDER_DEFINED": "executing"
+        }
+      },
+      "executing": {
+        "on": {
+          "EXECUTION_COMPLETE": "qa"
+        }
+      },
+      "qa": {
+        "on": {
+          "QA_COMPLETE": "user_validation"
+        }
+      },
+      "user_validation": {
+        "on": {
+          "USER_APPROVED": "done",
+          "USER_REJECTED": "qa"
+        }
+      },
+      "done": {}
+    }
+  },
+  "machineSnapshot": {
+    "status": "active",
+    "value": "user_validation",
+    "historyValue": {},
+    "context": {},
+    "children": {}
+  },
+  "context": {
+    "researchNotes": [
+      "Changeflow implementation is concentrated in pi/extensions/changeflow/index.ts with README.md documenting the lifecycle and Plannotator event API; npm run check currently passes from pi/extensions/changeflow.",
+      "Current contextual workflow behavior is hard-coded in multiple helper functions: shouldAutoContinue enumerates agent-owned states; phasePrompt switch embeds per-state instructions and human-wait messages; tool_call allows source edits only in executing/qa; reviewStateForKind/reviewKindForState/submittedEventForKind map review kinds to states/events; submit tools have hard-coded allowed states.",
+      "The XState machineDefinition currently stores only transitions. The persisted Workflow includes machineDefinition and machineSnapshot, so adding serializable state-level meta should flow into workflow.json for new workflows and can be read from the in-memory machine config/active state.",
+      "XState v5 supports state node meta and tags. Local type declarations show StateNodeConfig has meta?: TMeta and tags?: SingleOrArray<TTag>; MachineSnapshot exposes tags, hasTag(tag), and getMeta(): Record<StateId, TMeta | undefined>. This can be used instead of separate state-name switch/sets.",
+      "Plannotator integration is already abstracted behind requestReviewStatus(), requestPlanReview(), and REVIEW_RESULT_CHANNEL handling. requestPlanReview currently emits action: plan-review with payload { planContent, planFilePath, origin: changeflow } and creates ReviewRecord entries; README notes future code-review action for QA/code validation.",
+      "A useful meta shape would be composable/argument-bearing, e.g. meta.changeflow = { autoContinue: true, editPolicy: 'artifactsOnly'|'sourceAllowed', prompt: { kind: 'research'|'planning'|... }, reviewGate: { actor: 'human', kind: 'high_level_plan'|'detailed_plan'|'code' }, plannotator: { action: 'plan-review'|'code-review', artifact: 'highLevelPlanPath'|'detailedPlanPath', mode?: 'diff' } }. Keeping it under a namespace avoids clashing with XState's own meta semantics.",
+      "Potential refactor path: create helper getStateMeta(stateOrSnapshot) and small predicates/actions (stateAllowsSourceEdits, shouldAutoContinue, reviewKindForState, reviewStateForKind, promptKindForState) that read meta first. Then migrate existing hard-coded logic to consume meta without changing behavior.",
+      "Existing workflows persist an older machineDefinition without meta. The code should tolerate missing meta and either fall back to the current canonical machineDefinition or use defaults, otherwise active/persisted workflows may lose behavior after the refactor.",
+      "Validation available: cd pi/extensions/changeflow && npm run check. README contains manual Plannotator verification steps that should be updated after behavior moves to meta.",
+      "Current state behavior mapping to preserve: auto-continue states are research, high_level_planning, high_level_revision, detailed_planning, execution_ordering, executing, qa. Source edits allowed only executing and qa. Human/Plannotator review gates are high_level_user_review=>high_level_plan and detailed_user_review=>detailed_plan. Plan submission transitions are high_level_plan=>HIGH_LEVEL_PLAN_SUBMITTED and detailed_plan=>DETAILED_PLAN_SUBMITTED."
+    ],
+    "questions": [],
+    "decisions": [
+      "Research complete: located hard-coded workflow context in Changeflow index.ts, confirmed XState meta/tags support, identified Plannotator integration points and backward-compatibility considerations.",
+      "Execution should proceed sequentially: first add metadata types and annotate the machine, then add metadata helpers, refactor behavior consumers, update docs, and finally run validation. These steps are tightly coupled in a single file and should be implemented in order.",
+      "Implemented metadata-driven Changeflow behavior: added typed state meta, annotated machineDefinition, refactored auto-continuation/edit policies/review mappings/submission states/prompt selection/Plannotator request arguments to read metadata, updated README, and validated with npm run check.",
+      "QA verified: TypeScript passes, no remaining hard-coded state-name checks for metadata-driven behavior, README updated with State metadata documentation, machineDefinition will be persisted with metadata on next workflow save."
+    ],
+    "reviews": [
+      {
+        "id": "c87fcab6-5237-4a97-a94e-4b7db95e0bd3",
+        "kind": "high_level_plan",
+        "createdAt": "2026-05-01T05:19:06.083Z",
+        "approved": false,
+        "feedback": "# Plan Feedback\n\nI've reviewed this plan and have 1 piece of feedback:\n\n## 1. (line 45) Feedback on: \"Optionally fall back to legacy mappings during migration for s\"\n> no legacy behaviour matters\n\n---\n",
+        "completedAt": "2026-05-01T05:22:18.604Z"
+      },
+      {
+        "id": "a7ee75b4-7ace-4028-9668-37d24f88e34e",
+        "kind": "high_level_plan",
+        "createdAt": "2026-05-01T05:22:30.234Z",
+        "approved": true,
+        "completedAt": "2026-05-01T05:22:34.858Z"
+      },
+      {
+        "id": "1eaec8c9-6487-4c27-ac02-ccc5a1e33a2b",
+        "kind": "detailed_plan",
+        "createdAt": "2026-05-01T05:22:57.748Z",
+        "approved": true,
+        "completedAt": "2026-05-01T05:23:42.453Z"
+      }
+    ],
+    "highLevelPlanPath": "/home/taylorl/dotfiles/.pi/changeflow/1777612596689-lets-migrate-as-much-contextual-workflow-informa/high-level-plan.md",
+    "latestFeedback": "# Plan Feedback\n\nI've reviewed this plan and have 1 piece of feedback:\n\n## 1. (line 45) Feedback on: \"Optionally fall back to legacy mappings during migration for s\"\n> no legacy behaviour matters\n\n---\n",
+    "detailedPlanPath": "/home/taylorl/dotfiles/.pi/changeflow/1777612596689-lets-migrate-as-much-contextual-workflow-informa/detailed-plan.md"
+  }
+}

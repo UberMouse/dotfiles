@@ -1,0 +1,133 @@
+{
+  "id": "1777610922666-migrate-the-state-machine-from-an-adhoc-approach",
+  "title": "migrate-the-state-machine-from-an-adhoc-approach",
+  "description": "migrate the state machine from an adhoc approach to xstate",
+  "cwd": "/home/taylorl/dotfiles",
+  "state": "user_validation",
+  "createdAt": "2026-05-01T04:48:42.666Z",
+  "updatedAt": "2026-05-01T04:57:39.353Z",
+  "artifactsDir": "/home/taylorl/dotfiles/.pi/changeflow/1777610922666-migrate-the-state-machine-from-an-adhoc-approach",
+  "machineDefinition": {
+    "id": "changeflow.mvp",
+    "initial": "idle",
+    "states": {
+      "idle": {
+        "on": {
+          "START": "research"
+        }
+      },
+      "research": {
+        "on": {
+          "RESEARCH_COMPLETE": "high_level_planning"
+        }
+      },
+      "high_level_planning": {
+        "on": {
+          "HIGH_LEVEL_PLAN_SUBMITTED": "high_level_user_review"
+        }
+      },
+      "high_level_agent_review": {
+        "on": {
+          "AGENT_APPROVED": "high_level_user_review",
+          "AGENT_REJECTED": "high_level_revision"
+        }
+      },
+      "high_level_user_review": {
+        "on": {
+          "USER_APPROVED": "detailed_planning",
+          "USER_REJECTED": "high_level_revision"
+        }
+      },
+      "high_level_revision": {
+        "on": {
+          "HIGH_LEVEL_PLAN_SUBMITTED": "high_level_user_review"
+        }
+      },
+      "detailed_planning": {
+        "on": {
+          "DETAILED_PLAN_SUBMITTED": "detailed_user_review"
+        }
+      },
+      "detailed_agent_review": {
+        "on": {
+          "AGENT_APPROVED": "detailed_user_review",
+          "AGENT_REJECTED": "detailed_planning"
+        }
+      },
+      "detailed_user_review": {
+        "on": {
+          "USER_APPROVED": "execution_ordering",
+          "USER_REJECTED": "detailed_planning"
+        }
+      },
+      "execution_ordering": {
+        "on": {
+          "ORDER_DEFINED": "executing"
+        }
+      },
+      "executing": {
+        "on": {
+          "EXECUTION_COMPLETE": "qa"
+        }
+      },
+      "qa": {
+        "on": {
+          "QA_COMPLETE": "user_validation"
+        }
+      },
+      "user_validation": {
+        "on": {
+          "USER_APPROVED": "done",
+          "USER_REJECTED": "qa"
+        }
+      },
+      "done": {}
+    }
+  },
+  "machineSnapshot": {
+    "value": "user_validation",
+    "context": {
+      "workflowId": "1777610922666-migrate-the-state-machine-from-an-adhoc-approach"
+    }
+  },
+  "context": {
+    "researchNotes": [
+      "Relevant code is confined to `pi/extensions/changeflow/`. `index.ts` defines a serializable `machineDefinition`, derives an ad hoc `transitions` table from it, and transitions via `applyTransition(event, metadata)`. Persistence stores both `workflow.state` and `workflow.machineSnapshot`, but the snapshot is currently a simplified `{ value, context }` object rather than XState v5's persisted snapshot shape.",
+      "`package.json` already declares `xstate` and local `node_modules` exists. `npm ls xstate --depth=0` reports xstate@5.31.0 (package.json range is ^5.19.0). `npm run check` currently passes before any changes.",
+      "XState v5 API verified locally: `createMachine(machineDefinition)`, `createActor(machine, { snapshot })`, `actor.start()`, `actor.send({ type })`, `actor.getSnapshot().value`, and `actor.getPersistedSnapshot()` work. A persisted machine snapshot for this simple machine is shaped like `{ status: 'active', value: 'research', historyValue: {}, context: {}, children: {} }`; actor restoration via `{ snapshot: saved }` resumes at the saved state.",
+      "Behavior that must be preserved: `transition()` saves workflow JSON, appends a session entry, updates the status line; `transitionAndMaybeContinue()` queues the next agent-owned phase only after successful transitions; metadata feedback is stored in `context.latestFeedback`; Plannotator review results call the same transition path and mark review records completed; invalid events currently return `Event <EVENT> is not valid from state <STATE>.`.",
+      "README already documents the intended XState migration and sample code, but it says the ad hoc reducer exists so the extension can load without dependencies. That is no longer a blocker in this checkout because dependencies are installed and xstate import works. README's XState direction section should be updated after implementation.",
+      "Types to update carefully: `Workflow.machineSnapshot` is currently typed as `{ value: WorkflowState; context: Record<string, unknown> }`. XState's persisted snapshot type is exported as `Snapshot<unknown>` from `xstate`; it includes `status` and extra machine fields such as `value`, `historyValue`, `context`, `children`. Since `Snapshot<unknown>` doesn't expose `value` in its base union, code should read the current state from `actor.getSnapshot().value` and validate/cast it as `WorkflowState`.",
+      "Compatibility risk: persisted workflows created before the migration may have old simplified snapshots (`{ value, context }`) without `status`. XState `createActor(..., { snapshot: oldSnapshot })` expects a persisted XState snapshot and may not restore old snapshots safely. Migration should either detect old snapshots and ignore/recreate from `workflow.state`, or normalize them to XState persisted snapshots before starting the actor.",
+      "There are no test files in `pi/extensions/changeflow`; validation is currently TypeScript-only via `npm run check`/`npm run build` (both run `tsc --noEmit`). A small helper-level test harness is not present, so implementation QA should include at least `npm run check` plus manual/local Node validation of machine transition and snapshot restoration if possible.",
+      "The active workflow JSON itself currently has the legacy simplified `machineSnapshot` shape (`value: research`, `context.workflowId`). Migration needs to preserve/upgrade this active workflow when the next transition (`RESEARCH_COMPLETE`) occurs."
+    ],
+    "questions": [],
+    "decisions": [
+      "Research complete: identified `pi/extensions/changeflow/index.ts` as the migration target, verified xstate is installed and usable, documented current reducer/persistence behavior and compatibility risks.",
+      "User explicitly confirmed the revised high-level plan was approved.",
+      "User approved proceeding with the detailed implementation plan.",
+      "Execution order is sequential as specified in the detailed plan: update imports/types, instantiate machine, replace transition logic, initialize snapshots, update persistence, update docs, then validate.",
+      "Implemented XState-backed transition execution in `pi/extensions/changeflow/index.ts`, initialized new workflows with XState persisted snapshots, removed legacy reducer snapshot overwrites, updated README, and verified with `npm run check` plus an XState restore/transition smoke test.",
+      "QA passed: `npm run check` and `npm run build` both completed successfully in `pi/extensions/changeflow`; `git diff --check` found no whitespace errors; grep confirmed the ad hoc transitions table and legacy snapshot writes were removed; README now documents XState execution instead of a future reducer migration."
+    ],
+    "reviews": [
+      {
+        "id": "d7fc69a1-2a27-4971-a74b-cd1dfe3a5498",
+        "kind": "high_level_plan",
+        "createdAt": "2026-05-01T04:50:39.737Z",
+        "approved": false,
+        "feedback": "# Plan Feedback\n\nI've reviewed this plan and have 1 piece of feedback:\n\n## 1. (line 38) Feedback on: \"Detect legacy snapshots shaped like { value, context } without status.\"\n> don't care about legacy compatibility\n\n---\n",
+        "completedAt": "2026-05-01T04:53:09.931Z"
+      },
+      {
+        "id": "cd5c5c48-5061-4b50-8480-de3ba9190bb1",
+        "kind": "high_level_plan",
+        "createdAt": "2026-05-01T04:53:17.771Z"
+      }
+    ],
+    "highLevelPlanPath": "/home/taylorl/dotfiles/.pi/changeflow/1777610922666-migrate-the-state-machine-from-an-adhoc-approach/high-level-plan.md",
+    "latestFeedback": "# Plan Feedback\n\nI've reviewed this plan and have 1 piece of feedback:\n\n## 1. (line 38) Feedback on: \"Detect legacy snapshots shaped like { value, context } without status.\"\n> don't care about legacy compatibility\n\n---\n",
+    "detailedPlanPath": "/home/taylorl/dotfiles/.pi/changeflow/1777610922666-migrate-the-state-machine-from-an-adhoc-approach/detailed-plan.md"
+  }
+}

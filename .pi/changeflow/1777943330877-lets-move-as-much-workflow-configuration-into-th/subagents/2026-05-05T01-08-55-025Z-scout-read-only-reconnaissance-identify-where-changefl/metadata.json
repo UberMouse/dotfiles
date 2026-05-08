@@ -1,0 +1,37 @@
+{
+  "runId": "2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl",
+  "workflowId": "1777943330877-lets-move-as-much-workflow-configuration-into-th",
+  "role": "scout",
+  "phase": "research",
+  "reason": "Parallel focused research for architecture context",
+  "cwd": "/home/taylorl/dotfiles",
+  "tools": [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "bash"
+  ],
+  "model": "gpt-5.5",
+  "exitCode": 0,
+  "stopReason": "stop",
+  "stderr": "",
+  "usage": {
+    "input": 41421,
+    "output": 2648,
+    "cacheRead": 345600,
+    "cacheWrite": 0,
+    "cost": 0.459345,
+    "turns": 16,
+    "contextTokens": 38217
+  },
+  "artifacts": {
+    "dir": "/home/taylorl/dotfiles/.pi/changeflow/1777943330877-lets-move-as-much-workflow-configuration-into-th/subagents/2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl",
+    "input": "/home/taylorl/dotfiles/.pi/changeflow/1777943330877-lets-move-as-much-workflow-configuration-into-th/subagents/2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl/input.md",
+    "output": "/home/taylorl/dotfiles/.pi/changeflow/1777943330877-lets-move-as-much-workflow-configuration-into-th/subagents/2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl/output.md",
+    "metadata": "/home/taylorl/dotfiles/.pi/changeflow/1777943330877-lets-move-as-much-workflow-configuration-into-th/subagents/2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl/metadata.json",
+    "events": "/home/taylorl/dotfiles/.pi/changeflow/1777943330877-lets-move-as-much-workflow-configuration-into-th/subagents/2026-05-05T01-08-55-025Z-scout-read-only-reconnaissance-identify-where-changefl/events.jsonl"
+  },
+  "startedAt": "2026-05-05T01:08:55.025Z",
+  "completedAt": "2026-05-05T01:09:55.384Z"
+}

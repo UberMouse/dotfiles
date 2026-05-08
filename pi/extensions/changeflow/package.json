@@ -1,0 +1,24 @@
+{
+  "name": "pi-changeflow-extension",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
+    "build": "npm run typecheck"
+  },
+  "dependencies": {
+    "typebox": "^1.1.36",
+    "xstate": "^5.19.0"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "0.70.6",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
