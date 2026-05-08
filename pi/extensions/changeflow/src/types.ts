@@ -72,6 +72,14 @@ export type WorkflowActorFactories = {
 export type EventSchemaMap = Record<string, TSchema>;
 export type EventUnionFromSchemas<TSchemas extends EventSchemaMap> = Static<TSchemas[keyof TSchemas]> & AnyEventObject;
 
+export type EditPolicy = "artifactsOnly" | "sourceAllowed";
+
+export type WorkflowStatePolicy = {
+  editPolicy?: EditPolicy;
+  mainAgentTask?: string;
+  expectedEvents?: readonly string[];
+};
+
 export type WorkflowActorLogicFactoryInput = {
   runtime: RuntimeCapabilities;
   actors: WorkflowActorFactories;
@@ -87,6 +95,7 @@ export type TrustedWorkflowDefinition<TEventSchemas extends EventSchemaMap = Eve
   eventSchemas?: TEventSchemas;
   artifactTemplates?: readonly { path: string; content: string }[];
   tools?: readonly { name: string; description: string; eventType: string; schema: TSchema }[];
+  statePolicies?: Record<string, WorkflowStatePolicy>;
 };
 
 export type WorkflowRuntimeSnapshot = {

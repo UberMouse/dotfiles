@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { runChangeflowSubagent, summarizeSubagentResult, type ChangeflowSubagentRole } from "../subagents.js";
@@ -414,6 +414,28 @@ Use changeflow_read_artifact and changeflow_write_artifact to manage artifacts.`
       ctx.ui.setStatus("changeflow", ctx.ui.theme.fg("accent", `⛓ ${restored.metadata.state}`));
     } catch (error) {
       ctx.ui.notify(`Could not restore Changeflow workflow ${workflowId}: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    }
+  });
+
+  // Hook: tool_call to enforce edit policy
+  pi.on("tool_call", async (event, ctx) => {
+    state.ctx = ctx;
+    const registry = await ensureRegistry(state, ctx.cwd);
+    const runtime = ensureRuntime(state, ctx.cwd, registry);
+    const current = runtime.current();
+    if (!current) return;
+    if (runtime.currentEditPolicy() === "sourceAllowed") return;
+    if (event.toolName !== "write" && event.toolName !== "edit") return;
+    const inputPath = (event.input as { path?: string }).path;
+    if (!inputPath) return;
+    const fullPath = resolve(ctx.cwd, inputPath);
+    const artifacts = resolve(current.metadata.artifactsDir);
+    const isArtifact = fullPath === artifacts || fullPath.startsWith(artifacts + sep);
+    if (!isArtifact) {
+      return {
+        block: true,
+        reason: `Changeflow: source edits are blocked in ${current.metadata.state}. Write/edit under ${current.metadata.artifactsDir} only.`,
+      };
     }
   });
 }

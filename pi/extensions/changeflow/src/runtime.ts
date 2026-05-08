@@ -43,6 +43,11 @@ export class ChangeflowRuntime {
     return { metadata: this.active.metadata, machineSnapshot: this.active.actor.getPersistedSnapshot() };
   }
 
+  currentEditPolicy(): "artifactsOnly" | "sourceAllowed" {
+    if (!this.active) return "artifactsOnly";
+    return this.active.definition.statePolicies?.[this.active.metadata.state]?.editPolicy ?? "artifactsOnly";
+  }
+
   async start(input: StartWorkflowInput): Promise<WorkflowRuntimeSnapshot> {
     const definition = this.requireWorkflow(input.workflowDefinitionId);
     const id = `${Date.now()}-${this.slugify(input.description)}`;

@@ -35,6 +35,21 @@ export default defineWorkflow({
     { path: "research.md", content: "# Research: {description}\n\n" },
     { path: "high-level-plan.md", content: "# High-level plan: {description}\n\n" },
   ],
+  statePolicies: {
+    idle: { editPolicy: "artifactsOnly" },
+    research: { editPolicy: "artifactsOnly", expectedEvents: ["RESEARCH_COMPLETE"] },
+    high_level_planning: { editPolicy: "artifactsOnly" },
+    high_level_agent_review: { editPolicy: "artifactsOnly" },
+    high_level_revision: { editPolicy: "artifactsOnly", expectedEvents: ["PLAN_SUBMITTED"] },
+    high_level_user_review: { editPolicy: "artifactsOnly", expectedEvents: ["USER_APPROVED", "USER_REJECTED"] },
+    detailed_planning: { editPolicy: "artifactsOnly", expectedEvents: ["PLAN_SUBMITTED"] },
+    detailed_user_review: { editPolicy: "artifactsOnly", expectedEvents: ["USER_APPROVED", "USER_REJECTED"] },
+    execution_ordering: { editPolicy: "artifactsOnly", expectedEvents: ["ORDER_DEFINED"] },
+    executing: { editPolicy: "sourceAllowed", expectedEvents: ["EXECUTION_COMPLETE"] },
+    qa: { editPolicy: "sourceAllowed", expectedEvents: ["QA_COMPLETE"] },
+    user_validation: { editPolicy: "artifactsOnly", expectedEvents: ["USER_APPROVED", "USER_REJECTED"] },
+    done: { editPolicy: "artifactsOnly" },
+  },
   createActorLogic: ({ runtime, actors }) => setup({
     types: {
       context: {} as { highLevelPlan?: string; latestFeedback?: string },
