@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["index.ts", "src/**/*.ts", "subagents.ts", "workflows.ts", "bundled-workflows/**/*.ts", "test/**/*.ts"]
+  "include": ["index.ts", "src/**/*.ts", "subagents.ts", "bundled-workflows/**/*.ts", "test/**/*.ts"]
 }

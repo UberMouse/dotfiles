@@ -48,14 +48,15 @@ Aliases are intentionally not added yet while the UX is still changing.
 
 ## Tools
 
+The runtime exposes generic workflow tools. Workflow-specific behavior is encoded in trusted TypeScript workflow modules.
+
 | Tool | Purpose |
 | --- | --- |
-| `changeflow_record_research` | Append a research note/question/decision to workflow context |
-| `changeflow_advance` | Send a lifecycle event and automatically continue the next agent-owned phase |
-| `changeflow_submit_high_level_plan` | Save a high-level plan and request human review |
-| `changeflow_submit_detailed_plan` | Save a detailed step-by-step plan and request human review |
-| `changeflow_submit_execution_order` | Save execution ordering and advance into execution |
-| `changeflow_run_subagent` | Delegate a focused task to a guarded Changeflow subagent |
+| `changeflow_send_event` | Send a typed event to the active XState machine |
+| `changeflow_get_state` | Inspect current state, pending main-agent task, edit policy, and artifacts |
+| `changeflow_read_artifact` | Read a file under the workflow artifact directory |
+| `changeflow_write_artifact` | Write a file under the workflow artifact directory |
+| `changeflow_complete_main_task` | Complete a machine-invoked main-agent actor task |
 
 ## Lifecycle
 
