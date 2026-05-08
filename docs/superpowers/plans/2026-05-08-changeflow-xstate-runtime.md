@@ -4,7 +4,7 @@
 
 **Goal:** Refactor `pi/extensions/changeflow` so trusted TypeScript XState workflow modules own workflow behavior, while the Pi extension acts as a runtime/harness.
 
-**Architecture:** Split the current monolithic extension into focused modules: workflow definitions, durable storage, runtime, actor/capability adapters, and Pi bridge. Workflow modules return a fully constructed XState actor logic object, typically from `setup(...).createMachine(...)`; the runtime passes that object directly to `createActor`. Port the existing Changeflow lifecycle into a bundled TS workflow and add a machine-invoked high-level plan reviewer child agent to prove the machine can spawn agents and branch on their results.
+**Architecture:** Split the current monolithic extension into focused modules: workflow definitions, durable storage, runtime, actor/capability adapters, and Pi bridge. Workflow modules return a fully constructed XState actor logic object, typically from `setup(...).createMachine(...)`; the runtime passes that object directly to `createActor`. Port the existing Changeflow lifecycle into a bundled TS workflow where a planning state invokes a planner child agent, passes that output into a reviewer child agent, and branches on the reviewer result.
 
 **Tech Stack:** TypeScript, Pi extension API, XState v5, TypeBox, Vitest, Node filesystem/process APIs.
 
@@ -904,7 +904,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fromPromise, setup } from "xstate";
+import { assign, fromPromise, setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
 import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
 
@@ -916,31 +916,56 @@ afterEach(async () => {
 });
 
 describe("runtime capabilities and actors", () => {
-  it("lets workflow actions write artifacts and invoked actors branch the machine", async () => {
+  it("lets invoked child agents hand data from planning to reviewing", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "changeflow-runtime-actors-"));
-    const eventSchemas = { PLAN_SUBMITTED: Type.Object({ type: Type.Literal("PLAN_SUBMITTED"), markdown: Type.String() }) } as const;
+    const eventSchemas = { START: Type.Object({ type: Type.Literal("START") }) } as const;
     type ActorWorkflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
+    type PlanningOutput = { markdown: string };
+    type ReviewOutput = { approved: boolean; summary: string };
+
     const workflow = defineWorkflow({
       id: "actor.workflow",
       name: "Actor Workflow",
       eventSchemas,
-      createActorLogic: ({ runtime, actors }) => setup({ types: { events: {} as ActorWorkflowEvent } }).createMachine({
+      createActorLogic: ({ runtime, actors }) => setup({
+        types: {
+          context: {} as { planMarkdown?: string; reviewSummary?: string },
+          events: {} as ActorWorkflowEvent,
+        },
+      }).createMachine({
         id: "actor.workflow",
-        initial: "planning",
+        context: {},
+        initial: "idle",
         states: {
+          idle: { on: { START: "planning" } },
           planning: {
-            on: {
-              PLAN_SUBMITTED: {
+            invoke: {
+              src: fromPromise(() => actors.childAgent({ role: "planner", task: "write a plan", state: "planning" }) as Promise<PlanningOutput>),
+              onDone: {
                 target: "reviewing",
-                actions: ({ event }) => runtime.writeArtifact("plan.md", (event as { markdown: string }).markdown),
+                actions: [
+                  assign({ planMarkdown: ({ event }) => event.output.markdown }),
+                  ({ event }) => runtime.writeArtifact("plan.md", event.output.markdown),
+                ],
               },
+              onError: { target: "revision" },
             },
           },
           reviewing: {
             invoke: {
-              src: fromPromise(() => actors.childAgent({ role: "reviewer", task: "review plan", state: "reviewing" })),
+              src: fromPromise(({ input }: { input: { planMarkdown: string } }) => actors.childAgent({
+                role: "reviewer",
+                task: `Review this plan:
+${input.planMarkdown}`,
+                state: "reviewing",
+              }) as Promise<ReviewOutput>),
+              input: ({ context }) => ({ planMarkdown: context.planMarkdown ?? "" }),
               onDone: [
-                { guard: ({ event }) => Boolean((event.output as { approved?: boolean }).approved), target: "approved" },
+                {
+                  guard: ({ event }) => event.output.approved,
+                  target: "approved",
+                  actions: assign({ reviewSummary: ({ event }) => event.output.summary }),
+                },
                 { target: "revision" },
               ],
               onError: { target: "revision" },
@@ -952,11 +977,22 @@ describe("runtime capabilities and actors", () => {
       }),
     });
 
-    const runChildAgent = vi.fn(async () => ({ approved: true }));
+    const runChildAgent = vi.fn(async (input: { role: string; task: string }) => {
+      if (input.role === "planner") return { markdown: "# Plan" } satisfies PlanningOutput;
+      if (input.role === "reviewer") {
+        expect(input.task).toContain("# Plan");
+        return { approved: true, summary: "looks good" } satisfies ReviewOutput;
+      }
+      throw new Error(`Unexpected role ${input.role}`);
+    });
+
     const runtime = new ChangeflowRuntime({ cwd: tempDir, workflows: [workflow], actorAdapters: { runChildAgent } });
     await runtime.start({ workflowDefinitionId: "actor.workflow", description: "actor workflow" });
-    await expect(runtime.send({ type: "PLAN_SUBMITTED", markdown: "# Plan" })).resolves.toMatchObject({ ok: true });
+    await expect(runtime.send({ type: "START" })).resolves.toMatchObject({ ok: true });
     await vi.waitFor(() => expect(runtime.current()?.metadata.state).toBe("approved"));
+
+    expect(runChildAgent).toHaveBeenNthCalledWith(1, expect.objectContaining({ role: "planner" }));
+    expect(runChildAgent).toHaveBeenNthCalledWith(2, expect.objectContaining({ role: "reviewer", task: expect.stringContaining("# Plan") }));
 
     const artifactsDir = runtime.current()?.metadata.artifactsDir;
     await expect(readFile(join(artifactsDir!, "plan.md"), "utf-8")).resolves.toBe("# Plan");
@@ -1096,7 +1132,7 @@ git commit -m "feat(changeflow): wire runtime capabilities and actors"
 Create `pi/extensions/changeflow/test/changeflow-workflow.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createActor } from "xstate";
 import changeflowWorkflow from "../bundled-workflows/changeflow-runtime.js";
 
@@ -1110,7 +1146,14 @@ describe("ported Changeflow workflow", () => {
       queueMainAgentMessage: () => undefined,
     };
     const actors = {
-      childAgent: async () => ({ approved: true, summary: "approved" }),
+      childAgent: async (input: { role: string; task: string }) => {
+        if (input.role === "planner") return { markdown: "# Plan" };
+        if (input.role === "reviewer") {
+          expect(input.task).toContain("# Plan");
+          return { approved: true, summary: "approved" };
+        }
+        throw new Error(`Unexpected role ${input.role}`);
+      },
       mainAgent: async () => ({ type: "MAIN_TASK_DONE" }),
     };
     const actor = createActor(changeflowWorkflow.createActorLogic({ runtime, actors, actions: {} }));
@@ -1120,9 +1163,7 @@ describe("ported Changeflow workflow", () => {
     expect(actor.getSnapshot().value).toBe("research");
     actor.send({ type: "RESEARCH_COMPLETE" });
     expect(actor.getSnapshot().value).toBe("high_level_planning");
-    actor.send({ type: "PLAN_SUBMITTED", kind: "high_level_plan", markdown: "# Plan" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(actor.getSnapshot().value).toBe("high_level_user_review");
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe("high_level_user_review"));
     actor.send({ type: "USER_APPROVED" });
     expect(actor.getSnapshot().value).toBe("detailed_planning");
     actor.send({ type: "PLAN_SUBMITTED", kind: "detailed_plan", markdown: "# Details" });
@@ -1182,16 +1223,21 @@ type ChangeflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
 export default defineWorkflow({
   id: "changeflow.runtime",
   name: "Changeflow Runtime Workflow",
-  description: "Machine-owned Changeflow lifecycle with child-agent plan critique.",
+  description: "Machine-owned Changeflow lifecycle with child-agent planning and critique.",
   initialEvent: { type: "START" },
   eventSchemas,
   artifactTemplates: [
     { path: "research.md", content: "# Research: {description}\n\n" },
     { path: "high-level-plan.md", content: "# High-level plan: {description}\n\n" },
   ],
-  createActorLogic: ({ runtime, actors }) => setup({ types: { events: {} as ChangeflowEvent } }).createMachine({
+  createActorLogic: ({ runtime, actors }) => setup({
+    types: {
+      context: {} as { highLevelPlan?: string; latestFeedback?: string },
+      events: {} as ChangeflowEvent,
+    },
+  }).createMachine({
     id: "changeflow.runtime",
-    context: { latestFeedback: undefined as string | undefined },
+    context: { highLevelPlan: undefined, latestFeedback: undefined },
     initial: "idle",
     states: {
       idle: { on: { START: "research" } },
@@ -1200,18 +1246,30 @@ export default defineWorkflow({
         on: { RESEARCH_COMPLETE: "high_level_planning" },
       },
       high_level_planning: {
-        entry: () => runtime.queueMainAgentMessage("Write a high-level plan. Send PLAN_SUBMITTED with kind high_level_plan and markdown."),
-        on: {
-          PLAN_SUBMITTED: {
-            guard: ({ event }) => event.kind === "high_level_plan",
+        invoke: {
+          src: fromPromise(() => actors.childAgent({ role: "planner", task: "Write the high-level plan and return { markdown }.", state: "high_level_planning" }) as Promise<{ markdown: string }>),
+          onDone: {
             target: "high_level_agent_review",
-            actions: ({ event }) => runtime.writeArtifact("high-level-plan.md", event.markdown),
+            actions: [
+              assign({ highLevelPlan: ({ event }) => event.output.markdown }),
+              ({ event }) => runtime.writeArtifact("high-level-plan.md", event.output.markdown),
+            ],
+          },
+          onError: {
+            target: "high_level_revision",
+            actions: assign({ latestFeedback: ({ event }) => String(event.error) }),
           },
         },
       },
       high_level_agent_review: {
         invoke: {
-          src: fromPromise(() => actors.childAgent({ role: "reviewer", task: "Review the high-level plan artifact and return { approved, summary, feedback }.", state: "high_level_agent_review" })),
+          src: fromPromise(({ input }: { input: { highLevelPlan: string } }) => actors.childAgent({
+            role: "reviewer",
+            task: `Review this high-level plan and return { approved, summary, feedback }:
+${input.highLevelPlan}`,
+            state: "high_level_agent_review",
+          })),
+          input: ({ context }) => ({ highLevelPlan: context.highLevelPlan ?? "" }),
           onDone: [
             { guard: ({ event }) => Boolean((event.output as { approved?: boolean }).approved), target: "high_level_user_review" },
             {
@@ -1808,7 +1866,7 @@ Add this property to `changeflow-runtime.ts` before `machine`:
 statePolicies: {
   idle: { editPolicy: "artifactsOnly" },
   research: { editPolicy: "artifactsOnly", expectedEvents: ["RESEARCH_COMPLETE"] },
-  high_level_planning: { editPolicy: "artifactsOnly", expectedEvents: ["PLAN_SUBMITTED"] },
+  high_level_planning: { editPolicy: "artifactsOnly" },
   high_level_agent_review: { editPolicy: "artifactsOnly" },
   high_level_revision: { editPolicy: "artifactsOnly", expectedEvents: ["PLAN_SUBMITTED"] },
   high_level_user_review: { editPolicy: "artifactsOnly", expectedEvents: ["USER_APPROVED", "USER_REJECTED"] },
@@ -2185,8 +2243,8 @@ Append this to `pi/extensions/changeflow/README.md`:
 5. Run `changeflow_get_state` and confirm the workflow is active.
 6. Send `{ "type": "START" }` with `changeflow_send_event` if the workflow did not auto-start.
 7. Progress research with `{ "type": "RESEARCH_COMPLETE" }`.
-8. Submit a high-level plan with `{ "type": "PLAN_SUBMITTED", "kind": "high_level_plan", "markdown": "# Plan\n\nTest plan." }`.
-9. Confirm a reviewer child-agent actor runs and the workflow reaches either `high_level_user_review` or `high_level_revision`.
+8. Confirm the machine invokes a planner child-agent actor to produce the high-level plan.
+9. Confirm the machine invokes a reviewer child-agent actor with the planner output and reaches either `high_level_user_review` or `high_level_revision`.
 10. Before execution, try a source `write` outside the artifact directory and confirm Changeflow blocks it.
 11. Approve the high-level review with `{ "type": "USER_APPROVED" }`.
 12. Submit detailed plan, approve it, define execution order, enter `executing`, and confirm source writes are allowed.
@@ -2205,7 +2263,7 @@ Expected: PASS.
 
 - [ ] **Step 3: Manual smoke test in Pi**
 
-Run the README steps in an interactive Pi session. Expected: workflow can start, accept generic events, block pre-execution edits, invoke the high-level reviewer child agent, and restore after reload.
+Run the README steps in an interactive Pi session. Expected: workflow can start, accept generic events, block pre-execution edits, invoke the high-level planner child agent, pass its output to the reviewer child agent, and restore after reload.
 
 - [ ] **Step 4: Commit docs**
 
@@ -2244,6 +2302,6 @@ Expected: no uncommitted Changeflow files. Pre-existing unrelated files, such as
 ## Self-Review
 
 - **Spec coverage:** The plan covers trusted TS workflow loading, runtime snapshots and event log, actor/capability split, main Pi agent supervision, child-agent invocation, generic bridge tools/commands, edit policy enforcement, restore, error surfaces through events, tests, docs, and removal of compatibility shims.
-- **Intentional MVP boundary:** Plannotator/user review actor adapters are added, but the ported workflow keeps human review event-driven until result reconciliation is made robust. This still satisfies the spec's first extreme demonstration through the child-agent plan critique actor.
+- **Intentional MVP boundary:** Plannotator/user review actor adapters are added, but the ported workflow keeps human review event-driven until result reconciliation is made robust. This still satisfies the spec's first extreme demonstration through a planner child agent whose output feeds a reviewer child agent.
 - **Completeness scan:** No incomplete markers or unspecified implementation steps remain.
 - **Type consistency:** Core names are consistent across tasks: `TrustedWorkflowDefinition`, `ChangeflowRuntime`, `createActorAdapters`, `changeflow.runtime`, `changeflow_send_event`, `changeflow_get_state`, `changeflow_read_artifact`, `changeflow_write_artifact`, and `changeflow_complete_main_task`.

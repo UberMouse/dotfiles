@@ -178,24 +178,25 @@ idle → research → high_level_planning → high_level_agent_review
 
 Behavior moves into the workflow module:
 
-- Research, planning, execution, and QA states define main-agent task prompts.
+- Research, execution, and QA states may define main-agent task prompts when the workflow wants supervisory/conversational work.
+- Planning states can invoke planner child agents directly and receive generated plans through XState `onDone` events.
 - Human review states invoke `actors.plannotatorReview(...)` or `actors.askUser(...)`.
-- Plan submission is a workflow event carrying plan content and artifact information.
+- Manual plan submission can still be represented as a workflow event for revision/debug paths, but the primary high-level planning path is machine-invoked.
 - Edit/write restrictions are workflow-declared policy that the harness enforces generically.
 - Subagent permissions are workflow choices, not hardcoded state-name checks in the extension.
 
-The first “extreme” demonstration is machine-invoked high-level plan critique:
+The first “extreme” demonstration is machine-owned high-level planning and critique:
 
 ```text
 high_level_planning
-  └─ PLAN_SUBMITTED
-      → high_level_agent_review
-          invoke childAgent(reviewer)
-              approved → high_level_user_review
-              issues → high_level_revision
+  invoke childAgent(planner)
+    done(plan) → high_level_agent_review
+      invoke childAgent(reviewer, input: plan)
+        approved → high_level_user_review
+        issues → high_level_revision
 ```
 
-This proves that the machine can spawn an agent, wait for a result, branch on that result, and continue to human review or revision without making source-editing agents autonomous in the MVP.
+This proves that the machine can spawn an agent, wait for its output, feed that output into another invoked agent, branch on the second result, and continue to human review or revision without making source-editing agents autonomous in the MVP.
 
 ## Pi Bridge UX
 
@@ -277,7 +278,7 @@ The migration happens inside `pi/extensions/changeflow`.
 3. Port the current lifecycle into a bundled workflow module.
 4. Add generic bridge commands and tools.
 5. Replace current hardcoded phase behavior with workflow-defined actions and actors.
-6. Add the high-level plan critique child-agent actor.
+6. Add high-level planner and reviewer child-agent actors, with the planner output passed into the reviewer invocation.
 7. Remove current phase-specific tools.
 8. Update the README to explain the machine-as-program model.
 
