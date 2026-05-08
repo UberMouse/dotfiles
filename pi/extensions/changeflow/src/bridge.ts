@@ -31,23 +31,62 @@ function ensureRuntime(state: BridgeState, cwd: string, registry: WorkflowRegist
         runChildAgent: async (input) => {
           const current = state.runtime?.current();
           if (!current) throw new Error("No active workflow to run child agent.");
-          const result = await runChangeflowSubagent({
-            workflowId: current.metadata.id,
-            artifactsDir: current.metadata.artifactsDir,
-            cwd,
-            role: input.role as ChangeflowSubagentRole,
-            task: input.task,
-            phase: input.state,
-            stepId: input.stepId,
-            reason: input.reason,
-          });
-          if (result.exitCode !== 0 || result.error) {
-            throw new Error(result.error ?? `Subagent exited with code ${result.exitCode}`);
-          }
+          const actorId = `child-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const controller = state.runtime!.trackActorStart(actorId, "childAgent", input.state, input);
           try {
-            return JSON.parse(result.finalOutput);
-          } catch {
-            return { output: result.finalOutput };
+            const result = await runChangeflowSubagent({
+              workflowId: current.metadata.id,
+              artifactsDir: current.metadata.artifactsDir,
+              cwd,
+              role: input.role as ChangeflowSubagentRole,
+              task: input.task,
+              phase: input.state,
+              stepId: input.stepId,
+              reason: input.reason,
+              signal: controller.signal,
+            });
+            if (result.exitCode !== 0 || result.error) {
+              const error = result.error ?? `Subagent exited with code ${result.exitCode}`;
+              await state.runtime!.trackActorComplete(actorId, undefined, error);
+              throw new Error(error);
+            }
+            let output: unknown;
+            try {
+              output = JSON.parse(result.finalOutput);
+            } catch {
+              output = { output: result.finalOutput };
+            }
+            await state.runtime!.trackActorComplete(actorId, output);
+            return output;
+          } catch (error) {
+            await state.runtime!.trackActorComplete(actorId, undefined, error instanceof Error ? error.message : String(error));
+            throw error;
+          }
+        },
+        runScript: async (input) => {
+          const actorId = `script-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const controller = state.runtime!.trackActorStart(actorId, "script", "script", input);
+          try {
+            const { spawn } = await import("node:child_process");
+            const result = await new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+              const proc = spawn(input.command, input.args ?? [], {
+                cwd: input.cwd ?? cwd,
+                timeout: input.timeout ?? 30_000,
+                shell: true,
+              });
+              let stdout = "";
+              let stderr = "";
+              proc.stdout?.on("data", (data) => { stdout += data; });
+              proc.stderr?.on("data", (data) => { stderr += data; });
+              proc.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+              proc.on("error", reject);
+              controller.signal.addEventListener("abort", () => proc.kill());
+            });
+            await state.runtime!.trackActorComplete(actorId, result);
+            return result;
+          } catch (error) {
+            await state.runtime!.trackActorComplete(actorId, undefined, error instanceof Error ? error.message : String(error));
+            throw error;
           }
         },
       },
@@ -135,13 +174,29 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
             ctx.ui.notify("No active Changeflow workflow.", "info");
             return;
           }
-          // Actor info would come from runtime - simplified for now
-          ctx.ui.notify(`Active workflow: ${current.metadata.id}\nNo actor info available in this bridge version.`, "info");
+          const actors = await runtime.listActorRuns();
+          if (actors.length === 0) {
+            ctx.ui.notify(`Active workflow: ${current.metadata.id}\nNo actor runs recorded.`, "info");
+            return;
+          }
+          const rows = actors.map((a) => `- [${a.status}] ${a.id} (${a.kind}) in state ${a.state}`);
+          ctx.ui.notify(`Active workflow: ${current.metadata.id}\n\nActor runs:\n${rows.join("\n")}`, "info");
           return;
         }
 
         case "cancel-actor": {
-          ctx.ui.notify("Actor cancellation not implemented in this bridge version.", "warning");
+          const actorId = restText.trim();
+          if (!actorId) {
+            ctx.ui.notify("Usage: /changeflow cancel-actor <actor-id>", "warning");
+            return;
+          }
+          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          try {
+            await runtime.cancelActor(actorId);
+            ctx.ui.notify(`Cancelled actor ${actorId}.`, "info");
+          } catch (err) {
+            ctx.ui.notify(err instanceof Error ? err.message : String(err), "warning");
+          }
           return;
         }
 

@@ -2,8 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createActor, type Actor, type AnyActorLogic, type Snapshot } from "xstate";
 import { createActorAdapters, type ActorAdapterDependencies, type ActorAdapters } from "./actors.js";
-import { appendEvent, createWorkflowPaths, readEvents, readSnapshot, readWorkflowMetadata, writeSnapshot, writeWorkflowMetadata, type WorkflowPaths } from "./storage.js";
-import { parseWorkflowEvent, type TrustedWorkflowDefinition, type WorkflowMetadata, type WorkflowRuntimeSnapshot } from "./types.js";
+import { appendEvent, createWorkflowPaths, readEvents, readSnapshot, readWorkflowMetadata, writeActorRun, writeSnapshot, writeWorkflowMetadata, type WorkflowPaths } from "./storage.js";
+import { parseWorkflowEvent, type ActorRunRecord, type TrustedWorkflowDefinition, type WorkflowMetadata, type WorkflowRuntimeSnapshot } from "./types.js";
 
 export type ChangeflowRuntimeOptions = {
   cwd: string;
@@ -28,6 +28,8 @@ export class ChangeflowRuntime {
   private readonly actorAdapters: ActorAdapters;
   private active?: { metadata: WorkflowMetadata; paths: WorkflowPaths; definition: TrustedWorkflowDefinition; actor: Actor<AnyActorLogic> };
   private eventSeq = 0;
+  private actorRuns: Map<string, ActorRunRecord> = new Map();
+  private actorCancellers: Map<string, AbortController> = new Map();
 
   constructor(options: ChangeflowRuntimeOptions) {
     this.cwd = options.cwd;
@@ -129,6 +131,52 @@ export class ChangeflowRuntime {
     const current = this.current();
     if (!current) throw new Error("No active Changeflow workflow.");
     return current;
+  }
+
+  async listActorRuns(): Promise<ActorRunRecord[]> {
+    return [...this.actorRuns.values()].sort((a, b) =>
+      new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+    );
+  }
+
+  async cancelActor(actorId: string): Promise<void> {
+    const canceller = this.actorCancellers.get(actorId);
+    if (!canceller) throw new Error(`No cancellable actor ${actorId}.`);
+    canceller.abort();
+    const run = this.actorRuns.get(actorId);
+    if (run) {
+      run.status = "cancelled";
+      run.completedAt = this.now();
+      await writeActorRun(this.active!.paths, run);
+    }
+  }
+
+  trackActorStart(id: string, kind: ActorRunRecord["kind"], state: string, input: unknown): AbortController {
+    const controller = new AbortController();
+    const record: ActorRunRecord = {
+      id,
+      workflowId: this.active!.metadata.id,
+      kind,
+      state,
+      status: "running",
+      input,
+      startedAt: this.now(),
+    };
+    this.actorRuns.set(id, record);
+    this.actorCancellers.set(id, controller);
+    void writeActorRun(this.active!.paths, record);
+    return controller;
+  }
+
+  async trackActorComplete(id: string, output?: unknown, error?: string): Promise<void> {
+    const run = this.actorRuns.get(id);
+    if (!run) return;
+    run.status = error ? "failed" : "completed";
+    run.output = output;
+    run.error = error;
+    run.completedAt = this.now();
+    this.actorCancellers.delete(id);
+    await writeActorRun(this.active!.paths, run);
   }
 
   private async append(direction: "in" | "out" | "effect", kind: string, data: { event?: unknown; state?: unknown; snapshotSeq?: number; error?: string }): Promise<void> {
