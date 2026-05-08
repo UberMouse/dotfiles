@@ -22,7 +22,7 @@ async function ensureRegistry(state: BridgeState, cwd: string): Promise<Workflow
   return state.registry;
 }
 
-function ensureRuntime(state: BridgeState, cwd: string, registry: WorkflowRegistry): ChangeflowRuntime {
+function ensureRuntime(state: BridgeState, cwd: string, registry: WorkflowRegistry, pi: ExtensionAPI): ChangeflowRuntime {
   if (!state.runtime) {
     state.runtime = new ChangeflowRuntime({
       cwd,
@@ -89,6 +89,25 @@ function ensureRuntime(state: BridgeState, cwd: string, registry: WorkflowRegist
             throw error;
           }
         },
+        requestPlannotatorReview: async (input) => {
+          const requestId = `changeflow-${Date.now()}`;
+          return await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Plannotator did not respond within 5s.")), 5_000);
+            pi.events.emit("plannotator:request", {
+              requestId,
+              action: "plan-review",
+              payload: { planFilePath: input.artifactPath, planContent: input.content, origin: "changeflow-runtime", kind: input.kind },
+              respond(response: unknown) {
+                clearTimeout(timeout);
+                resolve(response);
+              },
+            });
+          });
+        },
+        askUser: async (input) => {
+          if (!state.ctx) throw new Error("No extension context available for askUser.");
+          return state.ctx.ui.select(input.prompt, input.choices ?? ["approved", "rejected"]);
+        },
       },
     });
   }
@@ -130,7 +149,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
             ctx.ui.notify(`Unknown workflow definition ${parsed.workflowDefinitionId}. Use /changeflow workflows to list.`, "warning");
             return;
           }
-          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
           const snapshot = await runtime.start({
             workflowDefinitionId: parsed.workflowDefinitionId,
             description: parsed.description,
@@ -148,7 +167,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
         }
 
         case "status": {
-          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
           const current = runtime.current();
           if (!current) {
             ctx.ui.notify("No active Changeflow workflow. Use /changeflow start <description>.", "info");
@@ -168,7 +187,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
         }
 
         case "actors": {
-          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
           const current = runtime.current();
           if (!current) {
             ctx.ui.notify("No active Changeflow workflow.", "info");
@@ -190,7 +209,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
             ctx.ui.notify("Usage: /changeflow cancel-actor <actor-id>", "warning");
             return;
           }
-          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
           try {
             await runtime.cancelActor(actorId);
             ctx.ui.notify(`Cancelled actor ${actorId}.`, "info");
@@ -201,7 +220,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
         }
 
         case "send": {
-          const runtime = ensureRuntime(state, ctx.cwd, registry);
+          const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
           const current = runtime.current();
           if (!current) {
             ctx.ui.notify("No active Changeflow workflow.", "warning");
@@ -252,7 +271,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       const current = runtime.current();
       if (!current) {
         return { content: [{ type: "text", text: "No active Changeflow workflow." }], details: {}, isError: true };
@@ -282,7 +301,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       const current = runtime.current();
       const pendingMainAgentTask = runtime.pendingMainAgentTask();
       const details = { metadata: current?.metadata, pendingMainAgentTask, editPolicy: runtime.currentEditPolicy() };
@@ -301,7 +320,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       const current = runtime.current();
       if (!current) {
         return { content: [{ type: "text", text: "No active Changeflow workflow." }], details: {}, isError: true };
@@ -328,7 +347,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       const current = runtime.current();
       if (!current) {
         return { content: [{ type: "text", text: "No active Changeflow workflow." }], details: {}, isError: true };
@@ -353,7 +372,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       state.ctx = ctx;
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       try {
         runtime.completeMainAgentTask(params.task_id, params.output);
         return { content: [{ type: "text", text: `Completed main-agent task ${params.task_id}.` }], details: { taskId: params.task_id } };
@@ -368,7 +387,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
   pi.on("before_agent_start", async (_event, ctx) => {
     state.ctx = ctx;
     const registry = await ensureRegistry(state, ctx.cwd);
-    const runtime = ensureRuntime(state, ctx.cwd, registry);
+    const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
     const current = runtime.current();
     if (!current) return;
 
@@ -400,7 +419,7 @@ Use changeflow_read_artifact and changeflow_write_artifact to manage artifacts.`
     }
     try {
       const registry = await ensureRegistry(state, ctx.cwd);
-      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
       const restored = await runtime.restore(workflowId);
       ctx.ui.setStatus("changeflow", ctx.ui.theme.fg("accent", `⛓ ${restored.metadata.state}`));
     } catch (error) {
@@ -412,7 +431,7 @@ Use changeflow_read_artifact and changeflow_write_artifact to manage artifacts.`
   pi.on("tool_call", async (event, ctx) => {
     state.ctx = ctx;
     const registry = await ensureRegistry(state, ctx.cwd);
-    const runtime = ensureRuntime(state, ctx.cwd, registry);
+    const runtime = ensureRuntime(state, ctx.cwd, registry, pi);
     const current = runtime.current();
     if (!current) return;
     if (runtime.currentEditPolicy() === "sourceAllowed") return;
