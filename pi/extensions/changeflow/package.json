@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test",
     "build": "npm run typecheck"
   },
   "dependencies": {
@@ -14,7 +15,8 @@
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "0.70.6",
     "@types/node": "^22.15.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
   },
   "pi": {
     "extensions": [
