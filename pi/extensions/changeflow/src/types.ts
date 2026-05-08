@@ -94,6 +94,14 @@ export type WorkflowRuntimeSnapshot = {
   machineSnapshot: Snapshot<unknown>;
 };
 
+export type ActorRecoveryEvent = {
+  type: "ACTOR_RECOVERY_NEEDED";
+  actorId: string;
+  actorKind: ActorRunRecord["kind"];
+  originalState: string;
+  error: string;
+};
+
 export type ParseWorkflowEventResult =
   | { ok: true; event: AnyEventObject }
   | { ok: false; error: string };

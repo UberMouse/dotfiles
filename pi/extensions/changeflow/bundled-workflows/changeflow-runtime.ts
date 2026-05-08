@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { assign, fromPromise, setup } from "xstate";
-import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
+import { defineWorkflow, type ActorRecoveryEvent, type EventUnionFromSchemas } from "../src/types.js";
 
 const planSubmittedSchema = Type.Object({
   type: Type.Literal("PLAN_SUBMITTED"),
@@ -20,7 +20,7 @@ const eventSchemas = {
   EXECUTION_COMPLETE: Type.Object({ type: Type.Literal("EXECUTION_COMPLETE") }),
   QA_COMPLETE: Type.Object({ type: Type.Literal("QA_COMPLETE") }),
 } as const;
-type ChangeflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
+type ChangeflowEvent = EventUnionFromSchemas<typeof eventSchemas> | ActorRecoveryEvent;
 
 type PlannerOutput = { markdown: string };
 type ReviewerOutput = { approved: boolean; summary: string; feedback?: string };
@@ -82,6 +82,12 @@ ${input.highLevelPlan}`,
             actions: assign({ latestFeedback: ({ event }) => String(event.error) }),
           },
         },
+        on: {
+          ACTOR_RECOVERY_NEEDED: {
+            target: "high_level_revision",
+            actions: assign({ latestFeedback: ({ event }) => `Actor recovery needed: ${(event as ActorRecoveryEvent).error}` }),
+          },
+        },
       },
       high_level_agent_review: {
         invoke: {
@@ -97,6 +103,12 @@ ${input.highLevelPlan}`,
           onError: {
             target: "high_level_revision",
             actions: assign({ latestFeedback: ({ event }) => String(event.error) }),
+          },
+        },
+        on: {
+          ACTOR_RECOVERY_NEEDED: {
+            target: "high_level_revision",
+            actions: assign({ latestFeedback: ({ event }) => `Actor recovery needed: ${(event as ActorRecoveryEvent).error}` }),
           },
         },
       },

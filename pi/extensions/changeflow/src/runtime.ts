@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createActor, type Actor, type AnyActorLogic, type Snapshot } from "xstate";
 import { createActorAdapters, type ActorAdapterDependencies, type ActorAdapters } from "./actors.js";
@@ -90,6 +90,10 @@ export class ChangeflowRuntime {
     actor.subscribe((snapshot) => {
       void this.persistObservedSnapshot(snapshot.value, actor.getPersistedSnapshot());
     });
+
+    // Check for orphaned running actors and send recovery events
+    await this.reconcileOrphanedActors();
+
     return this.currentOrThrow();
   }
 
@@ -177,6 +181,41 @@ export class ChangeflowRuntime {
     run.completedAt = this.now();
     this.actorCancellers.delete(id);
     await writeActorRun(this.active!.paths, run);
+  }
+
+  private async reconcileOrphanedActors(): Promise<void> {
+    if (!this.active) return;
+
+    const actorsDir = this.active.paths.actorsDir;
+    try {
+      const entries = await readdir(actorsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const metadataPath = join(actorsDir, entry.name, "metadata.json");
+          const record = JSON.parse(await readFile(metadataPath, "utf-8")) as ActorRunRecord;
+          if (record.status === "running") {
+            record.status = "failed";
+            record.error = "Session ended while actor was running";
+            record.completedAt = this.now();
+            await writeActorRun(this.active.paths, record);
+
+            this.active.actor.send({
+              type: "ACTOR_RECOVERY_NEEDED",
+              actorId: record.id,
+              actorKind: record.kind,
+              originalState: record.state,
+              error: record.error,
+            });
+          }
+          this.actorRuns.set(record.id, record);
+        } catch {
+          // Skip invalid actor records
+        }
+      }
+    } catch {
+      // No actors directory yet
+    }
   }
 
   private async append(direction: "in" | "out" | "effect", kind: string, data: { event?: unknown; state?: unknown; snapshotSeq?: number; error?: string }): Promise<void> {
