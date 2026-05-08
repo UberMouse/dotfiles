@@ -20,7 +20,7 @@ Create or modify these files:
 
 - Modify `pi/extensions/changeflow/package.json`: add Vitest scripts and test dependency.
 - Modify `pi/extensions/changeflow/tsconfig.json`: include new source and test files.
-- Create `pi/extensions/changeflow/src/types.ts`: shared workflow/runtime/event/persistence types and TypeBox helpers. The workflow contract accepts XState actor logic, not raw machine config, so workflows can use the XState `setup()` API.
+- Create `pi/extensions/changeflow/src/types.ts`: shared workflow/runtime/event/persistence types and TypeBox helpers. The workflow contract accepts XState actor logic, not raw machine config, so workflows can use the XState `setup()` API. Workflow event schemas must be declared as `const` values, converted to a TypeScript union with `EventUnionFromSchemas`, and supplied to `setup({ types: { events } })` so transition handlers typecheck.
 - Create `pi/extensions/changeflow/src/storage.ts`: event log, snapshot, workflow metadata, and actor-run filesystem persistence.
 - Create `pi/extensions/changeflow/src/runtime.ts`: actor logic lifecycle, event validation, snapshot persistence, action capabilities, actor completion routing.
 - Create `pi/extensions/changeflow/src/actors.ts`: awaited actor factories for child agents, main-agent tasks, Plannotator/user review, and scripts.
@@ -157,14 +157,22 @@ Create `pi/extensions/changeflow/test/types.test.ts`:
 import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
 import { setup } from "xstate";
-import { defineWorkflow, parseWorkflowEvent } from "../src/types.js";
+import { defineWorkflow, parseWorkflowEvent, type EventUnionFromSchemas } from "../src/types.js";
 
 describe("workflow definition helpers", () => {
   it("returns the trusted workflow definition unchanged", () => {
+    const eventSchemas = { START: Type.Object({ type: Type.Literal("START") }) } as const;
+    type DemoEvent = EventUnionFromSchemas<typeof eventSchemas>;
+
     const workflow = defineWorkflow({
       id: "demo.workflow",
       name: "Demo Workflow",
-      createActorLogic: () => setup({}).createMachine({ id: "demo.workflow", initial: "idle", states: { idle: {} } }),
+      eventSchemas,
+      createActorLogic: () => setup({ types: { events: {} as DemoEvent } }).createMachine({
+        id: "demo.workflow",
+        initial: "idle",
+        states: { idle: { on: { START: "idle" } } },
+      }),
     });
 
     expect(workflow.id).toBe("demo.workflow");
@@ -201,7 +209,7 @@ Create `pi/extensions/changeflow/src/types.ts`:
 
 ```ts
 import { Value } from "typebox/value";
-import type { TSchema } from "typebox";
+import type { Static, TSchema } from "typebox";
 import type { AnyActorLogic, AnyEventObject, Snapshot } from "xstate";
 
 export type WorkflowId = string;
@@ -257,7 +265,9 @@ export type RuntimeCapabilities = {
   queueMainAgentMessage(message: string): void;
 };
 
-export type WorkflowActorFactories = Record<string, unknown>;
+export type WorkflowActorFactories = Record<string, (...args: any[]) => Promise<unknown>>;
+export type EventSchemaMap = Record<string, TSchema>;
+export type EventUnionFromSchemas<TSchemas extends EventSchemaMap> = Static<TSchemas[keyof TSchemas]> & AnyEventObject;
 
 export type WorkflowActorLogicFactoryInput = {
   runtime: RuntimeCapabilities;
@@ -265,13 +275,13 @@ export type WorkflowActorLogicFactoryInput = {
   actions: Record<string, unknown>;
 };
 
-export type TrustedWorkflowDefinition = {
+export type TrustedWorkflowDefinition<TEventSchemas extends EventSchemaMap = EventSchemaMap> = {
   id: WorkflowId;
   name: string;
   description?: string;
   initialEvent?: AnyEventObject;
   createActorLogic(input: WorkflowActorLogicFactoryInput): AnyActorLogic;
-  eventSchemas?: Record<string, TSchema>;
+  eventSchemas?: TEventSchemas;
   artifactTemplates?: readonly { path: string; content: string }[];
   tools?: readonly { name: string; description: string; eventType: string; schema: TSchema }[];
 };
@@ -285,7 +295,10 @@ export type ParseWorkflowEventResult =
   | { ok: true; event: AnyEventObject }
   | { ok: false; error: string };
 
-export function defineWorkflow<T extends TrustedWorkflowDefinition>(definition: T): T {
+export function defineWorkflow<
+  const TEventSchemas extends EventSchemaMap = EventSchemaMap,
+  T extends TrustedWorkflowDefinition<TEventSchemas> = TrustedWorkflowDefinition<TEventSchemas>,
+>(definition: T): T {
   return definition;
 }
 
@@ -510,7 +523,7 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
-import { defineWorkflow } from "../src/types.js";
+import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
 
 let tempDir: string | undefined;
 
@@ -519,14 +532,17 @@ afterEach(async () => {
   tempDir = undefined;
 });
 
+const eventSchemas = {
+  START: Type.Object({ type: Type.Literal("START") }),
+  FINISH: Type.Object({ type: Type.Literal("FINISH"), note: Type.String() }),
+} as const;
+type DemoEvent = EventUnionFromSchemas<typeof eventSchemas>;
+
 const demoWorkflow = defineWorkflow({
   id: "demo.workflow",
   name: "Demo Workflow",
-  eventSchemas: {
-    START: Type.Object({ type: Type.Literal("START") }),
-    FINISH: Type.Object({ type: Type.Literal("FINISH"), note: Type.String() }),
-  },
-  createActorLogic: () => setup({}).createMachine({
+  eventSchemas,
+  createActorLogic: () => setup({ types: { events: {} as DemoEvent } }).createMachine({
     id: "demo.workflow",
     initial: "idle",
     states: {
@@ -886,10 +902,11 @@ Create `pi/extensions/changeflow/test/runtime-actors.test.ts`:
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fromPromise, setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
-import { defineWorkflow } from "../src/types.js";
+import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
 
 let tempDir: string | undefined;
 
@@ -901,10 +918,13 @@ afterEach(async () => {
 describe("runtime capabilities and actors", () => {
   it("lets workflow actions write artifacts and invoked actors branch the machine", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "changeflow-runtime-actors-"));
+    const eventSchemas = { PLAN_SUBMITTED: Type.Object({ type: Type.Literal("PLAN_SUBMITTED"), markdown: Type.String() }) } as const;
+    type ActorWorkflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
     const workflow = defineWorkflow({
       id: "actor.workflow",
       name: "Actor Workflow",
-      createActorLogic: ({ runtime, actors }) => setup({}).createMachine({
+      eventSchemas,
+      createActorLogic: ({ runtime, actors }) => setup({ types: { events: {} as ActorWorkflowEvent } }).createMachine({
         id: "actor.workflow",
         initial: "planning",
         states: {
@@ -1137,7 +1157,7 @@ Create `pi/extensions/changeflow/bundled-workflows/changeflow-runtime.ts`:
 ```ts
 import { Type } from "typebox";
 import { assign, fromPromise, setup } from "xstate";
-import { defineWorkflow } from "../src/types.js";
+import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
 
 const planSubmittedSchema = Type.Object({
   type: Type.Literal("PLAN_SUBMITTED"),
@@ -1145,28 +1165,31 @@ const planSubmittedSchema = Type.Object({
   markdown: Type.String(),
 });
 
-const markdownEventSchema = (type: string) => Type.Object({ type: Type.Literal(type), markdown: Type.String() });
+const markdownEventSchema = <T extends string>(type: T) => Type.Object({ type: Type.Literal(type), markdown: Type.String() });
+
+const eventSchemas = {
+  START: Type.Object({ type: Type.Literal("START") }),
+  RESEARCH_COMPLETE: Type.Object({ type: Type.Literal("RESEARCH_COMPLETE") }),
+  PLAN_SUBMITTED: planSubmittedSchema,
+  USER_APPROVED: Type.Object({ type: Type.Literal("USER_APPROVED"), feedback: Type.Optional(Type.String()) }),
+  USER_REJECTED: Type.Object({ type: Type.Literal("USER_REJECTED"), feedback: Type.Optional(Type.String()) }),
+  ORDER_DEFINED: markdownEventSchema("ORDER_DEFINED"),
+  EXECUTION_COMPLETE: Type.Object({ type: Type.Literal("EXECUTION_COMPLETE") }),
+  QA_COMPLETE: Type.Object({ type: Type.Literal("QA_COMPLETE") }),
+} as const;
+type ChangeflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
 
 export default defineWorkflow({
   id: "changeflow.runtime",
   name: "Changeflow Runtime Workflow",
   description: "Machine-owned Changeflow lifecycle with child-agent plan critique.",
   initialEvent: { type: "START" },
-  eventSchemas: {
-    START: Type.Object({ type: Type.Literal("START") }),
-    RESEARCH_COMPLETE: Type.Object({ type: Type.Literal("RESEARCH_COMPLETE") }),
-    PLAN_SUBMITTED: planSubmittedSchema,
-    USER_APPROVED: Type.Object({ type: Type.Literal("USER_APPROVED"), feedback: Type.Optional(Type.String()) }),
-    USER_REJECTED: Type.Object({ type: Type.Literal("USER_REJECTED"), feedback: Type.Optional(Type.String()) }),
-    ORDER_DEFINED: markdownEventSchema("ORDER_DEFINED"),
-    EXECUTION_COMPLETE: Type.Object({ type: Type.Literal("EXECUTION_COMPLETE") }),
-    QA_COMPLETE: Type.Object({ type: Type.Literal("QA_COMPLETE") }),
-  },
+  eventSchemas,
   artifactTemplates: [
     { path: "research.md", content: "# Research: {description}\n\n" },
     { path: "high-level-plan.md", content: "# High-level plan: {description}\n\n" },
   ],
-  createActorLogic: ({ runtime, actors }) => setup({}).createMachine({
+  createActorLogic: ({ runtime, actors }) => setup({ types: { events: {} as ChangeflowEvent } }).createMachine({
     id: "changeflow.runtime",
     context: { latestFeedback: undefined as string | undefined },
     initial: "idle",
@@ -1639,7 +1662,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
-import { defineWorkflow } from "../src/types.js";
+import { defineWorkflow, type EventUnionFromSchemas } from "../src/types.js";
 
 let tempDir: string | undefined;
 

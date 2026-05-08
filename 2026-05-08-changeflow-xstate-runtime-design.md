@@ -48,12 +48,23 @@ flowchart LR
 A workflow module exports a trusted TypeScript definition using a helper such as:
 
 ```ts
+const eventSchemas = {
+  START: Type.Object({ type: Type.Literal("START") }),
+  PLAN_SUBMITTED: Type.Object({ type: Type.Literal("PLAN_SUBMITTED"), markdown: Type.String() }),
+} as const;
+type WorkflowEvent = EventUnionFromSchemas<typeof eventSchemas>;
+
 export default defineWorkflow({
   id,
   name,
   description,
-  createActorLogic: ({ actors, actions, runtime }) => setup(setupConfig).createMachine(machineConfig),
   eventSchemas,
+  createActorLogic: ({ actors, actions, runtime }) =>
+    setup({
+      types: { events: {} as WorkflowEvent },
+      actors,
+      actions,
+    }).createMachine(machineConfig),
   artifactTemplates,
   tools,
 });
@@ -61,7 +72,7 @@ export default defineWorkflow({
 
 The workflow decides what states mean and returns a fully constructed XState actor logic object, typically from `setup(...).createMachine(...)`. The harness must not accept raw machine config as the workflow boundary; it only knows how to pass actor logic to `createActor`, send events, persist snapshots, run invoked actors, and expose workflow-declared controls.
 
-Workflow event schemas are optional. Harness-level events are always validated. If a workflow provides schemas, incoming tool/command/user events are validated before reaching XState. If no schema exists for a workflow event, trusted workflow code handles it directly.
+Workflow event schemas are optional at runtime, but any workflow that wants TypeScript-safe transitions should declare schemas as a `const` map, derive `EventUnionFromSchemas<typeof eventSchemas>`, and pass that union to `setup({ types: { events } })`. Harness-level events are always validated. If a workflow provides schemas, incoming tool/command/user events are validated before reaching XState. If no schema exists for a workflow event, trusted workflow code handles it directly.
 
 ## Capabilities
 
