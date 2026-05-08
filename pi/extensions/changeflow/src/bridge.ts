@@ -402,15 +402,29 @@ Use changeflow_read_artifact and changeflow_write_artifact to manage artifacts.`
   // Hook: session_start to restore status
   pi.on("session_start", async (_event, ctx) => {
     state.ctx = ctx;
-    const registry = await ensureRegistry(state, ctx.cwd);
-    const runtime = ensureRuntime(state, ctx.cwd, registry);
-    const current = runtime.current();
-    if (current) {
-      ctx.ui.setStatus("changeflow", ctx.ui.theme.fg("accent", `⛓ ${current.metadata.state}`));
-    } else {
+    const workflowId = lastWorkflowIdFromSession(ctx);
+    if (!workflowId) {
       ctx.ui.setStatus("changeflow", undefined);
+      return;
+    }
+    try {
+      const registry = await ensureRegistry(state, ctx.cwd);
+      const runtime = ensureRuntime(state, ctx.cwd, registry);
+      const restored = await runtime.restore(workflowId);
+      ctx.ui.setStatus("changeflow", ctx.ui.theme.fg("accent", `⛓ ${restored.metadata.state}`));
+    } catch (error) {
+      ctx.ui.notify(`Could not restore Changeflow workflow ${workflowId}: ${error instanceof Error ? error.message : String(error)}`, "warning");
     }
   });
+}
+
+function lastWorkflowIdFromSession(ctx: ExtensionContext): string | undefined {
+  const entries = ctx.sessionManager.getEntries();
+  const last = entries
+    .filter((entry: { type: string; customType?: string }) => entry.type === "custom" && entry.customType === CUSTOM_ENTRY)
+    .pop() as { data?: { workflowId?: string; cleared?: boolean } } | undefined;
+  if (last?.data?.cleared) return undefined;
+  return last?.data?.workflowId;
 }
 
 function parseStartArgs(text: string): { workflowDefinitionId: string; description: string; error?: string } {
