@@ -265,7 +265,20 @@ export type RuntimeCapabilities = {
   queueMainAgentMessage(message: string): void;
 };
 
-export type WorkflowActorFactories = Record<string, (...args: any[]) => Promise<unknown>>;
+export type ChildAgentInput = { role: string; task: string; state: string; stepId?: string; reason?: string };
+export type MainAgentInput = { taskId: string; task: string; expectedEvents: string[] };
+export type PlannotatorReviewInput = { kind: string; artifactPath: string; content?: string };
+export type AskUserInput = { prompt: string; choices?: string[] };
+export type RunScriptInput = { command: string; args?: string[]; cwd?: string; timeout?: number };
+
+export type WorkflowActorFactories = {
+  childAgent(input: ChildAgentInput): Promise<unknown>;
+  mainAgent(input: MainAgentInput): Promise<unknown>;
+  plannotatorReview(input: PlannotatorReviewInput): Promise<unknown>;
+  askUser(input: AskUserInput): Promise<unknown>;
+  runScript(input: RunScriptInput): Promise<unknown>;
+};
+
 export type EventSchemaMap = Record<string, TSchema>;
 export type EventUnionFromSchemas<TSchemas extends EventSchemaMap> = Static<TSchemas[keyof TSchemas]> & AnyEventObject;
 
@@ -794,6 +807,18 @@ describe("actor adapters", () => {
     await expect(promise).resolves.toEqual({ type: "PLAN_SUBMITTED", markdown: "# Plan" });
     expect(adapters.pendingMainAgentTask()).toBeUndefined();
   });
+
+  it("runs a script through the injected runner", async () => {
+    const runScript = vi.fn(async () => ({ exitCode: 0, stdout: "success", stderr: "" }));
+    const adapters = createActorAdapters({ runChildAgent: vi.fn(), runScript });
+
+    await expect(adapters.runScript({ command: "echo", args: ["hello"], cwd: "/tmp" })).resolves.toEqual({
+      exitCode: 0,
+      stdout: "success",
+      stderr: "",
+    });
+    expect(runScript).toHaveBeenCalledWith({ command: "echo", args: ["hello"], cwd: "/tmp" });
+  });
 });
 ```
 
@@ -811,12 +836,15 @@ Expected: FAIL because `src/actors.ts` does not exist.
 Create `pi/extensions/changeflow/src/actors.ts`:
 
 ```ts
-export type ChildAgentInput = { role: string; task: string; state: string; stepId?: string; reason?: string };
-export type MainAgentInput = { taskId: string; task: string; expectedEvents: string[] };
+import type { ChildAgentInput, MainAgentInput, PlannotatorReviewInput, AskUserInput, RunScriptInput } from "./types.js";
+
 export type PendingMainAgentTask = MainAgentInput & { startedAt: string };
 
 export type ActorAdapterDependencies = {
   runChildAgent(input: ChildAgentInput): Promise<unknown>;
+  runScript?(input: RunScriptInput): Promise<unknown>;
+  requestPlannotatorReview?(input: PlannotatorReviewInput): Promise<unknown>;
+  askUser?(input: AskUserInput): Promise<unknown>;
   now?: () => string;
 };
 
@@ -840,6 +868,21 @@ export function createActorAdapters(deps: ActorAdapterDependencies) {
         resolveMainTask = resolve;
         rejectMainTask = reject;
       });
+    },
+
+    runScript(input: RunScriptInput): Promise<unknown> {
+      if (!deps.runScript) throw new Error("No script runner adapter configured.");
+      return deps.runScript(input);
+    },
+
+    plannotatorReview(input: PlannotatorReviewInput): Promise<unknown> {
+      if (!deps.requestPlannotatorReview) throw new Error("No Plannotator review adapter configured.");
+      return deps.requestPlannotatorReview(input);
+    },
+
+    askUser(input: AskUserInput): Promise<unknown> {
+      if (!deps.askUser) throw new Error("No user review adapter configured.");
+      return deps.askUser(input);
     },
 
     completeMainAgentTask(taskId: string, output: unknown): void {
@@ -1054,8 +1097,15 @@ private capabilities(paths: WorkflowPaths) {
     },
     writeArtifact: (path: string, content: string) => {
       const fullPath = join(paths.artifactsDir, path);
-      void mkdir(join(fullPath, ".."), { recursive: true }).then(() => import("node:fs/promises")).then(({ writeFile }) => writeFile(fullPath, content, "utf-8"));
-      void this.append("effect", "artifact.write", { event: { path } });
+      mkdir(dirname(fullPath), { recursive: true })
+        .then(() => writeFile(fullPath, content, "utf-8"))
+        .then(() => this.append("effect", "artifact.write", { event: { path } }))
+        .catch((error) => {
+          void this.append("effect", "artifact.write.failed", {
+            event: { path },
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     },
     setStatus: (label: string) => {
       void this.append("effect", "status.set", { event: { label } });
@@ -1070,13 +1120,7 @@ private capabilities(paths: WorkflowPaths) {
 }
 ```
 
-Then immediately clean up the `writeArtifact` implementation to avoid using `join(fullPath, "..")` by importing `dirname` at the top and using:
-
-```ts
-void mkdir(dirname(fullPath), { recursive: true }).then(() => writeFile(fullPath, content, "utf-8"));
-```
-
-with `writeFile` imported from `node:fs/promises`.
+Ensure `dirname` and `writeFile` are imported from `node:fs/promises` and `node:path` at the top of the file.
 
 - [ ] **Step 5: Subscribe to state changes and persist actor-driven transitions**
 
@@ -1178,6 +1222,89 @@ describe("ported Changeflow workflow", () => {
     expect(actor.getSnapshot().value).toBe("user_validation");
     actor.send({ type: "USER_APPROVED" });
     expect(actor.getSnapshot().value).toBe("done");
+  });
+
+  it("loops through revision when reviewer rejects the plan", async () => {
+    const runtime = {
+      log: () => undefined,
+      writeArtifact: () => undefined,
+      setStatus: () => undefined,
+      emitToPi: () => undefined,
+      queueMainAgentMessage: () => undefined,
+    };
+
+    let plannerCallCount = 0;
+    let reviewerCallCount = 0;
+
+    const actors = {
+      childAgent: async (input: { role: string; task: string }) => {
+        if (input.role === "planner") {
+          plannerCallCount++;
+          return { markdown: plannerCallCount === 1 ? "# Bad Plan" : "# Good Plan" };
+        }
+        if (input.role === "reviewer") {
+          reviewerCallCount++;
+          if (reviewerCallCount === 1) {
+            expect(input.task).toContain("# Bad Plan");
+            return { approved: false, summary: "needs work", feedback: "be more specific" };
+          }
+          expect(input.task).toContain("# Good Plan");
+          return { approved: true, summary: "approved" };
+        }
+        throw new Error(`Unexpected role ${input.role}`);
+      },
+      mainAgent: async () => ({ type: "MAIN_TASK_DONE" }),
+    };
+
+    const actor = createActor(changeflowWorkflow.createActorLogic({ runtime, actors, actions: {} }));
+    actor.start();
+
+    actor.send({ type: "START" });
+    actor.send({ type: "RESEARCH_COMPLETE" });
+
+    // First planning attempt - reviewer rejects
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe("high_level_revision"));
+
+    // Submit revised plan (simulating main agent response to revision prompt)
+    actor.send({ type: "PLAN_SUBMITTED", kind: "high_level_plan", markdown: "# Good Plan" });
+
+    // Second review should approve
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe("high_level_user_review"));
+
+    expect(plannerCallCount).toBe(1); // Planner only called once initially
+    expect(reviewerCallCount).toBe(2); // Reviewer called twice
+  });
+
+  it("handles actor invocation errors gracefully", async () => {
+    const runtime = {
+      log: () => undefined,
+      writeArtifact: () => undefined,
+      setStatus: () => undefined,
+      emitToPi: () => undefined,
+      queueMainAgentMessage: () => undefined,
+    };
+
+    const actors = {
+      childAgent: async (input: { role: string }) => {
+        if (input.role === "planner") {
+          throw new Error("Planner agent crashed");
+        }
+        return { approved: true, summary: "ok" };
+      },
+      mainAgent: async () => ({ type: "MAIN_TASK_DONE" }),
+    };
+
+    const actor = createActor(changeflowWorkflow.createActorLogic({ runtime, actors, actions: {} }));
+    actor.start();
+
+    actor.send({ type: "START" });
+    actor.send({ type: "RESEARCH_COMPLETE" });
+
+    // Error should transition to revision state
+    await vi.waitFor(() => expect(actor.getSnapshot().value).toBe("high_level_revision"));
+
+    // Context should contain error feedback
+    expect(actor.getSnapshot().context.latestFeedback).toContain("Planner agent crashed");
   });
 });
 ```
@@ -1576,8 +1703,27 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
       const rt = await ensureRuntime(ctx);
 
       if (subcommand === "start") {
-        const workflowDefinitionId = "changeflow.runtime";
-        const started = await rt.start({ workflowDefinitionId, description: restText });
+        let workflowDefinitionId = "changeflow.runtime";
+        let description = restText;
+
+        const workflowFlagMatch = restText.match(/^--workflow\s+(\S+)\s*(.*)/);
+        if (workflowFlagMatch) {
+          workflowDefinitionId = workflowFlagMatch[1];
+          description = workflowFlagMatch[2].trim();
+        }
+
+        if (!description) {
+          ctx.ui.notify("Usage: /changeflow start [--workflow <id>] <description>", "warning");
+          return;
+        }
+
+        const loaded = await ensureRegistry(ctx);
+        if (!loaded.definitions.has(workflowDefinitionId)) {
+          ctx.ui.notify(`Unknown workflow: ${workflowDefinitionId}. Run /changeflow workflows to list available workflows.`, "error");
+          return;
+        }
+
+        const started = await rt.start({ workflowDefinitionId, description });
         pi.appendEntry(CUSTOM_ENTRY, { workflowId: started.metadata.id });
         pi.setSessionName(`Changeflow: ${started.metadata.title}`);
         ctx.ui.notify(`Started ${started.metadata.id} in ${started.metadata.state}.`, "info");
@@ -1596,6 +1742,39 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
         return;
       }
 
+      if (subcommand === "actors") {
+        const current = rt.current();
+        if (!current) {
+          ctx.ui.notify("No active Changeflow workflow.", "warning");
+          return;
+        }
+        const actorRuns = await rt.listActorRuns();
+        if (actorRuns.length === 0) {
+          ctx.ui.notify("No actor runs recorded.", "info");
+          return;
+        }
+        const lines = actorRuns.map((run) =>
+          `- ${run.id} [${run.kind}] ${run.status} (${run.state})`
+        );
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+
+      if (subcommand === "cancel-actor") {
+        const actorId = rest[0];
+        if (!actorId) {
+          ctx.ui.notify("Usage: /changeflow cancel-actor <actor-id>", "warning");
+          return;
+        }
+        try {
+          await rt.cancelActor(actorId);
+          ctx.ui.notify(`Cancelled actor ${actorId}.`, "info");
+        } catch (error) {
+          ctx.ui.notify(`Failed to cancel actor: ${error instanceof Error ? error.message : String(error)}`, "error");
+        }
+        return;
+      }
+
       if (subcommand === "send") {
         const event = restText.trim().startsWith("{") ? JSON.parse(restText) : { type: restText.trim() };
         ctx.ui.notify(JSON.stringify(await rt.send(event)), "info");
@@ -1609,7 +1788,7 @@ export function installChangeflowBridge(pi: ExtensionAPI): void {
         return;
       }
 
-      ctx.ui.notify("Usage: /changeflow start|status|workflows|send|clear", "warning");
+      ctx.ui.notify("Usage: /changeflow start|status|workflows|actors|cancel-actor|send|clear", "warning");
     },
   });
 
@@ -1700,6 +1879,151 @@ Expected: PASS.
 ```bash
 git add pi/extensions/changeflow/src/bridge.ts pi/extensions/changeflow/index.ts pi/extensions/changeflow/test/bridge.test.ts
 git commit -m "feat(changeflow): install generic runtime bridge"
+```
+
+## Task 9a: Add Actor Tracking and Management
+
+**Files:**
+- Modify: `pi/extensions/changeflow/src/runtime.ts`
+- Modify: `pi/extensions/changeflow/src/storage.ts`
+
+- [ ] **Step 1: Add actor tracking fields to runtime**
+
+Add these fields to `ChangeflowRuntime` class:
+
+```ts
+private actorRuns: Map<string, ActorRunRecord> = new Map();
+private actorCancellers: Map<string, AbortController> = new Map();
+```
+
+- [ ] **Step 2: Implement actor tracking methods**
+
+Add these methods to `ChangeflowRuntime`:
+
+```ts
+async listActorRuns(): Promise<ActorRunRecord[]> {
+  return [...this.actorRuns.values()].sort((a, b) =>
+    new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
+  );
+}
+
+async cancelActor(actorId: string): Promise<void> {
+  const canceller = this.actorCancellers.get(actorId);
+  if (!canceller) throw new Error(`No cancellable actor ${actorId}.`);
+  canceller.abort();
+  const run = this.actorRuns.get(actorId);
+  if (run) {
+    run.status = "cancelled";
+    run.completedAt = this.now();
+    await writeActorRun(this.active!.paths, run);
+  }
+}
+
+trackActorStart(id: string, kind: ActorRunRecord["kind"], state: string, input: unknown): AbortController {
+  const controller = new AbortController();
+  const record: ActorRunRecord = {
+    id,
+    workflowId: this.active!.metadata.id,
+    kind,
+    state,
+    status: "running",
+    input,
+    startedAt: this.now(),
+  };
+  this.actorRuns.set(id, record);
+  this.actorCancellers.set(id, controller);
+  void writeActorRun(this.active!.paths, record);
+  return controller;
+}
+
+async trackActorComplete(id: string, output?: unknown, error?: string): Promise<void> {
+  const run = this.actorRuns.get(id);
+  if (!run) return;
+  run.status = error ? "failed" : "completed";
+  run.output = output;
+  run.error = error;
+  run.completedAt = this.now();
+  this.actorCancellers.delete(id);
+  await writeActorRun(this.active!.paths, run);
+}
+```
+
+- [ ] **Step 3: Update bridge to use actor tracking**
+
+In `src/bridge.ts`, update the `runChildAgent` adapter to wrap with tracking:
+
+```ts
+runChildAgent: async (input) => {
+  const actorId = `child-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const controller = runtime!.trackActorStart(actorId, "childAgent", input.state, input);
+  try {
+    const result = await runChangeflowSubagent({
+      workflowId: runtime?.current()?.metadata.id ?? "unknown",
+      artifactsDir: runtime?.current()?.metadata.artifactsDir ?? join(ctx.cwd, ".pi", "changeflow", "unknown", "artifacts"),
+      cwd: ctx.cwd,
+      role: input.role as never,
+      task: input.task,
+      phase: input.state,
+      stepId: input.stepId,
+      reason: input.reason,
+      signal: controller.signal,
+    });
+    await runtime!.trackActorComplete(actorId, result);
+    return result;
+  } catch (error) {
+    await runtime!.trackActorComplete(actorId, undefined, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+},
+```
+
+- [ ] **Step 4: Add runScript adapter to bridge**
+
+Add the `runScript` adapter to `actorAdapters`:
+
+```ts
+runScript: async (input) => {
+  const actorId = `script-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const controller = runtime!.trackActorStart(actorId, "script", "script", input);
+  try {
+    const { spawn } = await import("node:child_process");
+    const result = await new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+      const proc = spawn(input.command, input.args ?? [], {
+        cwd: input.cwd ?? ctx.cwd,
+        timeout: input.timeout ?? 30_000,
+        shell: true,
+      });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout?.on("data", (data) => { stdout += data; });
+      proc.stderr?.on("data", (data) => { stderr += data; });
+      proc.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+      proc.on("error", reject);
+      controller.signal.addEventListener("abort", () => proc.kill());
+    });
+    await runtime!.trackActorComplete(actorId, result);
+    return result;
+  } catch (error) {
+    await runtime!.trackActorComplete(actorId, undefined, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+},
+```
+
+- [ ] **Step 5: Run checks**
+
+```bash
+cd pi/extensions/changeflow
+npm run check
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pi/extensions/changeflow/src/runtime.ts pi/extensions/changeflow/src/bridge.ts
+git commit -m "feat(changeflow): add actor tracking and management"
 ```
 
 ## Task 10: Restore Active Workflow from Session Entries
@@ -1800,6 +2124,206 @@ Expected: PASS.
 ```bash
 git add pi/extensions/changeflow/src/bridge.ts pi/extensions/changeflow/src/runtime.ts pi/extensions/changeflow/test/restore.test.ts
 git commit -m "feat(changeflow): restore runtime from session pointer"
+```
+
+## Task 10a: Add Actor Recovery Events
+
+**Files:**
+- Modify: `pi/extensions/changeflow/src/types.ts`
+- Modify: `pi/extensions/changeflow/src/runtime.ts`
+- Modify: `pi/extensions/changeflow/bundled-workflows/changeflow-runtime.ts`
+- Create: `pi/extensions/changeflow/test/recovery.test.ts`
+
+- [ ] **Step 1: Add recovery event type**
+
+In `src/types.ts`, add:
+
+```ts
+export type ActorRecoveryEvent = {
+  type: "ACTOR_RECOVERY_NEEDED";
+  actorId: string;
+  actorKind: ActorRunRecord["kind"];
+  originalState: string;
+  error: string;
+};
+```
+
+- [ ] **Step 2: Write recovery test**
+
+Create `pi/extensions/changeflow/test/recovery.test.ts`:
+
+```ts
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { setup } from "xstate";
+import { ChangeflowRuntime } from "../src/runtime.js";
+import { defineWorkflow } from "../src/types.js";
+
+let tempDir: string | undefined;
+
+afterEach(async () => {
+  if (tempDir) await rm(tempDir, { recursive: true, force: true });
+  tempDir = undefined;
+});
+
+describe("actor recovery", () => {
+  it("sends recovery events for orphaned actors on restore", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "changeflow-recovery-"));
+    const receivedEvents: unknown[] = [];
+
+    const workflow = defineWorkflow({
+      id: "recovery.workflow",
+      name: "Recovery",
+      createActorLogic: () => setup({
+        types: { events: {} as { type: "START" } | { type: "ACTOR_RECOVERY_NEEDED"; actorId: string; error: string } },
+      }).createMachine({
+        id: "recovery.workflow",
+        initial: "idle",
+        states: {
+          idle: {
+            on: {
+              START: "working",
+              ACTOR_RECOVERY_NEEDED: {
+                target: "idle",
+                actions: ({ event }) => receivedEvents.push(event),
+              },
+            },
+          },
+          working: {},
+        },
+      }),
+    });
+
+    const runtime = new ChangeflowRuntime({ cwd: tempDir, workflows: [workflow] });
+    const started = await runtime.start({ workflowDefinitionId: "recovery.workflow", description: "test" });
+
+    // Simulate an orphaned actor by writing a running actor record
+    const actorDir = join(tempDir, ".pi", "changeflow", started.metadata.id, "actors", "orphan-1");
+    await import("node:fs/promises").then(({ mkdir }) => mkdir(actorDir, { recursive: true }));
+    await writeFile(join(actorDir, "metadata.json"), JSON.stringify({
+      id: "orphan-1",
+      workflowId: started.metadata.id,
+      kind: "childAgent",
+      state: "working",
+      status: "running",
+      input: {},
+      startedAt: new Date().toISOString(),
+    }));
+
+    // Restore should detect orphaned actor and send recovery event
+    const restored = new ChangeflowRuntime({ cwd: tempDir, workflows: [workflow] });
+    await restored.restore(started.metadata.id);
+
+    await vi.waitFor(() => expect(receivedEvents.length).toBe(1));
+    expect(receivedEvents[0]).toMatchObject({
+      type: "ACTOR_RECOVERY_NEEDED",
+      actorId: "orphan-1",
+    });
+  });
+});
+```
+
+- [ ] **Step 3: Implement recovery detection in restore**
+
+Add this method to `ChangeflowRuntime`:
+
+```ts
+private async reconcileOrphanedActors(): Promise<void> {
+  if (!this.active) return;
+
+  // Load actor records from disk
+  const actorsDir = this.active.paths.actorsDir;
+  try {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const entries = await readdir(actorsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const metadataPath = join(actorsDir, entry.name, "metadata.json");
+        const record = JSON.parse(await readFile(metadataPath, "utf-8")) as ActorRunRecord;
+        if (record.status === "running") {
+          // Actor was running when session ended - send recovery event
+          record.status = "failed";
+          record.error = "Session ended while actor was running";
+          record.completedAt = this.now();
+          await writeActorRun(this.active.paths, record);
+
+          this.active.actor.send({
+            type: "ACTOR_RECOVERY_NEEDED",
+            actorId: record.id,
+            actorKind: record.kind,
+            originalState: record.state,
+            error: record.error,
+          });
+        }
+        this.actorRuns.set(record.id, record);
+      } catch {
+        // Skip invalid actor records
+      }
+    }
+  } catch {
+    // No actors directory yet
+  }
+}
+```
+
+Update the `restore` method to call reconciliation:
+
+```ts
+async restore(workflowId: string): Promise<WorkflowRuntimeSnapshot> {
+  const paths = createWorkflowPaths(join(this.cwd, ".pi", "changeflow"), workflowId);
+  const metadata = await readWorkflowMetadata(paths);
+  const definition = this.requireWorkflow(metadata.workflowDefinitionId);
+  const snapshot = await readSnapshot(paths, metadata.latestSnapshotSeq) as Snapshot<unknown>;
+  const logic = definition.createActorLogic({ runtime: this.capabilities(paths), actors: this.actorAdapters, actions: {} });
+  const actor = createActor(logic, { snapshot });
+  actor.start();
+
+  actor.subscribe((snapshot) => {
+    void this.persistObservedSnapshot(snapshot.value, actor.getPersistedSnapshot());
+  });
+
+  this.active = { metadata, paths, definition, actor };
+
+  // Check for orphaned running actors and send recovery events
+  await this.reconcileOrphanedActors();
+
+  return this.currentOrThrow();
+}
+```
+
+- [ ] **Step 4: Add recovery handler to bundled workflow (optional)**
+
+In `bundled-workflows/changeflow-runtime.ts`, add global handler to states that invoke actors:
+
+```ts
+high_level_planning: {
+  invoke: { /* existing */ },
+  on: {
+    ACTOR_RECOVERY_NEEDED: {
+      target: "high_level_revision",
+      actions: assign({ latestFeedback: ({ event }) => `Actor recovery needed: ${(event as { error?: string }).error ?? "unknown error"}` }),
+    },
+  },
+},
+```
+
+- [ ] **Step 5: Run checks**
+
+```bash
+cd pi/extensions/changeflow
+npm run check
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add pi/extensions/changeflow/src/types.ts pi/extensions/changeflow/src/runtime.ts pi/extensions/changeflow/bundled-workflows/changeflow-runtime.ts pi/extensions/changeflow/test/recovery.test.ts
+git commit -m "feat(changeflow): add actor recovery events"
 ```
 
 ## Task 11: Enforce Workflow-Declared Edit Policy
@@ -2101,7 +2625,23 @@ askUser(input: AskUserInput): Promise<unknown> {
 },
 ```
 
-- [ ] **Step 4: Wire bridge Plannotator dependency**
+- [ ] **Step 4: Add context management to runtime**
+
+To avoid stale context issues with `askUser`, add context management to the runtime. In `src/runtime.ts`, add:
+
+```ts
+private currentContext?: ExtensionContext;
+
+setContext(ctx: ExtensionContext): void {
+  this.currentContext = ctx;
+}
+
+getContext(): ExtensionContext | undefined {
+  return this.currentContext;
+}
+```
+
+- [ ] **Step 5: Wire bridge Plannotator dependency**
 
 In `src/bridge.ts`, inside `actorAdapters`, add:
 
@@ -2121,14 +2661,28 @@ requestPlannotatorReview: async (input) => {
     });
   });
 },
-askUser: async (input) => ctx.ui.select(input.prompt, input.choices ?? ["approved", "rejected"]),
+askUser: async (input) => {
+  const currentCtx = runtime?.getContext();
+  if (!currentCtx) throw new Error("No active context for user interaction.");
+  return currentCtx.ui.select(input.prompt, input.choices ?? ["approved", "rejected"]);
+},
 ```
 
-- [ ] **Step 5: Keep workflow human review event-driven for MVP**
+Also update each tool's `execute` handler to set the current context:
+
+```ts
+async execute(_id, params, _signal, _onUpdate, ctx) {
+  const rt = await ensureRuntime(ctx);
+  rt.setContext(ctx);  // Always update context before operations
+  // ... rest of handler
+}
+```
+
+- [ ] **Step 6: Keep workflow human review event-driven for MVP**
 
 Do not change human review states to invoke Plannotator yet unless the bridge has a reliable result event integration. Keep `high_level_user_review` and `detailed_user_review` waiting for `USER_APPROVED`/`USER_REJECTED`. This task only makes the actor capability available to workflow authors and future workflow revisions.
 
-- [ ] **Step 6: Run checks**
+- [ ] **Step 7: Run checks**
 
 ```bash
 cd pi/extensions/changeflow
@@ -2137,7 +2691,7 @@ npm run check
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add pi/extensions/changeflow/src/actors.ts pi/extensions/changeflow/src/bridge.ts pi/extensions/changeflow/bundled-workflows/changeflow-runtime.ts pi/extensions/changeflow/test/review-actors.test.ts
@@ -2302,6 +2856,12 @@ Expected: no uncommitted Changeflow files. Pre-existing unrelated files, such as
 ## Self-Review
 
 - **Spec coverage:** The plan covers trusted TS workflow loading, runtime snapshots and event log, actor/capability split, main Pi agent supervision, child-agent invocation, generic bridge tools/commands, edit policy enforcement, restore, error surfaces through events, tests, docs, and removal of compatibility shims.
+- **Actor types:** All five actor types from the design are implemented: `childAgent`, `mainAgent`, `askUser`, `plannotatorReview`, and `runScript`.
+- **Bridge commands:** All seven commands from the design are implemented: `start` (with `--workflow` flag), `status`, `workflows`, `actors`, `cancel-actor`, `send`, and `clear`.
+- **Actor persistence:** Actor runs are tracked and persisted using `writeActorRun`, with status updates on completion/failure/cancellation (Task 9a).
+- **Recovery:** Orphaned actors from interrupted sessions send `ACTOR_RECOVERY_NEEDED` events on restore (Task 10a).
+- **Error handling:** Artifact writes log failures to the event log rather than silently swallowing errors.
+- **Test coverage:** Includes happy path, revision loop (reviewer rejection), and actor error handling tests for the workflow.
 - **Intentional MVP boundary:** Plannotator/user review actor adapters are added, but the ported workflow keeps human review event-driven until result reconciliation is made robust. This still satisfies the spec's first extreme demonstration through a planner child agent whose output feeds a reviewer child agent.
 - **Completeness scan:** No incomplete markers or unspecified implementation steps remain.
-- **Type consistency:** Core names are consistent across tasks: `TrustedWorkflowDefinition`, `ChangeflowRuntime`, `createActorAdapters`, `changeflow.runtime`, `changeflow_send_event`, `changeflow_get_state`, `changeflow_read_artifact`, `changeflow_write_artifact`, and `changeflow_complete_main_task`.
+- **Type consistency:** Core names are consistent across tasks: `TrustedWorkflowDefinition`, `ChangeflowRuntime`, `createActorAdapters`, `WorkflowActorFactories`, `changeflow.runtime`, `changeflow_send_event`, `changeflow_get_state`, `changeflow_read_artifact`, `changeflow_write_artifact`, and `changeflow_complete_main_task`.
