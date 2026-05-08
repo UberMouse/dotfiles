@@ -280,6 +280,23 @@ This keeps research and planning from modifying source files or unrelated markdo
 13. Temporarily make Plannotator unavailable and confirm Changeflow reports a retryable failure without advancing state.
 14. During research/planning, verify model-initiated writes outside `.pi/changeflow/<workflow-id>/` are blocked.
 
+## Manual runtime verification
+
+1. Run `cd ~/dotfiles/pi/extensions/changeflow && npm run check`.
+2. Reload Pi extensions.
+3. Run `/changeflow workflows` and confirm `changeflow.runtime` appears.
+4. Run `/changeflow start test the new runtime`.
+5. Run `changeflow_get_state` and confirm the workflow is active.
+6. Send `{ "type": "START" }` with `changeflow_send_event` if the workflow did not auto-start.
+7. Progress research with `{ "type": "RESEARCH_COMPLETE" }`.
+8. Confirm the machine invokes a planner child-agent actor to produce the high-level plan.
+9. Confirm the machine invokes a reviewer child-agent actor with the planner output and reaches either `high_level_user_review` or `high_level_revision`.
+10. Before execution, try a source `write` outside the artifact directory and confirm Changeflow blocks it.
+11. Approve the high-level review with `{ "type": "USER_APPROVED" }`.
+12. Submit detailed plan, approve it, define execution order, enter `executing`, and confirm source writes are allowed.
+13. Complete execution, QA, and final user validation.
+14. Reload Pi during a non-terminal state and confirm `/changeflow status` restores the workflow.
+
 ## Suggested next iterations
 
 1. Add Plannotator review for detailed plans and code review in QA.
