@@ -52,14 +52,14 @@ export default defineWorkflow({
   id,
   name,
   description,
-  machine: ({ actors, actions, runtime }) => createMachine(machineConfig),
+  createActorLogic: ({ actors, actions, runtime }) => setup(setupConfig).createMachine(machineConfig),
   eventSchemas,
   artifactTemplates,
   tools,
 });
 ```
 
-The workflow decides what states mean. The harness only knows how to start a workflow, send events, persist snapshots, run invoked actors, and expose workflow-declared controls.
+The workflow decides what states mean and returns a fully constructed XState actor logic object, typically from `setup(...).createMachine(...)`. The harness must not accept raw machine config as the workflow boundary; it only knows how to pass actor logic to `createActor`, send events, persist snapshots, run invoked actors, and expose workflow-declared controls.
 
 Workflow event schemas are optional. Harness-level events are always validated. If a workflow provides schemas, incoming tool/command/user events are validated before reaching XState. If no schema exists for a workflow event, trusted workflow code handles it directly.
 

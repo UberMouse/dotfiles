@@ -4,7 +4,7 @@
 
 **Goal:** Refactor `pi/extensions/changeflow` so trusted TypeScript XState workflow modules own workflow behavior, while the Pi extension acts as a runtime/harness.
 
-**Architecture:** Split the current monolithic extension into focused modules: workflow definitions, durable storage, runtime, actor/capability adapters, and Pi bridge. Port the existing Changeflow lifecycle into a bundled TS workflow and add a machine-invoked high-level plan reviewer child agent to prove the machine can spawn agents and branch on their results.
+**Architecture:** Split the current monolithic extension into focused modules: workflow definitions, durable storage, runtime, actor/capability adapters, and Pi bridge. Workflow modules return a fully constructed XState actor logic object, typically from `setup(...).createMachine(...)`; the runtime passes that object directly to `createActor`. Port the existing Changeflow lifecycle into a bundled TS workflow and add a machine-invoked high-level plan reviewer child agent to prove the machine can spawn agents and branch on their results.
 
 **Tech Stack:** TypeScript, Pi extension API, XState v5, TypeBox, Vitest, Node filesystem/process APIs.
 
@@ -20,9 +20,9 @@ Create or modify these files:
 
 - Modify `pi/extensions/changeflow/package.json`: add Vitest scripts and test dependency.
 - Modify `pi/extensions/changeflow/tsconfig.json`: include new source and test files.
-- Create `pi/extensions/changeflow/src/types.ts`: shared workflow/runtime/event/persistence types and TypeBox helpers.
+- Create `pi/extensions/changeflow/src/types.ts`: shared workflow/runtime/event/persistence types and TypeBox helpers. The workflow contract accepts XState actor logic, not raw machine config, so workflows can use the XState `setup()` API.
 - Create `pi/extensions/changeflow/src/storage.ts`: event log, snapshot, workflow metadata, and actor-run filesystem persistence.
-- Create `pi/extensions/changeflow/src/runtime.ts`: machine lifecycle, event validation, snapshot persistence, action capabilities, actor completion routing.
+- Create `pi/extensions/changeflow/src/runtime.ts`: actor logic lifecycle, event validation, snapshot persistence, action capabilities, actor completion routing.
 - Create `pi/extensions/changeflow/src/actors.ts`: awaited actor factories for child agents, main-agent tasks, Plannotator/user review, and scripts.
 - Create `pi/extensions/changeflow/src/bridge.ts`: Pi command/tool/lifecycle bridge around the runtime.
 - Rewrite `pi/extensions/changeflow/index.ts`: thin extension entrypoint that installs the bridge.
@@ -156,6 +156,7 @@ Create `pi/extensions/changeflow/test/types.test.ts`:
 ```ts
 import { describe, expect, it } from "vitest";
 import { Type } from "typebox";
+import { setup } from "xstate";
 import { defineWorkflow, parseWorkflowEvent } from "../src/types.js";
 
 describe("workflow definition helpers", () => {
@@ -163,7 +164,7 @@ describe("workflow definition helpers", () => {
     const workflow = defineWorkflow({
       id: "demo.workflow",
       name: "Demo Workflow",
-      machine: () => ({ id: "demo.workflow", initial: "idle", states: { idle: {} } }),
+      createActorLogic: () => setup({}).createMachine({ id: "demo.workflow", initial: "idle", states: { idle: {} } }),
     });
 
     expect(workflow.id).toBe("demo.workflow");
@@ -201,7 +202,7 @@ Create `pi/extensions/changeflow/src/types.ts`:
 ```ts
 import { Value } from "typebox/value";
 import type { TSchema } from "typebox";
-import type { AnyEventObject, MachineConfig, Snapshot } from "xstate";
+import type { AnyActorLogic, AnyEventObject, Snapshot } from "xstate";
 
 export type WorkflowId = string;
 export type WorkflowInstanceId = string;
@@ -258,7 +259,7 @@ export type RuntimeCapabilities = {
 
 export type WorkflowActorFactories = Record<string, unknown>;
 
-export type WorkflowMachineFactoryInput = {
+export type WorkflowActorLogicFactoryInput = {
   runtime: RuntimeCapabilities;
   actors: WorkflowActorFactories;
   actions: Record<string, unknown>;
@@ -269,7 +270,7 @@ export type TrustedWorkflowDefinition = {
   name: string;
   description?: string;
   initialEvent?: AnyEventObject;
-  machine(input: WorkflowMachineFactoryInput): MachineConfig<Record<string, unknown>, AnyEventObject>;
+  createActorLogic(input: WorkflowActorLogicFactoryInput): AnyActorLogic;
   eventSchemas?: Record<string, TSchema>;
   artifactTemplates?: readonly { path: string; content: string }[];
   tools?: readonly { name: string; description: string; eventType: string; schema: TSchema }[];
@@ -507,7 +508,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMachine } from "xstate";
+import { setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
 import { defineWorkflow } from "../src/types.js";
 
@@ -525,7 +526,7 @@ const demoWorkflow = defineWorkflow({
     START: Type.Object({ type: Type.Literal("START") }),
     FINISH: Type.Object({ type: Type.Literal("FINISH"), note: Type.String() }),
   },
-  machine: () => createMachine({
+  createActorLogic: () => setup({}).createMachine({
     id: "demo.workflow",
     initial: "idle",
     states: {
@@ -571,7 +572,7 @@ Create `pi/extensions/changeflow/src/runtime.ts` with start/send/restore only. I
 ```ts
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { createActor, type Actor, type AnyEventObject, type Snapshot } from "xstate";
+import { createActor, type Actor, type AnyActorLogic, type Snapshot } from "xstate";
 import { appendEvent, createWorkflowPaths, readSnapshot, readWorkflowMetadata, writeSnapshot, writeWorkflowMetadata, type WorkflowPaths } from "./storage.js";
 import { parseWorkflowEvent, type TrustedWorkflowDefinition, type WorkflowMetadata, type WorkflowRuntimeSnapshot } from "./types.js";
 
@@ -594,7 +595,7 @@ export class ChangeflowRuntime {
   private readonly workflows = new Map<string, TrustedWorkflowDefinition>();
   private readonly cwd: string;
   private readonly now: () => string;
-  private active?: { metadata: WorkflowMetadata; paths: WorkflowPaths; definition: TrustedWorkflowDefinition; actor: Actor<Snapshot<unknown>, AnyEventObject> };
+  private active?: { metadata: WorkflowMetadata; paths: WorkflowPaths; definition: TrustedWorkflowDefinition; actor: Actor<AnyActorLogic> };
   private eventSeq = 0;
 
   constructor(options: ChangeflowRuntimeOptions) {
@@ -614,8 +615,8 @@ export class ChangeflowRuntime {
     const paths = createWorkflowPaths(join(this.cwd, ".pi", "changeflow"), id);
     await mkdir(paths.root, { recursive: true });
 
-    const machine = definition.machine({ runtime: this.noopCapabilities(), actors: {}, actions: {} });
-    const actor = createActor(machine);
+    const logic = definition.createActorLogic({ runtime: this.noopCapabilities(), actors: {}, actions: {} });
+    const actor = createActor(logic);
     actor.start();
 
     const metadata: WorkflowMetadata = {
@@ -643,8 +644,8 @@ export class ChangeflowRuntime {
     const metadata = await readWorkflowMetadata(paths);
     const definition = this.requireWorkflow(metadata.workflowDefinitionId);
     const snapshot = await readSnapshot(paths, metadata.latestSnapshotSeq) as Snapshot<unknown>;
-    const machine = definition.machine({ runtime: this.noopCapabilities(), actors: {}, actions: {} });
-    const actor = createActor(machine, { snapshot });
+    const logic = definition.createActorLogic({ runtime: this.noopCapabilities(), actors: {}, actions: {} });
+    const actor = createActor(logic, { snapshot });
     actor.start();
     this.active = { metadata, paths, definition, actor };
     return this.currentOrThrow();
@@ -886,7 +887,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fromPromise, createMachine } from "xstate";
+import { fromPromise, setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
 import { defineWorkflow } from "../src/types.js";
 
@@ -903,7 +904,7 @@ describe("runtime capabilities and actors", () => {
     const workflow = defineWorkflow({
       id: "actor.workflow",
       name: "Actor Workflow",
-      machine: ({ runtime, actors }) => createMachine({
+      createActorLogic: ({ runtime, actors }) => setup({}).createMachine({
         id: "actor.workflow",
         initial: "planning",
         states: {
@@ -982,7 +983,7 @@ this.actorAdapters = createActorAdapters(options.actorAdapters ?? { runChildAgen
 Replace both machine creation calls with:
 
 ```ts
-const machine = definition.machine({ runtime: this.capabilities(paths), actors: this.actorAdapters, actions: {} });
+const logic = definition.createActorLogic({ runtime: this.capabilities(paths), actors: this.actorAdapters, actions: {} });
 ```
 
 - [ ] **Step 4: Implement artifact-writing capability**
@@ -1092,7 +1093,7 @@ describe("ported Changeflow workflow", () => {
       childAgent: async () => ({ approved: true, summary: "approved" }),
       mainAgent: async () => ({ type: "MAIN_TASK_DONE" }),
     };
-    const actor = createActor(changeflowWorkflow.machine({ runtime, actors, actions: {} }));
+    const actor = createActor(changeflowWorkflow.createActorLogic({ runtime, actors, actions: {} }));
     actor.start();
 
     actor.send({ type: "START" });
@@ -1135,7 +1136,7 @@ Create `pi/extensions/changeflow/bundled-workflows/changeflow-runtime.ts`:
 
 ```ts
 import { Type } from "typebox";
-import { assign, createMachine, fromPromise } from "xstate";
+import { assign, fromPromise, setup } from "xstate";
 import { defineWorkflow } from "../src/types.js";
 
 const planSubmittedSchema = Type.Object({
@@ -1165,7 +1166,7 @@ export default defineWorkflow({
     { path: "research.md", content: "# Research: {description}\n\n" },
     { path: "high-level-plan.md", content: "# High-level plan: {description}\n\n" },
   ],
-  machine: ({ runtime, actors }) => createMachine({
+  createActorLogic: ({ runtime, actors }) => setup({}).createMachine({
     id: "changeflow.runtime",
     context: { latestFeedback: undefined as string | undefined },
     initial: "idle",
@@ -1297,9 +1298,9 @@ describe("workflow loader", () => {
     const workflowsDir = join(tempDir, ".pi", "changeflow", "workflows");
     await mkdir(workflowsDir, { recursive: true });
     await writeFile(join(workflowsDir, "local.ts"), `
-      import { createMachine } from "xstate";
+      import { setup } from "xstate";
       import { defineWorkflow } from "../../../../pi/extensions/changeflow/src/types.js";
-      export default defineWorkflow({ id: "local.workflow", name: "Local Workflow", machine: () => createMachine({ id: "local.workflow", initial: "idle", states: { idle: {} } }) });
+      export default defineWorkflow({ id: "local.workflow", name: "Local Workflow", createActorLogic: () => setup({}).createMachine({ id: "local.workflow", initial: "idle", states: { idle: {} } }) });
     `);
 
     const registry = await loadWorkflowRegistry(tempDir);
@@ -1636,7 +1637,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createMachine } from "xstate";
+import { setup } from "xstate";
 import { ChangeflowRuntime } from "../src/runtime.js";
 import { defineWorkflow } from "../src/types.js";
 
@@ -1650,7 +1651,7 @@ afterEach(async () => {
 describe("runtime restoreCurrent", () => {
   it("restores an existing workflow id and reports missing ids clearly", async () => {
     tempDir = await mkdtemp(join(tmpdir(), "changeflow-restore-"));
-    const workflow = defineWorkflow({ id: "restore.workflow", name: "Restore", machine: () => createMachine({ id: "restore.workflow", initial: "idle", states: { idle: {} } }) });
+    const workflow = defineWorkflow({ id: "restore.workflow", name: "Restore", createActorLogic: () => setup({}).createMachine({ id: "restore.workflow", initial: "idle", states: { idle: {} } }) });
     const runtime = new ChangeflowRuntime({ cwd: tempDir, workflows: [workflow] });
     const started = await runtime.start({ workflowDefinitionId: "restore.workflow", description: "restore me" });
 
