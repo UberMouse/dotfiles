@@ -27,7 +27,7 @@ This is also aliased as `hms` in the shell.
 - `i3.nix`, `zsh.nix`, `neovim.nix`, `scriptBins.nix`
 
 **Custom packages** (applied as overlays in flake.nix):
-- `packages/claude-code/package.nix` — claude-code CLI built with `buildNpmPackage`
+- `packages/claude-code/package.nix` — claude-code CLI (prebuilt binary)
 - `packages/tabby-terminal/package.nix` — Tabby terminal built with `buildNpmPackage`
 
 **Three nixpkgs channels:** stable (`nixpkgs` / 25.11), `nixpkgs-unstable`, and `nixpkgs-unstable-small`. Most packages come from unstable. The `unstable-pkgs` and `unstable-small-pkgs` are passed via `specialArgs`/`extraSpecialArgs`.
@@ -41,4 +41,4 @@ This is also aliased as `hms` in the shell.
 
 ## Updating Custom Packages
 
-For claude-code specifically, use the `/update-claude-code` skill which automates the multi-step hash update process. The general pattern for `buildNpmPackage` updates: update version, update `src.hash` (via `nix-prefetch-url --unpack`), set `npmDepsHash` to a placeholder, build to get the correct hash from the error message, then update.
+Use `/weekly-update` to update all packages with UPDATE.md specs. Each package in `packages/*/UPDATE.md` defines its own version check command and update process. For manual updates, follow the instructions in the relevant UPDATE.md file.
