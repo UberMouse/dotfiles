@@ -1,11 +1,11 @@
 { lib, stdenv, fetchurl, autoPatchelfHook }:
 stdenv.mkDerivation rec {
   pname = "plannotator";
-  version = "0.19.7";
+  version = "0.19.11";
 
   src = fetchurl {
     url = "https://github.com/backnotprop/plannotator/releases/download/v${version}/plannotator-linux-x64";
-    hash = "sha256-7n8ZoPaN+58u4xdukhNmEd/Lv7C2ofiD2rLMyKzlH4Q=";
+    hash = "sha256-RLYi3m0TRtCfeONcDbKFzgY/jNBAY12+IJQetsCuqpY=";
   };
 
   nativeBuildInputs = [ autoPatchelfHook ];

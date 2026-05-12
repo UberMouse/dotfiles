@@ -1,11 +1,11 @@
 ---
 name: weekly-update
-description: Use when performing the weekly system update - updating claude-code, plannotator, ccstatusline, nix flake inputs, and rebuilding the NixOS system
+description: Use when performing the weekly system update - updating claude-code, plannotator, ccstatusline, pi, nix flake inputs, and rebuilding the NixOS system
 ---
 
 # Weekly Update
 
-Orchestrates the recurring weekly update: claude-code package, plannotator package, ccstatusline package, flake inputs, and system rebuild.
+Orchestrates the recurring weekly update: claude-code package, plannotator package, ccstatusline package, pi package, flake inputs, and system rebuild.
 
 ## Process
 
@@ -71,13 +71,37 @@ Edit `packages/ccstatusline/package.nix`:
 - `version` → new version
 - `src.hash` → SRI hash from above
 
-### 8. Update Flake Inputs
+### 8. Check Latest pi Version
+
+```bash
+npm view @mariozechner/pi-coding-agent version
+```
+
+Compare against the current version in `packages/pi-coding-agent/package.nix`. If already at the latest version, skip to step 10.
+
+### 9. Update pi
+
+Get the new tarball hash:
+
+```bash
+nix-prefetch-url --unpack "https://registry.npmjs.org/@mariozechner/pi-coding-agent/-/pi-coding-agent-${VERSION}.tgz"
+nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
+```
+
+Edit `packages/pi-coding-agent/package.nix`:
+- `version` → new version
+- `src.hash` → SRI hash from above
+- `npmDepsHash` → set to placeholder `"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="`, build will fail with correct hash
+
+Attempt the build (step 11), extract the correct `npmDepsHash` from the error, update the package, and rebuild.
+
+### 10. Update Flake Inputs
 
 ```bash
 cd ~/dotfiles && nix flake update
 ```
 
-### 9. Rebuild System
+### 11. Rebuild System
 
 ```bash
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
@@ -85,12 +109,12 @@ sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 
 This is also the verification step — if the build succeeds, everything is working.
 
-### 10. Commit
+### 12. Commit
 
 Stage all changed files and commit with a summary message. Format:
 
 ```
-weekly update: claude-code X.Y.Z → A.B.C, plannotator X.Y.Z → A.B.C, ccstatusline X.Y.Z → A.B.C, flake inputs
+weekly update: claude-code X.Y.Z → A.B.C, plannotator X.Y.Z → A.B.C, ccstatusline X.Y.Z → A.B.C, pi X.Y.Z → A.B.C, flake inputs
 ```
 
 Omit any component that was already current:
@@ -98,12 +122,13 @@ Omit any component that was already current:
 ```
 weekly update: flake inputs
 weekly update: claude-code X.Y.Z → A.B.C, flake inputs
-weekly update: ccstatusline X.Y.Z → A.B.C, flake inputs
+weekly update: ccstatusline X.Y.Z → A.B.C, pi X.Y.Z → A.B.C, flake inputs
 ```
 
 ## Key Notes
 
 - If claude-code is already at the latest version, skip straight to the plannotator check — don't treat it as an error.
 - If plannotator is already at the latest version, skip straight to the ccstatusline check — don't treat it as an error.
-- If ccstatusline is already at the latest version, skip straight to flake update — don't treat it as an error.
-- The `nixos-rebuild switch` in step 9 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill.
+- If ccstatusline is already at the latest version, skip straight to the pi check — don't treat it as an error.
+- If pi is already at the latest version, skip straight to flake update — don't treat it as an error.
+- The `nixos-rebuild switch` in step 11 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill. Similarly, if pi was updated, step 9 handles the npmDepsHash extraction.
