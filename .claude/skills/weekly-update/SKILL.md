@@ -1,134 +1,110 @@
 ---
 name: weekly-update
-description: Use when performing the weekly system update - updating claude-code, plannotator, ccstatusline, pi, nix flake inputs, and rebuilding the NixOS system
+description: Use when performing the weekly system update - discovers UPDATE.md specs, updates packages, updates flake inputs, and rebuilds the NixOS system
 ---
 
 # Weekly Update
 
-Orchestrates the recurring weekly update: claude-code package, plannotator package, ccstatusline package, pi package, flake inputs, and system rebuild.
+Orchestrates the recurring weekly update by discovering and processing UPDATE.md spec files.
+
+## Spec File Format
+
+Each UPDATE.md has YAML frontmatter and markdown instructions:
+
+```yaml
+---
+name: <package-name>           # Required: identifier for commit messages
+version_check: <command>       # Required: outputs latest version
+version_file: <path>           # Required: file containing current version
+changelog_url: <url>           # Optional: URL to changelog file
+changelog_path: <path>         # Optional: path in extracted tarball
+changelog_github: <owner/repo> # Optional: GitHub repo for release notes
+---
+```
+
+The body contains freeform update instructions with `${VERSION}` variable support.
 
 ## Process
 
-### 1. Check Latest Claude Code Version
+### 1. Discover UPDATE.md Specs
 
+Find all spec files:
 ```bash
-npm view @anthropic-ai/claude-code version
+find packages -maxdepth 2 -name "UPDATE.md" 2>/dev/null
+find autoupdate -name "*.md" 2>/dev/null
 ```
 
-Compare against the current version in `packages/claude-code/package.nix`. If already at the latest version, skip to step 4.
+Sort alphabetically by package name from frontmatter.
 
-### 2. Update Claude Code
+### 2. Process Each Spec
 
-Invoke the `update-claude-code` skill via the Skill tool, passing the target version. Follow that skill's full process including the npmDepsHash build-fail-extract cycle — handle it automatically without prompting the user.
+For each UPDATE.md:
 
-### 3. Summarize Claude Code Changes
+**a. Check versions**
+- Run `version_check` command → latest version
+- Read `version_file` → extract current version (look for `version = "X.Y.Z"` pattern)
 
-If claude-code was updated in step 2, summarize the changelog entries between the old and new versions. The tarball extracted to `/tmp/claude-code-update/` in the `update-claude-code` skill contains `CHANGELOG.md`.
+**b. If current == latest**: Log "package-name already at X.Y.Z" and skip to next spec.
 
-Read `/tmp/claude-code-update/CHANGELOG.md`, extract the entries for every version strictly greater than the old version and up to and including the new version, and present a concise summary to the user before continuing. Group by version with the most notable changes highlighted.
+**c. If current != latest**:
+- Follow the instructions in the markdown body, substituting `${VERSION}` with the new version
+- After completing the update, fetch and summarize changelog (see Changelog Handling below)
+- Record "name oldVer → newVer" for the final commit message
 
-Skip this step if claude-code was not updated.
-
-### 4. Check Latest Plannotator Version
-
-```bash
-curl -fsSL "https://api.github.com/repos/backnotprop/plannotator/releases/latest" | grep '"tag_name"' | cut -d'"' -f4
-```
-
-Compare against the current version in `packages/plannotator/package.nix` (the `version` field, noting the GitHub tag has a `v` prefix). If already at the latest version, skip to step 6.
-
-### 5. Update Plannotator
-
-Get the new binary hash:
-
-```bash
-nix-prefetch-url "https://github.com/backnotprop/plannotator/releases/download/v${VERSION}/plannotator-linux-x64"
-nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
-```
-
-Edit `packages/plannotator/package.nix`:
-- `version` → new version (without `v` prefix)
-- `src.hash` → SRI hash from above
-
-### 6. Check Latest ccstatusline Version
-
-```bash
-npm view ccstatusline version
-```
-
-Compare against the current version in `packages/ccstatusline/package.nix`. If already at the latest version, skip to step 8.
-
-### 7. Update ccstatusline
-
-Get the new tarball hash:
-
-```bash
-nix-prefetch-url --unpack "https://registry.npmjs.org/ccstatusline/-/ccstatusline-${VERSION}.tgz"
-nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
-```
-
-Edit `packages/ccstatusline/package.nix`:
-- `version` → new version
-- `src.hash` → SRI hash from above
-
-### 8. Check Latest pi Version
-
-```bash
-npm view @mariozechner/pi-coding-agent version
-```
-
-Compare against the current version in `packages/pi-coding-agent/package.nix`. If already at the latest version, skip to step 10.
-
-### 9. Update pi
-
-Get the new tarball hash:
-
-```bash
-nix-prefetch-url --unpack "https://registry.npmjs.org/@mariozechner/pi-coding-agent/-/pi-coding-agent-${VERSION}.tgz"
-nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
-```
-
-Edit `packages/pi-coding-agent/package.nix`:
-- `version` → new version
-- `src.hash` → SRI hash from above
-- `npmDepsHash` → set to placeholder `"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="`, build will fail with correct hash
-
-Attempt the build (step 11), extract the correct `npmDepsHash` from the error, update the package, and rebuild.
-
-### 10. Update Flake Inputs
+### 3. Update Flake Inputs
 
 ```bash
 cd ~/dotfiles && nix flake update
 ```
 
-### 11. Rebuild System
+### 4. Rebuild System
 
 ```bash
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 ```
 
-This is also the verification step — if the build succeeds, everything is working.
+This is the verification step. If the build succeeds, all updates are working.
 
-### 12. Commit
+### 5. Commit
 
-Stage all changed files and commit with a summary message. Format:
+Stage all changed files and commit with format:
 
 ```
-weekly update: claude-code X.Y.Z → A.B.C, plannotator X.Y.Z → A.B.C, ccstatusline X.Y.Z → A.B.C, pi X.Y.Z → A.B.C, flake inputs
+weekly update: name1 X.Y.Z → A.B.C, name2 X.Y.Z → A.B.C, flake inputs
 ```
 
-Omit any component that was already current:
+Omit packages that were already current. If no packages were updated:
 
 ```
 weekly update: flake inputs
-weekly update: claude-code X.Y.Z → A.B.C, flake inputs
-weekly update: ccstatusline X.Y.Z → A.B.C, pi X.Y.Z → A.B.C, flake inputs
 ```
+
+## Changelog Handling
+
+After each package update, summarize the changelog. Handle three source types:
+
+**changelog_url**: Fetch via curl, extract entries between old and new versions.
+
+**changelog_path**: Read from the tarball extracted during update (e.g., `/tmp/package-update/CHANGELOG.md`).
+
+**changelog_github**: Use GitHub API:
+```bash
+gh api repos/owner/repo/releases --jq '.[] | select(.tag_name | test("v?(old|new)")) | "\(.tag_name): \(.name // .tag_name)\n\(.body)"'
+```
+
+Present changelog summary to user:
+```
+## package-name X.Y.Z → A.B.C
+
+**A.B.C** - Brief description
+**X.Y.Z+1** - Brief description
+```
+
+If no changelog source configured: note "No changelog configured for package-name" and continue.
 
 ## Key Notes
 
-- If claude-code is already at the latest version, skip straight to the plannotator check — don't treat it as an error.
-- If plannotator is already at the latest version, skip straight to the ccstatusline check — don't treat it as an error.
-- If ccstatusline is already at the latest version, skip straight to the pi check — don't treat it as an error.
-- If pi is already at the latest version, skip straight to flake update — don't treat it as an error.
-- The `nixos-rebuild switch` in step 11 serves as the final build. If claude-code was updated, the intermediate build in step 2 (to extract npmDepsHash) will have already failed and been retried as part of the update-claude-code skill. Similarly, if pi was updated, step 9 handles the npmDepsHash extraction.
+- If a spec's version is already current, skip silently — this is normal
+- The final `nixos-rebuild switch` serves as verification for all updates
+- Some packages (like pi-coding-agent) have complex update flows with build-fail-extract cycles — follow the spec instructions exactly
+- The `autoupdate/` directory is for packages without dedicated folders (e.g., version pins in home.nix)
