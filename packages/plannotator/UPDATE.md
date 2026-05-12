@@ -16,3 +16,6 @@ changelog_github: backnotprop/plannotator
 2. Edit `packages/plannotator/package.nix`:
    - `version` → new version (without `v` prefix)
    - `src.hash` → SRI hash from step 1
+
+3. Edit `home.nix` line ~128:
+   - Update `npm:@plannotator/pi-extension@X.Y.Z` to match the new version
