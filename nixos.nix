@@ -223,7 +223,8 @@
   # services.openssh.enable = true;
 
   # Open ports in the firewall.
-  # networking.firewall.allowedTCPPorts = [ ... ];
+  # 8003: claude-voice-assistant wrapper daemon (Windows host orchestrator -> VM).
+  networking.firewall.allowedTCPPorts = [ 8003 ];
   # networking.firewall.allowedUDPPorts = [ ... ];
   # Or disable the firewall altogether.
   # networking.firewall.enable = false;
