@@ -7,11 +7,11 @@
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "ccstatusline";
-  version = "2.2.17";
+  version = "2.2.19";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/ccstatusline/-/ccstatusline-${finalAttrs.version}.tgz";
-    hash = "sha256-gCb9zivYTwAP97kdMbOXSX/UzP6cW29TQQVGzRwRO6U=";
+    hash = "sha256-ukRcXVkbUCNaW4CdYwctv0nZyvywDbDNusKHJzA33r0=";
   };
 
   nativeBuildInputs = [ makeWrapper ];
