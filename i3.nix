@@ -11,6 +11,11 @@ in {
       keybindings = lib.mkOptionDefault {
         "${mod}+t" = "scratchpad show";
         "${mod}+Shift+s" = "exec --no-startup-id maim -s | xclip -selection clipboard -t image/png";
+        # Fire the voice-assistant hotkey on the Windows host. VMware grabs
+        # the keyboard when the VM has focus, so the host's pynput listener
+        # never sees the press — this curl shim plumbs it back over HTTP.
+        # Matches the host-side chord (lshift+f3) for muscle-memory parity.
+        "Shift+F3" = "exec --no-startup-id ${pkgs.curl}/bin/curl -fsS -m 2 -X POST -H 'Content-Type: application/json' -d '{\"kind\":\"short\"}' http://192.168.50.16:8004/hotkey";
       };
       
       startup = [
