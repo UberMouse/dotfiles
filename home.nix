@@ -238,6 +238,8 @@
     enableZshIntegration = true;
 
     nix-direnv.enable = true;
+
+    config.whitelist.prefix = [ "/home/taylorl/code/kawaka" ];
   };
 
   programs.alacritty = {
