@@ -17,6 +17,7 @@
   networking.hostName = "nixos"; # Define your hostname.
   networking.extraHosts = ''
     127.0.0.1 my.dev.kx.gd
+    127.0.0.1 wp.dev.kx.gd
   '';
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];

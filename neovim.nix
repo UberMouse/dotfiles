@@ -18,7 +18,12 @@
       vim-fugitive
       vim-javascript
       vim-airline
+      fzf-lua
     ];
+
+    extraLuaConfig = ''
+      require('fzf-lua').setup({ 'default-title' })
+    '';
 
     extraConfig = ''
       set autoindent
@@ -104,9 +109,16 @@
 
       " NERDTree
       nmap <leader>n :NERDTreeToggle<CR>
-      let NERDTreeQuitOnOpen=1 
+      nmap <leader>N :NERDTreeFind<CR>
+      let NERDTreeQuitOnOpen=1
       let NERDTreeHighlightCursorline=1
       let NERDTreeIgnore = ['tmp', '.yardoc', 'pkg', 'node_modules']
+
+      " fzf-lua
+      nnoremap <leader>f <cmd>FzfLua files<cr>
+      nnoremap <leader>F <cmd>FzfLua live_grep<cr>
+      nnoremap <leader>b <cmd>FzfLua buffers<cr>
+      nnoremap <leader>/ <cmd>FzfLua grep_cword<cr>
     '';
   };
 }

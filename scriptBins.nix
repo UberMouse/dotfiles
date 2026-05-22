@@ -138,29 +138,7 @@
             --bind 'ctrl-f:preview-page-down' \
             --bind 'ctrl-b:preview-page-up'
     '')
-    (pkgs.writeScriptBin "rush" ''
-      #!/usr/bin/env bash
-      set -e
-      DIR="$PWD"
-      while [ "$DIR" != "/" ]; do
-        [ -f "$DIR/common/scripts/install-run-rush.js" ] && exec node "$DIR/common/scripts/install-run-rush.js" "$@"
-        DIR="$(dirname "$DIR")"
-      done
-      echo "Error: Could not find install-run-rush.js in any parent directory" >&2
-      exit 1
-    '')
-    (pkgs.writeScriptBin "rushx" ''
-      #!/usr/bin/env bash
-      set -e
-      DIR="$PWD"
-      while [ "$DIR" != "/" ]; do
-        [ -f "$DIR/common/scripts/install-run-rushx.js" ] && exec node "$DIR/common/scripts/install-run-rushx.js" "$@"
-        DIR="$(dirname "$DIR")"
-      done
-      echo "Error: Could not find install-run-rushx.js in any parent directory" >&2
-      exit 1
-    '')
-    (pkgs.writeScriptBin "rush-pnpm" ''
+(pkgs.writeScriptBin "rush-pnpm" ''
       #!/usr/bin/env bash
       set -e
       DIR="$PWD"

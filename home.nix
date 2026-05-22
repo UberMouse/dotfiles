@@ -107,6 +107,7 @@
       unstable-pkgs.monodex
       unstable-pkgs.ccstatusline
       unstable-pkgs.pi-coding-agent
+      unstable-pkgs.rush
 
       unstable-small-pkgs.code-cursor-fhs
       unstable-small-pkgs.claude-code
@@ -125,7 +126,7 @@
     defaultThinkingLevel = "medium";
     packages = [
       "npm:pi-web-access@0.10.6"
-      "npm:@plannotator/pi-extension@0.19.17"
+      "npm:@plannotator/pi-extension@0.19.20"
       "npm:pi-mermaid@0.3.0"
     ];
   };
