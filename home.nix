@@ -224,6 +224,9 @@
       bind E command-prompt -p "Command:" \
              "run \"tmux list-panes -a -F '##{session_name}:##{window_index}.##{pane_index}' \
                     | xargs -I PANE tmux send-keys -t PANE '%1' Enter\""
+
+      # Ensure the initial session is always named so resurrect doesn't accumulate numbered ghosts
+      new-session -s scratch
     '';
   };
 
