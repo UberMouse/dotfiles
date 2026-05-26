@@ -27,14 +27,12 @@ in {
       assigns = {
         "1: web" = [{ class="^Vivaldi-stable$"; }];
         "2: slack" = [{ class="^Slack$"; }];
-        "3: dev" = [{ class="^Cursor$"; }];
         "5: rimu" = [{ class="^Koordinates$"; }];
       }; 
     };
     
     extraConfig = ''
         exec --no-startup-id "i3-msg 'workspace \"3: dev\"; split v; append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json'"
-        exec cursor
         exec alacritty -e dev-terminal
 
         for_window [class="^Chromium-browser$"] move to workspace number 4
