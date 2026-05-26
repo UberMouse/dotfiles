@@ -6,6 +6,13 @@
       #!/usr/bin/env bash
       curl -X POST -H 'Content-Type: application/json' -d "{\"url\": \"$1\"}" http://localhost:7281
     '')
+    (pkgs.writeScriptBin "dev-terminal" ''
+      #!/usr/bin/env bash
+      until ${pkgs.tmux}/bin/tmux has-session -t kawaka 2>/dev/null; do
+        sleep 0.2
+      done
+      exec ${pkgs.tmux}/bin/tmux attach-session -t kawaka
+    '')
     (pkgs.writeScriptBin "scratch-terminal" ''
       #!/usr/bin/env bash
       set -e

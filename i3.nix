@@ -35,7 +35,7 @@ in {
     extraConfig = ''
         exec --no-startup-id "i3-msg 'workspace \"3: dev\"; split v; append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json'"
         exec cursor
-        exec alacritty -e tmux
+        exec alacritty -e dev-terminal
 
         for_window [class="^Chromium-browser$"] move to workspace number 4
         for_window [class="^Koordinates$" window_role="devtools"] move to workspace number 6
