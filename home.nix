@@ -99,6 +99,7 @@
       firefox
       google-chrome
       qdirstat
+      libreoffice
     ] ++ [
       unstable-pkgs.gh
       unstable-pkgs.playwright-test
