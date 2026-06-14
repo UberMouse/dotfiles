@@ -13,11 +13,11 @@
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "claude-code";
-  version = "2.1.168";
+  version = "2.1.170";
 
   src = fetchurl {
     url = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/${finalAttrs.version}/linux-x64/claude";
-    hash = "sha256-4vfLUEQr3uIb8mhu83JaavGHogTkbEr1wS0PbXYyZIU=";
+    hash = "sha256-hJ4AcnegRCqydXDT49bUN4dQeUZZDo3RlH5aObcIH54=";
   };
 
   dontUnpack = true;
