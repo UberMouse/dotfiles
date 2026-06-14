@@ -2,10 +2,53 @@
   lib,
   buildNpmPackage,
   fetchzip,
-  makeWrapper,
   playwright-driver,
   playwright-test,
+  runtimeShell,
+  writeText,
 }:
+let
+  # Wrapper that sets the nix browser env and injects --browser=chromium ONLY
+  # for the `open` subcommand. Upstream's `--browser` is an option of `open`
+  # alone; injecting it globally (as the old `wrapProgram --add-flags` did)
+  # makes every other subcommand abort with "Unknown option: --browser".
+  # @ENTRY@ is substituted with the installed CLI entry point in postInstall.
+  wrapperScript = writeText "playwright-cli" ''
+    #!${runtimeShell}
+    export PLAYWRIGHT_BROWSERS_PATH='${playwright-driver.browsers}'
+    export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD='1'
+
+    entry='@ENTRY@'
+
+    # The subcommand is the first positional arg (skip option flags and the
+    # value of a space-separated -s/--session global flag).
+    cmd=""
+    skip=0
+    for a in "$@"; do
+      if [ "$skip" = 1 ]; then skip=0; continue; fi
+      case "$a" in
+        -s | --session) skip=1 ;;
+        -*) : ;;
+        *) cmd="$a"; break ;;
+      esac
+    done
+
+    # Respect an explicit user-supplied --browser.
+    has_browser=0
+    for a in "$@"; do
+      case "$a" in --browser | --browser=*) has_browser=1 ;; esac
+    done
+
+    # --browser=chromium points the `open` command at the nix-provided bundled
+    # chromium. Upstream's default is the "chrome" channel, which expects Google
+    # Chrome at /opt/google/chrome/chrome (not the nix chromium).
+    if [ "$cmd" = open ] && [ "$has_browser" = 0 ]; then
+      exec -a "$0" "$entry" --browser=chromium "$@"
+    else
+      exec -a "$0" "$entry" "$@"
+    fi
+  '';
+in
 buildNpmPackage (finalAttrs: {
   pname = "playwright-cli";
   version = "0.1.7";
@@ -37,17 +80,12 @@ buildNpmPackage (finalAttrs: {
     ln -s ${playwright-test}/lib/node_modules/playwright       $pkgdir/node_modules/playwright
     ln -s ${playwright-test}/lib/node_modules/playwright-core  $pkgdir/node_modules/playwright-core
 
-    # Default to --browser=chromium so the CLI uses the nix-provided bundled
-    # chromium. Upstream default is the "chrome" channel, which expects Google
-    # Chrome at /opt/google/chrome/chrome (not the nix chromium). A later
-    # --browser=... argument from the user still takes precedence.
-    wrapProgram $out/bin/playwright-cli \
-      --set PLAYWRIGHT_BROWSERS_PATH "${playwright-driver.browsers}" \
-      --set PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD "1" \
-      --add-flags "--browser=chromium"
+    # Install our own wrapper (see wrapperScript above) in place of the npm bin
+    # symlink, then bake in the absolute path to the CLI entry point.
+    rm -f $out/bin/playwright-cli
+    install -m755 ${wrapperScript} $out/bin/playwright-cli
+    sed -i "s|@ENTRY@|$pkgdir/playwright-cli.js|" $out/bin/playwright-cli
   '';
-
-  nativeBuildInputs = [ makeWrapper ];
 
   meta = {
     description = "Official Playwright CLI (@playwright/cli)";
