@@ -63,7 +63,7 @@
       libnotify
 
       # Dev
-      nodejs_22
+      nodejs_24
 
       nodePackages."http-server"
       nodePackages.pnpm
