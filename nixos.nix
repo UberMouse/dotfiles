@@ -2,7 +2,7 @@
 # your system.  Help is available in the configuration.nix(5) man page
 # and in the NixOS manual (accessible by running ‘nixos-help’).
 
-{ config, pkgs, unstable-pkgs, self, ... }:
+{ config, pkgs, lib, unstable-pkgs, self, ... }:
 
 {
   imports = [ # Include the results of the hardware scan.
@@ -160,16 +160,99 @@
   services.tailscale.enable = true;
   services.kolide-launcher.enable = true;
 
-  # Kill memory-hungry dev processes before system grinds to a halt
+  # === Out-of-memory protection ============================================
+  # Primary: nohang (PSI-driven). Acts on memory *pressure* while RAM still
+  # has headroom, so the worst hog is SIGTERMed BEFORE the box thrashes into
+  # swap (load >60, <2 GB free). Thresholds + victim rules (protect Vivaldi/
+  # Slack/Claude/shells, prefer jest workers & headless Playwright Chromium)
+  # live in ./nohang/nohang.conf.
+  # The services.nohang module isn't in nixpkgs 25.11 yet, so define the unit
+  # directly (mirrors the upstream module's hardening) using the unstable nohang
+  # package — 0.3.0, which matches the config keys in ./nohang/nohang.conf.
+  # Switch to `services.nohang` once it lands in the stable channel.
+  systemd.services.nohang = {
+    description = "Sophisticated low memory handler (nohang)";
+    documentation = [ "man:nohang(8)" "https://github.com/hakavlad/nohang" ];
+    after = [ "sysinit.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      ExecStart = "${lib.getExe unstable-pkgs.nohang} --monitor --config ${./nohang/nohang.conf}";
+      Slice = "hostcritical.slice";
+      SyslogIdentifier = "nohang";
+      KillMode = "mixed";
+      Restart = "always";
+      RestartSec = 0;
+      CPUSchedulingResetOnFork = true;
+      RestrictRealtime = "yes";
+      TasksMax = 25;
+      MemoryMax = "100M";
+      MemorySwapMax = "100M";
+      UMask = 27;
+      ProtectSystem = "strict";
+      ReadWritePaths = "/var/log";
+      InaccessiblePaths = "/home /root";
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      ProtectHostname = true;
+      MemoryDenyWriteExecute = "yes";
+      RestrictNamespaces = "yes";
+      LockPersonality = "yes";
+      PrivateTmp = true;
+      DeviceAllow = "/dev/kmsg rw";
+      DevicePolicy = "closed";
+      CapabilityBoundingSet = [
+        "CAP_KILL"
+        "CAP_IPC_LOCK"
+        "CAP_SYS_PTRACE"
+        "CAP_DAC_READ_SEARCH"
+        "CAP_DAC_OVERRIDE"
+        "CAP_AUDIT_WRITE"
+        "CAP_SETUID"
+        "CAP_SETGID"
+        "CAP_SYS_RESOURCE"
+        "CAP_SYSLOG"
+      ];
+    };
+  };
+
+  # Backstop: earlyoom. Free-memory based (no PSI), so it can only fire once
+  # memory AND swap are both nearly gone. With nohang doing the early work this
+  # is now a pure last resort (e.g. if nohang itself ever dies). avoid/prefer
+  # mirror nohang (earlyoom matches process name / comm only, 15 chars).
   services.earlyoom = {
     enable = true;
-    freeMemThreshold = 5;
-    freeSwapThreshold = 10;
+    freeMemThreshold = 3;
+    freeSwapThreshold = 3;
     enableNotifications = true;
     extraArgs = [
-      "--prefer" "(tsgo --lsp|jest-worker)"
+      "--avoid" "^(vivaldi-bin|slack|\\.claude-wrapped|tabby|zsh|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
+      "--prefer" "^(jest-worker|headless_shell|chrome)$"
     ];
   };
+
+  # === Swap / memory-pressure tuning =======================================
+  # Compressed RAM swap (zstd) as the PRIMARY swap, ahead of the slow encrypted
+  # disk swap partition (priority -2). Absorbs memory bursts fast with no disk
+  # IO or dm-crypt overhead, which is what was driving system load into the 60s.
+  zramSwap = {
+    enable = true;
+    algorithm = "zstd";
+    memoryPercent = 50; # zram capacity = 50% of RAM (~13.5 GiB uncompressed)
+    priority = 100; # used before the disk swap fallback
+  };
+
+  boot.kernel.sysctl = {
+    # zram is fast and random-access, so favour it over evicting file cache and
+    # disable swap read-ahead (the standard zram tuning).
+    "vm.swappiness" = 180;
+    "vm.page-cluster" = 0;
+    # Reclaim earlier/more aggressively so kswapd keeps ahead of allocation
+    # spikes instead of dropping into slow direct reclaim (the load spikes).
+    "vm.watermark_boost_factor" = 0;
+    "vm.watermark_scale_factor" = 125;
+  };
+  # =========================================================================
 
   # Workaround for GNOME autologin: https://github.com/NixOS/nixpkgs/issues/103746#issuecomment-945091229
   systemd.services."getty@tty1".enable = false;
