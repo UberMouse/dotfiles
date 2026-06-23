@@ -1,4 +1,4 @@
-{ pkgs, ... }:
+{ pkgs, unstable-pkgs, ... }:
 
 {
   home.packages = [
@@ -397,6 +397,19 @@
       export BUILDKITE_ORGANIZATION_SLUG="koordinates"
       export BUILDKITE_API_TOKEN="$(op-cached read --account koordinates.1password.com "op://Employee/buildkite-api-token/api-token")"
       exec ${pkgs.buildkite-cli}/bin/bk "$@"
+    '')
+    (pkgs.writeScriptBin "sentry" ''
+      #!/usr/bin/env bash
+      set -e
+      # The token is for Koordinates' self-hosted Sentry; an env token carries
+      # no host, so pin it here (otherwise the CLI assumes sentry.io and rejects
+      # the matching .sentryclirc).
+      export SENTRY_URL=https://sentry-live2.kx.gd
+      # SENTRY_FORCE_ENV_TOKEN makes the injected token win over any stored
+      # OAuth login, so 1Password is the single source of truth (like bk).
+      export SENTRY_FORCE_ENV_TOKEN=1
+      export SENTRY_AUTH_TOKEN="$(op-cached read --account koordinates.1password.com "op://Employee/sentry-api-token/api-token")"
+      exec ${unstable-pkgs.sentry}/bin/sentry "$@"
     '')
     (pkgs.writeScriptBin "autosquash-branch" ''
       #!/usr/bin/env bash
