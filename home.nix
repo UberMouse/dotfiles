@@ -112,7 +112,6 @@
 
       unstable-small-pkgs.code-cursor-fhs
       unstable-small-pkgs.claude-code
-      unstable-small-pkgs.codex
     ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
@@ -127,7 +126,7 @@
     defaultThinkingLevel = "medium";
     packages = [
       "npm:pi-web-access@0.10.6"
-      "npm:@plannotator/pi-extension@0.21.0"
+      "npm:@plannotator/pi-extension@0.21.3"
       "npm:pi-mermaid@0.3.0"
     ];
   };
