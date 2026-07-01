@@ -21,7 +21,7 @@
       fzf-lua
     ];
 
-    extraLuaConfig = ''
+    initLua = ''
       require('fzf-lua').setup({ 'default-title' })
     '';
 

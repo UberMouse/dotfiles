@@ -85,7 +85,7 @@
       axel
       sysbench
       direnv
-      nixfmt-classic
+      nixfmt
       zsh-powerlevel10k
       nixd
       (callPackage ./kart.nix { })
@@ -255,8 +255,8 @@
   programs.ssh = {
     enable = true;
     enableDefaultConfig = false;
-    matchBlocks."*" = {
-      extraOptions = { IdentityAgent = "~/.1password/agent.sock"; };
+    settings."*" = {
+      IdentityAgent = "~/.1password/agent.sock";
     };
   };
 
