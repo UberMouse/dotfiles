@@ -166,54 +166,13 @@
   # swap (load >60, <2 GB free). Thresholds + victim rules (protect Vivaldi/
   # Slack/Claude/shells, prefer jest workers & headless Playwright Chromium)
   # live in ./nohang/nohang.conf.
-  # The services.nohang module isn't in nixpkgs 25.11 yet, so define the unit
-  # directly (mirrors the upstream module's hardening) using the unstable nohang
-  # package — 0.3.0, which matches the config keys in ./nohang/nohang.conf.
-  # Switch to `services.nohang` once it lands in the stable channel.
-  systemd.services.nohang = {
-    description = "Sophisticated low memory handler (nohang)";
-    documentation = [ "man:nohang(8)" "https://github.com/hakavlad/nohang" ];
-    after = [ "sysinit.target" ];
-    wantedBy = [ "multi-user.target" ];
-    serviceConfig = {
-      ExecStart = "${lib.getExe unstable-pkgs.nohang} --monitor --config ${./nohang/nohang.conf}";
-      Slice = "hostcritical.slice";
-      SyslogIdentifier = "nohang";
-      KillMode = "mixed";
-      Restart = "always";
-      RestartSec = 0;
-      CPUSchedulingResetOnFork = true;
-      RestrictRealtime = "yes";
-      TasksMax = 25;
-      MemoryMax = "100M";
-      MemorySwapMax = "100M";
-      UMask = 27;
-      ProtectSystem = "strict";
-      ReadWritePaths = "/var/log";
-      InaccessiblePaths = "/home /root";
-      ProtectKernelTunables = true;
-      ProtectKernelModules = true;
-      ProtectControlGroups = true;
-      ProtectHostname = true;
-      MemoryDenyWriteExecute = "yes";
-      RestrictNamespaces = "yes";
-      LockPersonality = "yes";
-      PrivateTmp = true;
-      DeviceAllow = "/dev/kmsg rw";
-      DevicePolicy = "closed";
-      CapabilityBoundingSet = [
-        "CAP_KILL"
-        "CAP_IPC_LOCK"
-        "CAP_SYS_PTRACE"
-        "CAP_DAC_READ_SEARCH"
-        "CAP_DAC_OVERRIDE"
-        "CAP_AUDIT_WRITE"
-        "CAP_SETUID"
-        "CAP_SETGID"
-        "CAP_SYS_RESOURCE"
-        "CAP_SYSLOG"
-      ];
-    };
+  # nohang landed in nixpkgs stable in 26.05, so use the upstream services.nohang
+  # module — its systemd hardening is exactly what we mirrored by hand before.
+  # configPath points at our tuned config; the package defaults to the stable
+  # pkgs.nohang (0.3.0), which matches the config keys in ./nohang/nohang.conf.
+  services.nohang = {
+    enable = true;
+    configPath = ./nohang/nohang.conf;
   };
 
   # Backstop: earlyoom. Free-memory based (no PSI), so it can only fire once
