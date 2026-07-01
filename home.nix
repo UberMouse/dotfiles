@@ -65,8 +65,8 @@
       # Dev
       nodejs_24
 
-      nodePackages."http-server"
-      nodePackages.pnpm
+      http-server
+      pnpm
       shellcheck
       nix-prefetch-git
       git-machete
