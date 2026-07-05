@@ -24,7 +24,7 @@ in pkgs.stdenv.mkDerivation {
     pkgs.libffi
     pkgs.stdenv.cc.cc.lib
     pkgs.libgcc
-    pkgs.unixODBC
+    pkgs.unixodbc
   ];
 
   unpackPhase = ''

@@ -1,9 +1,10 @@
-{ pkgs, unstable-pkgs, lib, ... }:
+{ pkgs, unstable-pkgs, lib, config, ... }:
 
 {
   programs.zsh = {
     enable = true;
     autocd = true;
+    dotDir = config.home.homeDirectory;
 
     dirHashes = { kawaka = "$HOME/code/kawaka"; };
 

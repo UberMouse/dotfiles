@@ -105,7 +105,6 @@
       unstable-pkgs.playwright-test
       unstable-pkgs.playwright-cli
       unstable-pkgs.plannotator
-      unstable-pkgs.monodex
       unstable-pkgs.ccstatusline
       unstable-pkgs.pi-coding-agent
       unstable-pkgs.rush
@@ -129,19 +128,6 @@
       "npm:@plannotator/pi-extension@0.22.0"
       "npm:pi-mermaid@0.3.0"
     ];
-  };
-
-  home.file.".monodex/config.json".text = builtins.toJSON {
-    catalogs = {
-      kawaka = {
-        type = "monorepo";
-        path = "/home/taylorl/code/kawaka";
-      };
-    };
-    embeddingModel = {
-      modelInstances = 2;
-      threadsPerInstance = 2;
-    };
   };
 
   fonts.fontconfig = { enable = true; };
