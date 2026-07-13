@@ -125,7 +125,7 @@
     defaultThinkingLevel = "medium";
     packages = [
       "npm:pi-web-access@0.10.6"
-      "npm:@plannotator/pi-extension@0.22.0"
+      "npm:@plannotator/pi-extension@0.23.1"
       "npm:pi-mermaid@0.3.0"
     ];
   };
