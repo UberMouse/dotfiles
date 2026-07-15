@@ -1,4 +1,4 @@
-{ pkgs, unstable-pkgs, ... }:
+{ pkgs, unstable-pkgs, unstable-small-pkgs, ... }:
 
 let
   # Mirror of i3status's compiled-in default config (the same modules the bar
@@ -770,6 +770,34 @@ in
           term()
 
       main()
+    '')
+    (pkgs.writeScriptBin "claude-agents" ''
+      #!/usr/bin/env bash
+      # claude-agents -- run `claude agents` inside the worktrees.slice cgroup
+      # pool so the background-agent fleet shares the same 12-core / 16 GiB budget
+      # as worktree builds. It lands in a dedicated leaf child slice
+      # (worktrees-agents.slice) that takes one equal-weight share of the pool and
+      # shows up as the "agents" bucket in wt-cgroup-status; every process the
+      # agent view dispatches inherits that cgroup. cgroup v2 forbids processes in
+      # an inner slice that has children, hence a child slice rather than the pool
+      # root. No-ops gracefully to a direct run if the pool isn't active.
+      set -u
+
+      claude=${unstable-small-pkgs.claude-code}/bin/claude
+      id=${pkgs.coreutils}/bin/id
+      systemd_run=${pkgs.systemd}/bin/systemd-run
+
+      u=$($id -u)
+      pool="/sys/fs/cgroup/user.slice/user-$u.slice/user@$u.service/worktrees.slice"
+
+      if [ -d "$pool" ]; then
+        exec "$systemd_run" --user --scope --quiet --collect \
+          --slice=worktrees-agents.slice \
+          --description="claude agents (worktrees pool)" \
+          -- "$claude" agents "$@"
+      fi
+
+      exec "$claude" agents "$@"
     '')
   ];
 }
