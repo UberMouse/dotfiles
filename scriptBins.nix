@@ -1,5 +1,61 @@
 { pkgs, unstable-pkgs, ... }:
 
+let
+  # Mirror of i3status's compiled-in default config (the same modules the bar
+  # showed before) but with output_format forced to i3bar, so i3status emits
+  # COLORED JSON blocks. The wt-cgroup-i3status wrapper passes those blocks
+  # through untouched and prepends the worktree block. Without this, i3status
+  # run behind the wrapper's pipe auto-detects "not i3bar" and drops to
+  # uncoloured plain text.
+  i3statusConf = pkgs.writeText "i3status.conf" ''
+    general {
+            colors = true
+            interval = 5
+            output_format = "i3bar"
+    }
+
+    order += "ipv6"
+    order += "wireless _first_"
+    order += "ethernet _first_"
+    order += "battery all"
+    order += "disk /"
+    order += "load"
+    order += "memory"
+    order += "tztime local"
+
+    wireless _first_ {
+            format_up = "W: (%quality at %essid) %ip"
+            format_down = "W: down"
+    }
+
+    ethernet _first_ {
+            format_up = "E: %ip (%speed)"
+            format_down = "E: down"
+    }
+
+    battery all {
+            format = "%status %percentage %remaining"
+    }
+
+    disk "/" {
+            format = "%avail"
+    }
+
+    load {
+            format = "%1min"
+    }
+
+    memory {
+            format = "%used | %available"
+            threshold_degraded = "1G"
+            format_degraded = "MEMORY < %available"
+    }
+
+    tztime local {
+            format = "%Y-%m-%d %H:%M:%S"
+    }
+  '';
+in
 {
   home.packages = [
     (pkgs.writeScriptBin "koordinates-dev-protocol" ''
@@ -445,6 +501,275 @@
 
       echo "Rebasing $CURRENT onto $BEST_BRANCH ($BEST_COUNT commits)"
       exec ${pkgs.git}/bin/git rebase -i --autosquash "$BEST_BRANCH"
+    '')
+    (pkgs.writeScriptBin "wt-cgroup-status" ''
+      #!/usr/bin/env bash
+      # wt-cgroup-status — snapshot (or --watch) of the worktrees.slice cgroup
+      # budget: per-bucket CPU% / memory / tasks / CPU-pressure, plus the pool total
+      # against its caps.
+      #
+      # Reads the cgroup v2 files directly (works even where systemd-cgtop prints "-"
+      # for the CPU column of transient scopes) and un-escapes slice names back to
+      # readable worktree names.
+      #
+      # CPU% is cgtop-style: 100% == one core. The pool cap of 1200% == 12 cores.
+      #
+      # Usage:
+      #   wt-cgroup-status            one-shot snapshot
+      #   wt-cgroup-status -w [SECS]  refresh every SECS seconds (default 2)
+      #
+      # Env: WT_CG_SAMPLE=<secs> — gap between the two CPU samples (default 1).
+      set -u
+
+      awk=${pkgs.gawk}/bin/awk
+      sed=${pkgs.gnused}/bin/sed
+      cat=${pkgs.coreutils}/bin/cat
+      id=${pkgs.coreutils}/bin/id
+      date=${pkgs.coreutils}/bin/date
+      sleep=${pkgs.coreutils}/bin/sleep
+      numfmt=${pkgs.coreutils}/bin/numfmt
+      basename=${pkgs.coreutils}/bin/basename
+
+      U=$($id -u)
+      POOL="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice"
+      SAMPLE="''${WT_CG_SAMPLE:-1}"
+
+      watch=0; interval=2
+      case "''${1:-}" in
+        -w|--watch) watch=1; [ -n "''${2:-}" ] && interval="$2" ;;
+        -h|--help) $sed -n '2,16p' "$0"; exit 0 ;;
+      esac
+
+      if [ ! -d "$POOL" ]; then
+        echo "worktrees.slice pool is not active yet."
+        echo "It materializes on the first heavy command the hook wraps (or the first"
+        echo "daemon started with CLAUDE_WORKTREE_CGROUP set). Nothing to show."
+        exit 1
+      fi
+
+      unesc()   { local s="$1"; printf '%s' "''${s//\\x2d/-}"; }
+      human()   { $numfmt --to=iec --suffix=B "''${1:-0}" 2>/dev/null || printf '%sB' "''${1:-0}"; }
+      cpuusec() { $awk '/^usage_usec/{print $2}' "$1/cpu.stat" 2>/dev/null || echo 0; }
+      psi10()   { $awk -F'[= ]' '/^some/{print $3}' "$1/cpu.pressure"    2>/dev/null || echo "-"; }
+      mpsi10()  { $awk -F'[= ]' '/^some/{print $3}' "$1/memory.pressure" 2>/dev/null || echo "-"; }
+
+      snapshot() {
+        local quota period cap mhigh mhigh_h
+        read -r quota period < "$POOL/cpu.max"
+        if [ "$quota" = "max" ]; then cap="unlimited"; else cap="$(( quota * 100 / period ))%"; fi
+        mhigh=$($cat "$POOL/memory.high" 2>/dev/null)
+        if [ "$mhigh" = "max" ]; then mhigh_h="unlimited"; else mhigh_h=$(human "$mhigh"); fi
+
+        # First CPU sample for the pool and every bucket.
+        local d
+        local -A u0
+        u0[__pool__]=$(cpuusec "$POOL")
+        local dirs=()
+        for d in "$POOL"/*/; do [ -d "$d" ] || continue; dirs+=("$d"); u0["$d"]=$(cpuusec "$d"); done
+        $sleep "$SAMPLE"
+
+        # Pool line (second sample).
+        local u1 pct pmem
+        u1=$(cpuusec "$POOL"); pmem=$($cat "$POOL/memory.current" 2>/dev/null)
+        pct=$(( (u1 - u0[__pool__]) / 10000 / SAMPLE ))
+        printf '  POOL  %-24s  CPU %5s%% / %-9s  mem %9s / %-9s  psi cpu:%s mem:%s\n' \
+          "worktrees.slice" "$pct" "$cap" "$(human "$pmem")" "$mhigh_h" "$(psi10 "$POOL")" "$(mpsi10 "$POOL")"
+        printf '  %s\n' "-------------------------------------------------------------------------------"
+        printf '  %-40s %7s %11s %6s %9s\n' "BUCKET" "CPU%" "MEM" "TASKS" "PSI(cpu)"
+
+        if [ "''${#dirs[@]}" -eq 0 ]; then
+          printf '  (no active buckets)\n'
+          return
+        fi
+        for d in "''${dirs[@]}"; do
+          local b u1b pctb mem tasks
+          b=$($basename "$d"); b=''${b%.slice}; b=''${b#worktrees-}
+          u1b=$(cpuusec "$d")
+          pctb=$(( (u1b - ''${u0[$d]:-0}) / 10000 / SAMPLE ))
+          mem=$($cat "$d/memory.current" 2>/dev/null)
+          tasks=$($cat "$d/pids.current" 2>/dev/null || echo "?")
+          printf '  %-40.40s %6s%% %11s %6s %9s\n' "$(unesc "$b")" "$pctb" "$(human "$mem")" "$tasks" "$(psi10 "$d")"
+        done
+      }
+
+      if [ "$watch" = 1 ]; then
+        while :; do
+          clear 2>/dev/null || printf '\n\n'
+          printf 'worktrees.slice cgroup budget — %s (refresh %ss · ctrl-c to quit)\n\n' \
+            "$($date +%T 2>/dev/null || echo now)" "$interval"
+          snapshot
+          $sleep "$interval"
+        done
+      else
+        snapshot
+      fi
+    '')
+    (pkgs.writeScriptBin "wt-cgroup-i3status" ''
+      #!/usr/bin/env ${pkgs.python313}/bin/python3
+      # wt-cgroup-i3status -- i3bar status_command that prepends a worktrees.slice
+      # cgroup-usage block to the LEFT of the normal i3status output.
+      #
+      # It runs i3status forced into i3bar (coloured JSON) output via a config
+      # mirroring i3status's built-in defaults, passes those coloured blocks
+      # through untouched, and prepends our own block:
+      #   active:  "⚙ 2.4/12c 4.2G/16G 3wt"  (cores/cap, mem/cap, active buckets),
+      #            colored green/yellow/red by peak CPU-or-mem utilisation;
+      #   idle:    "⚙ idle" dimmed, when the pool is absent or below the CPU floor.
+      # CPU% is the pool's usage_usec delta averaged over each i3status tick (~5s),
+      # so no extra sampling sleep is needed. cgtop convention: 100% == one core.
+      #
+      # Env: WT_BAR_ACTIVE_CORES=<cores> -- below this the block reads "idle"
+      #      (default 0.15, i.e. 15% of one core).
+      import sys, os, json, time, subprocess, signal
+
+      I3STATUS = "${pkgs.i3status}/bin/i3status"
+
+      UID = os.getuid()
+      POOL = f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service/worktrees.slice"
+
+      ACTIVE_CORES = float(os.environ.get("WT_BAR_ACTIVE_CORES", "0.15"))
+
+      # Palette lifted from the dunst catppuccin-mocha theme in home.nix.
+      GREEN, YELLOW, RED, DIM = "#a6e3a1", "#f9e2af", "#f38ba8", "#6c7086"
+
+      def read_int(path):
+          try:
+              with open(path) as f:
+                  return int(f.read().strip())
+          except (OSError, ValueError):
+              return None
+
+      def read_usage_usec():
+          try:
+              with open(POOL + "/cpu.stat") as f:
+                  for line in f:
+                      if line.startswith("usage_usec"):
+                          return int(line.split()[1])
+          except OSError:
+              return None
+          return None
+
+      def cap_cores():
+          try:
+              with open(POOL + "/cpu.max") as f:
+                  quota, period = f.read().split()[:2]
+              return None if quota == "max" else int(quota) / int(period)
+          except (OSError, ValueError):
+              return None
+
+      def mem_high():
+          try:
+              with open(POOL + "/memory.high") as f:
+                  v = f.read().strip()
+              return None if v == "max" else int(v)
+          except (OSError, ValueError):
+              return None
+
+      def human(nbytes):
+          if nbytes is None:
+              return "?"
+          g = nbytes / (1024 ** 3)
+          if g >= 1:
+              return f"{g:.1f}G"
+          m = nbytes / (1024 ** 2)
+          if m >= 1:
+              return f"{m:.0f}M"
+          return f"{nbytes / 1024:.0f}k"
+
+      def active_buckets():
+          n = 0
+          try:
+              for name in os.listdir(POOL):
+                  pids = read_int(os.path.join(POOL, name, "pids.current"))
+                  if pids and pids > 0:
+                      n += 1
+          except OSError:
+              pass
+          return n
+
+      def block(full, color):
+          return {"full_text": full, "color": color, "name": "worktrees",
+                  "markup": "none", "separator": True}
+
+      prev_usage = None
+      prev_t = None
+
+      def worktree_block():
+          global prev_usage, prev_t
+          if not os.path.isdir(POOL):
+              prev_usage, prev_t = None, None
+              return block("⚙ idle", DIM)
+
+          usage = read_usage_usec()
+          now = time.monotonic()
+          cores = 0.0
+          if usage is not None and prev_usage is not None and now > prev_t:
+              cores = max(0.0, (usage - prev_usage) / 1e6 / (now - prev_t))
+          prev_usage, prev_t = usage, now
+
+          if cores < ACTIVE_CORES:
+              return block("⚙ idle", DIM)
+
+          cap = cap_cores()
+          mem = read_int(POOL + "/memory.current")
+          memhigh = mem_high()
+          nwt = active_buckets()
+
+          cpu_txt = f"{cores:.1f}/{cap:.0f}c" if cap else f"{cores:.1f}c"
+          mem_txt = f"{human(mem)}/{human(memhigh)}" if memhigh else human(mem)
+          full = f"⚙ {cpu_txt} {mem_txt} {nwt}wt"
+
+          cpu_u = (cores / cap) if cap else 0.0
+          mem_u = (mem / memhigh) if (mem and memhigh) else 0.0
+          u = max(cpu_u, mem_u)
+          color = GREEN if u < 0.5 else (YELLOW if u < 0.8 else RED)
+          return block(full, color)
+
+      def main():
+          proc = subprocess.Popen(
+              [I3STATUS, "-c", "${i3statusConf}"],
+              stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, bufsize=1)
+
+          def term(*_):
+              try:
+                  proc.terminate()
+              except Exception:
+                  pass
+              sys.exit(0)
+
+          signal.signal(signal.SIGTERM, term)
+          signal.signal(signal.SIGINT, term)
+
+          sys.stdout.write('{"version":1}\n[\n')
+          sys.stdout.flush()
+
+          first = True
+          for raw in proc.stdout:
+              s = raw.strip()
+              if s.startswith(","):        # i3bar continuation lines: ",[ ... ]"
+                  s = s[1:].strip()
+              # Skip the protocol header and the opening "[".
+              if not s or s == "[" or (s.startswith("{") and "version" in s):
+                  continue
+              # i3status is configured for i3bar JSON, so pass its coloured blocks
+              # through. Fall back to wrapping a plain-text line as one block.
+              if s.startswith("["):
+                  try:
+                      status_blocks = json.loads(s)
+                  except json.JSONDecodeError:
+                      status_blocks = [{"full_text": s, "markup": "none"}]
+              else:
+                  status_blocks = [{"full_text": raw.rstrip("\n"),
+                                    "markup": "none", "separator": True}]
+
+              line = json.dumps([worktree_block()] + status_blocks)
+              sys.stdout.write(("" if first else ",") + line + "\n")
+              sys.stdout.flush()
+              first = False
+
+          term()
+
+      main()
     '')
   ];
 }

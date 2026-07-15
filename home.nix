@@ -307,4 +307,45 @@
       };
     };
   };
+
+  # Claude Code worktree build-daemon resource pool (monorepo-jobs).
+  #
+  # Global resource pool shared by every worktree's build work. The
+  # worktree-setup hook places each worktree's `mj watch` daemon -- and a
+  # PreToolUse hook places each ad-hoc build/test command Claude runs -- into
+  # that worktree's OWN slice (worktrees-<name>.slice), a child of this pool.
+  # cgroup v2 hierarchy enforces:
+  #   * this pool's caps are a hard ceiling on the WHOLE subtree (all worktrees
+  #     combined) -> the OS always keeps headroom;
+  #   * each worktree slice's equal weight shares this pool fairly (one busy
+  #     worktree gets it all; several busy split it evenly; idle ones cost
+  #     nothing), and a worktree's daemon + ad-hoc runs share its single share.
+  #
+  # Machine-specific policy for this 16-core / 27 GiB host. To re-budget, change
+  # ONLY the two numbers below. The committed hook hardcodes no numbers of its
+  # own and no-ops entirely if this slice is absent.
+  systemd.user.slices.worktrees = {
+    Unit = {
+      Description = "Claude Code worktree build-daemon resource pool (monorepo-jobs)";
+      Documentation = "file:.claude/hooks/worktree-setup.sh";
+    };
+    Slice = {
+      # Hard CPU ceiling on the whole subtree: 12 of 16 cores. Leaves 4 cores
+      # for the OS, editor, and browser no matter how many worktrees are
+      # building at once.
+      CPUAccounting = true;
+      CPUQuota = "1200%";
+
+      # Soft memory throttle: past 16 GiB the kernel reclaims/slows the pool
+      # under pressure but never OOM-kills a build. Deliberately no MemoryMax ->
+      # no hard kills, so a memory-hungry build gets slow, not aborted.
+      MemoryAccounting = true;
+      MemoryHigh = "16G";
+
+      # Account IO but don't enforce a weight -- NVMe weight control is finicky
+      # and these builds are CPU/memory-bound. Add IOWeight here if disk
+      # contention ever becomes the bottleneck.
+      IOAccounting = true;
+    };
+  };
 }

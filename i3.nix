@@ -8,6 +8,35 @@ in {
     config = {
       modifier = mod;
 
+      # Bottom bar: run our wrapper as status_command so a worktrees.slice
+      # cgroup-usage block renders to the left of the normal i3status output.
+      # This mirrors the home-manager default bar verbatim (mode/position/colors/
+      # tray) and only swaps statusCommand -- specifying `bars` at all resets the
+      # whole block to per-field defaults, so the styling must be restated here.
+      bars = [{
+        mode = "dock";
+        hiddenState = "hide";
+        position = "bottom";
+        workspaceButtons = true;
+        workspaceNumbers = true;
+        statusCommand = "wt-cgroup-i3status";
+        fonts = {
+          names = [ "monospace" ];
+          size = 8.0;
+        };
+        trayOutput = "primary";
+        colors = {
+          background = "#000000";
+          statusline = "#ffffff";
+          separator = "#666666";
+          focusedWorkspace = { border = "#4c7899"; background = "#285577"; text = "#ffffff"; };
+          activeWorkspace = { border = "#333333"; background = "#5f676a"; text = "#ffffff"; };
+          inactiveWorkspace = { border = "#333333"; background = "#222222"; text = "#888888"; };
+          urgentWorkspace = { border = "#2f343a"; background = "#900000"; text = "#ffffff"; };
+          bindingMode = { border = "#2f343a"; background = "#900000"; text = "#ffffff"; };
+        };
+      }];
+
       keybindings = lib.mkOptionDefault {
         "${mod}+t" = "scratchpad show";
         "${mod}+Shift+s" = "exec --no-startup-id maim -s | xclip -selection clipboard -t image/png";
