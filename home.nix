@@ -346,13 +346,19 @@
       #   * too LOW (12G): the pool sits at its ceiling in perpetual reclaim-
       #     throttle, every allocation gets a penalty delay -> everything CRAWLS
       #     (memory PSI full ~32%, high breached 1700+ times).
-      # 16G is the less-bad default (occasional freeze > constant slow). The
-      # DURABLE fixes are desktop memory.min protection (root, nixos.nix) so the
-      # pool can be large without swapping Xorg, and/or fewer concurrent
-      # worktrees. cgroup-pressure-monitor.service captures forensics on each
-      # stall so we tune from data, not guesses. No MemoryMax -> never OOM-kills.
+      # 16G keeps the pool fast (its ~14G working set fits without reclaim churn
+      # -- lowering it to 12G caused perpetual throttle). The FREEZE is now
+      # prevented instead by desktop memory.min protection (see nixos.nix:
+      # user.slice / user-<uid>.slice / the graphical session scope), which
+      # guarantees the desktop's RAM so the pool -- never Xorg -- absorbs reclaim
+      # (it swaps its own cold node heaps to fast zram). MemoryMax=18G is a
+      # runaway backstop: a pathological fleet gets one OOM-killed build
+      # (contained in-pool; earlyoom already prefers build workers) rather than
+      # the whole box swapping to death. cgroup-pressure-monitor.service captures
+      # forensics + auto-diagnoses each remaining stall so we tune from data.
       MemoryAccounting = true;
       MemoryHigh = "16G";
+      MemoryMax = "18G";
 
       # Deprioritise the pool's disk I/O (default weight 100) so its swap-out and
       # build writes yield to the interactive desktop under contention -- I/O was

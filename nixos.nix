@@ -278,6 +278,58 @@
   # this value at the release version of the first install of this system.
   # Before changing this value read the documentation for this option
   # (e.g. man configuration.nix or on https://nixos.org/nixos/options.html).
+  # === Keep the desktop responsive under heavy worktree build load =========
+  # The cgroup pool (worktrees.slice, in home-manager) caps CPU and soft-caps
+  # memory, but a ~14G build fleet + browser on 27G is memory-OVERSUBSCRIBED:
+  # when RAM runs low the kernel's GLOBAL reclaim can swap out Xorg/i3, freezing
+  # the whole machine on the next input (measured: system 'memory full' PSI ~=
+  # 25-90%, cpu full ~= 0). Fix: GUARANTEE the graphical session's RAM with
+  # memory.min so it is never reclaimed -- all the memory pain then falls on the
+  # pool, which swaps its own cold node heaps to fast zram instead of the desktop.
+  #
+  # memory.min is only effective if the WHOLE ancestor chain grants it (a child's
+  # protection is capped by its parent's), so set it on user.slice and every
+  # user-<uid>.slice. The pool (worktrees.slice) keeps memory.min=0, so it claims
+  # none of the guarantee and stays the reclaim target; the session scope claims
+  # it (below). Pairs with earlyoom (avoids Xorg/i3, prefers build workers) as the
+  # last resort.
+  systemd.slices.user.sliceConfig = {
+    MemoryAccounting = true;
+    MemoryMin = "6G";
+  };
+  systemd.slices."user-".sliceConfig = {
+    MemoryAccounting = true;
+    MemoryMin = "6G";
+  };
+
+  # The graphical session lives in a TRANSIENT session-<N>.scope (system-owned,
+  # so home-manager/user units can't touch it and the number changes per login).
+  # Reassert memory.min on taylorl's x11/wayland session scope at boot and every
+  # 5 min. --runtime avoids piling persistent drop-ins per session number.
+  systemd.services.desktop-memory-protect = {
+    description = "Guarantee the graphical session's RAM (memory.min) vs heavy background load";
+    serviceConfig.Type = "oneshot";
+    path = [ pkgs.systemd pkgs.gawk ];
+    script = ''
+      set -u
+      loginctl list-sessions --no-legend | awk '{print $1}' | while read -r s; do
+        [ -n "$s" ] || continue
+        u=$(loginctl show-session "$s" -p Name --value 2>/dev/null)
+        t=$(loginctl show-session "$s" -p Type --value 2>/dev/null)
+        [ "$u" = "taylorl" ] || continue
+        case "$t" in x11|wayland) ;; *) continue ;; esac
+        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G 2>/dev/null || true
+      done
+    '';
+  };
+  systemd.timers.desktop-memory-protect = {
+    wantedBy = [ "timers.target" ];
+    timerConfig = {
+      OnBootSec = "45s";
+      OnUnitActiveSec = "5min";
+    };
+  };
+
   system.stateVersion = "24.05"; # Did you read the comment?
 
 }
