@@ -370,17 +370,27 @@
   # event shows nothing. Runs in the user session (NOT worktrees.slice) so it can
   # always capture even while the pool is throttled. Because the machine is
   # memory-oversubscribed this is how we tune MemoryHigh from data, not guesses.
-  # Snapshots + events.log land in ~/.local/state/cgroup-pressure/.
+  #
+  # CGPM_INVESTIGATE=1 makes each stall also spawn a headless, DIAGNOSE-ONLY
+  # `claude -p` (Opus) that reads the snapshot (inlined, no tools) and writes a
+  # root-cause analysis + notifies -- "ping Claude on hang". It never touches the
+  # system. Snapshots, analyses + events.log land in ~/.local/state/cgroup-pressure/.
   systemd.user.services.cgroup-pressure-monitor = {
-    Unit.Description = "cgroup v2 memory/IO pressure monitor (forensic snapshots on stall)";
+    Unit.Description = "cgroup v2 memory/IO pressure monitor (forensic snapshots + claude diagnosis on stall)";
     Install.WantedBy = [ "default.target" ];
     Service = {
-      # User services get a bare PATH; give the script the tools it shells out to.
+      # User services get a bare PATH; give the script the tools it shells out to
+      # (incl. claude + git for the auto-diagnosis).
       Environment = [
         "PATH=${lib.makeBinPath [
           pkgs.coreutils pkgs.procps pkgs.gawk pkgs.gnused
           pkgs.util-linux pkgs.findutils pkgs.libnotify
+          pkgs.git unstable-small-pkgs.claude-code
         ]}"
+        "CGPM_INVESTIGATE=1"
+        "CGPM_CLAUDE=${unstable-small-pkgs.claude-code}/bin/claude"
+        "CGPM_MODEL=opus"
+        "CGPM_INVESTIGATE_COOLDOWN=1800"
       ];
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";
       Restart = "always";
