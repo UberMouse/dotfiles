@@ -312,12 +312,19 @@
     path = [ pkgs.systemd pkgs.gawk ];
     script = ''
       set -u
+      # memory.min only bites if the WHOLE ancestor chain grants it. user.slice
+      # is set statically, but the per-uid user-<uid>.slice is a TEMPLATE INSTANCE
+      # whose drop-in only applies on (re)instantiation -- daemon-reload does NOT
+      # push it onto the already-running slice -- and the session scope is
+      # transient. Assert both live here so the chain is never silently broken.
       loginctl list-sessions --no-legend | awk '{print $1}' | while read -r s; do
         [ -n "$s" ] || continue
         u=$(loginctl show-session "$s" -p Name --value 2>/dev/null)
         t=$(loginctl show-session "$s" -p Type --value 2>/dev/null)
+        uid=$(loginctl show-session "$s" -p User --value 2>/dev/null)
         [ "$u" = "taylorl" ] || continue
         case "$t" in x11|wayland) ;; *) continue ;; esac
+        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=6G 2>/dev/null || true
         systemctl set-property --runtime "session-$s.scope" MemoryMin=6G 2>/dev/null || true
       done
     '';
