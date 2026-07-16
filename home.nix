@@ -311,9 +311,10 @@
   # Claude Code worktree build-daemon resource pool (monorepo-jobs).
   #
   # Global resource pool shared by every worktree's build work. The
-  # worktree-setup hook places each worktree's `mj watch` daemon -- and a
-  # PreToolUse hook places each ad-hoc build/test command Claude runs -- into
-  # that worktree's OWN slice (worktrees-<name>.slice), a child of this pool.
+  # worktree-setup hook places each worktree's `mj watch` daemon -- and adopts
+  # the whole Claude session (claude-<name>.scope) via cgroup ancestry -- into
+  # that worktree's OWN slice (worktrees-<name>.slice), a child of this pool, so
+  # EVERYTHING the session spawns (Grep tool, MCP, subagents, builds) is budgeted.
   # cgroup v2 hierarchy enforces:
   #   * this pool's caps are a hard ceiling on the WHOLE subtree (all worktrees
   #     combined) -> the OS always keeps headroom;
@@ -336,16 +337,55 @@
       CPUAccounting = true;
       CPUQuota = "1200%";
 
-      # Soft memory throttle: past 16 GiB the kernel reclaims/slows the pool
-      # under pressure but never OOM-kills a build. Deliberately no MemoryMax ->
-      # no hard kills, so a memory-hungry build gets slow, not aborted.
+      # Soft memory throttle. This 27 GiB host is memory-OVERSUBSCRIBED when a
+      # browser + N parallel worktree builds run (fleet working set ~14 GiB), so
+      # this one number seesaws between two failure modes and neither fully wins:
+      #   * too HIGH (16G): a peak exhausts global RAM, the kernel reclaims and
+      #     swaps out Xorg -> brief whole-machine FREEZE (memory PSI full ~25%,
+      #     cpu PSI full 0% -- CPU is never the problem);
+      #   * too LOW (12G): the pool sits at its ceiling in perpetual reclaim-
+      #     throttle, every allocation gets a penalty delay -> everything CRAWLS
+      #     (memory PSI full ~32%, high breached 1700+ times).
+      # 16G is the less-bad default (occasional freeze > constant slow). The
+      # DURABLE fixes are desktop memory.min protection (root, nixos.nix) so the
+      # pool can be large without swapping Xorg, and/or fewer concurrent
+      # worktrees. cgroup-pressure-monitor.service captures forensics on each
+      # stall so we tune from data, not guesses. No MemoryMax -> never OOM-kills.
       MemoryAccounting = true;
       MemoryHigh = "16G";
 
-      # Account IO but don't enforce a weight -- NVMe weight control is finicky
-      # and these builds are CPU/memory-bound. Add IOWeight here if disk
-      # contention ever becomes the bottleneck.
+      # Deprioritise the pool's disk I/O (default weight 100) so its swap-out and
+      # build writes yield to the interactive desktop under contention -- I/O was
+      # the secondary freeze contributor (io PSI full ~8%). Best-effort: a device
+      # whose scheduler ignores weights simply drops this with no harm.
       IOAccounting = true;
+      IOWeight = 50;
+    };
+  };
+
+  # Memory/IO pressure monitor. Watches system PSI and, whenever the machine
+  # actually stalls (full-avg10 >= 20%), captures a forensic snapshot (per-cgroup
+  # memory, top procs by RSS, pool stats, swap) + a desktop alert so a transient
+  # freeze/slowdown can be investigated after the fact -- a `ps` run after the
+  # event shows nothing. Runs in the user session (NOT worktrees.slice) so it can
+  # always capture even while the pool is throttled. Because the machine is
+  # memory-oversubscribed this is how we tune MemoryHigh from data, not guesses.
+  # Snapshots + events.log land in ~/.local/state/cgroup-pressure/.
+  systemd.user.services.cgroup-pressure-monitor = {
+    Unit.Description = "cgroup v2 memory/IO pressure monitor (forensic snapshots on stall)";
+    Install.WantedBy = [ "default.target" ];
+    Service = {
+      # User services get a bare PATH; give the script the tools it shells out to.
+      Environment = [
+        "PATH=${lib.makeBinPath [
+          pkgs.coreutils pkgs.procps pkgs.gawk pkgs.gnused
+          pkgs.util-linux pkgs.findutils pkgs.libnotify
+        ]}"
+      ];
+      ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";
+      Restart = "always";
+      RestartSec = 10;
+      Nice = 10;
     };
   };
 }
