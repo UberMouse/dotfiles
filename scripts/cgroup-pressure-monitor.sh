@@ -8,6 +8,13 @@
 # the freeze/crawl. We trigger on that, not on loadavg (which lags and is
 # inflated by CPU throttling that is NOT the problem here).
 #
+# We measure PSI on the DESKTOP graphical session scope (session-<N>.scope),
+# NOT system-wide. The pool's io.max deliberately concentrates build stall
+# INSIDE worktrees.slice, so system-wide io PSI now sits near the old threshold
+# during any build storm even when the desktop is fine — that's the cap working,
+# not a stall. The desktop scope's own PSI is the only signal that the user
+# actually stalled, so that is what wakes the monitor.
+#
 # When CGPM_INVESTIGATE is set, each stall also spawns a headless `claude -p`
 # that reads the snapshot (inlined, NO tools -> no system access, also defuses
 # any prompt-injection in captured cmdlines) and writes a root-cause analysis +
@@ -17,7 +24,7 @@
 # ~/.local/state/cgroup-pressure). Investigate later:  ls -t "$CGPM_OUTDIR"
 #
 # Tunables (env):
-#   CGPM_THRESH               full-avg10 %% that counts as a stall  (default 20)
+#   CGPM_THRESH               DESKTOP full-avg10 %% that counts as a stall (default 15)
 #   CGPM_INTERVAL             poll seconds                          (default 5)
 #   CGPM_COOLDOWN             min seconds between snapshots         (default 120)
 #   CGPM_OUTDIR               output directory
@@ -28,7 +35,7 @@
 set -u
 
 OUTDIR="${CGPM_OUTDIR:-$HOME/.local/state/cgroup-pressure}"
-THRESH="${CGPM_THRESH:-20}"
+THRESH="${CGPM_THRESH:-15}"
 INTERVAL="${CGPM_INTERVAL:-5}"
 COOLDOWN="${CGPM_COOLDOWN:-120}"
 CLAUDE_BIN="${CGPM_CLAUDE:-claude}"
@@ -38,13 +45,45 @@ mkdir -p "$OUTDIR"
 LOG="$OUTDIR/events.log"
 
 U=$(id -u)
+UNAME=$(id -un)
 POOL="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice"
 USERAT="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service"
+USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
+DESKTOP=""     # graphical session scope; resolved lazily, cached, re-resolved if it vanishes
 last_snap=0
 last_investigate=0
 
 full_avg10() { awk '/^full/{for(i=1;i<=NF;i++){n=split($i,a,"=");if(a[1]=="avg10")print a[2]}}' "$1" 2>/dev/null; }
 human() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || echo "${1}B"; }
+
+# Resolve the DESKTOP graphical session scope (x11/wayland) for this user. The
+# desktop lives OUTSIDE the pool; its OWN PSI is the "is the user stalling"
+# signal. Cached in $DESKTOP; re-resolves if the cached scope disappears (the
+# session can change across logout/login).
+resolve_desktop() {
+  [ -n "$DESKTOP" ] && [ -r "$DESKTOP/io.pressure" ] && return 0
+  DESKTOP=""
+  local sid ty sc
+  if command -v loginctl >/dev/null 2>&1; then
+    while read -r sid; do
+      [ -n "$sid" ] || continue
+      ty=$(loginctl show-session "$sid" -p Type --value 2>/dev/null)
+      case "$ty" in x11|wayland) ;; *) continue ;; esac
+      sc="$USERSLICE/session-$sid.scope"
+      [ -r "$sc/io.pressure" ] && { DESKTOP="$sc"; return 0; }
+    done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$UNAME" '$3==u{print $1}')
+  fi
+  # Fallback (no loginctl): the session-*.scope with the most PIDs is the
+  # graphical one (browser + tabs dwarf a headless login shell).
+  local d n best="" bestn=0
+  for d in "$USERSLICE"/session-*.scope; do
+    [ -r "$d/cgroup.procs" ] || continue
+    n=$(wc -l < "$d/cgroup.procs" 2>/dev/null); n=${n:-0}
+    if [ "$n" -gt "$bestn" ] 2>/dev/null; then bestn=$n; best="$d"; fi
+  done
+  [ -n "$best" ] && { DESKTOP="$best"; return 0; }
+  return 1
+}
 
 # Spawn a headless, tool-less claude to diagnose the just-captured snapshot.
 # Detached + nice'd + timeout'd + best-effort: any failure only costs the
@@ -66,15 +105,19 @@ run_investigation() {
   analysis="$OUTDIR/analysis-$stamp.md"
   snap=$(cat "$snapfile" 2>/dev/null)
 
-  prompt="You are diagnosing a Linux desktop that just STALLED/HUNG under load. Below is a forensic snapshot captured at the moment of the stall by a cgroup-v2 PSI monitor. Reason ONLY from the snapshot.
+  prompt="You are diagnosing a Linux DESKTOP that just STALLED. Below is a forensic snapshot captured at the moment of the stall by a cgroup-v2 PSI monitor. Reason ONLY from the snapshot.
 
-Machine: 16-core / 27 GiB NixOS host (ubermouse). Parallel git-worktree build work runs inside a cgroup-v2 pool 'worktrees.slice', capped at CPUQuota 1200%% (12 cores), MemoryHigh 16G (soft), IOWeight 50; a Claude 'agents' fleet is adopted into worktrees.slice/agents-adopted. The DESKTOP (Xorg) runs in session-2.scope OUTSIDE the pool. Known dynamics: (a) the pool at its MemoryHigh can drive GLOBAL memory reclaim that swaps out Xorg -> whole-machine freeze, shown by system 'memory full' PSI spiking; (b) too-low MemoryHigh instead causes perpetual reclaim-throttle (also slow), shown by memory.events 'high' climbing fast; (c) CPU is essentially never the cause (cpu PSI full ~= 0). The machine is memory-oversubscribed when a browser + several parallel builds run.
+Machine: 16-core / 27 GiB NixOS host (ubermouse). Parallel git-worktree build work + an adopted Claude 'agents' fleet run inside a cgroup-v2 pool 'worktrees.slice' (subtree agents-adopted), capped: CPUQuota 1200% (12 cores), MemoryHigh 16G / MemoryMax 18G, and io.max wbps=200M on the build disk (8:0). IMPORTANT: io.weight is a NO-OP on this host (the mq-deadline scheduler ignores it) -> io.max is the ONLY thing bounding pool I/O; do NOT recommend raising/lowering io.weight. The DESKTOP (Xorg/browser) runs in a session-<N>.scope OUTSIDE the pool, protected by memory.min=6G (guaranteed via the user.slice ancestor chain so the POOL, not Xorg, is the reclaim target) and io.latency target=50ms (its I/O jumps the disk queue ahead of the pool).
+
+CRUCIAL: this monitor triggers on the DESKTOP session scope's OWN PSI (the 'desktop' section of the snapshot), NOT system-wide. The pool's io.max deliberately CONCENTRATES build stall inside the pool, so 'pool io.pressure' running HIGHER than 'system io PSI' is EXPECTED and means the cap is WORKING — that alone is NOT the problem and needs no fix. The problem is ONLY whatever pushed the DESKTOP scope's own io/memory pressure over ~15%. If desktop pressure is low despite high pool/system pressure, the protections HELD and you should say so plainly.
+
+Known dynamics: (a) MEMORY-FREEZE — global reclaim swaps out the desktop despite memory.min; shown by DESKTOP memory.pressure high AND on-disk swap (dm-*/partition, not zram) climbing. (b) IO-CONTENTION — builds saturate the virtual disk faster than io.max throttles, or io.latency fails to prioritise the desktop; shown by DESKTOP io.pressure high. (c) CPU is essentially never the cause (cpu full ~= 0).
 
 From the snapshot, produce a SHORT markdown report:
-1. Which resource stalled the machine (memory / io / cpu) — cite the PSI 'full' avg figures.
-2. The specific cgroup(s) and process(es) responsible, with their memory (RSS) and/or CPU.
-3. Root cause in 1-2 sentences.
-4. One concrete recommendation (e.g. set MemoryHigh to X, cut concurrency to N, add desktop memory.min).
+1. Which resource stalled the DESKTOP (memory / io / cpu) — cite the DESKTOP-section 'full' avg figures, plus pool + system figures for context.
+2. Did the protections hold? Compare desktop vs pool vs system pressure and state whether io.max / io.latency / memory.min did their job (or say the desktop was collateral and which one failed).
+3. The specific cgroup(s) and process(es) driving it, with RSS and/or CPU.
+4. One concrete recommendation to protect the DESKTOP (e.g. lower pool io.max to X, sharpen desktop io.latency target to Y ms, raise desktop memory.min, or cut build concurrency to N). Do NOT touch io.weight.
 The VERY FIRST line must be exactly:  HEADLINE: <one sentence cause>
 
 --- SNAPSHOT ---
@@ -123,9 +166,24 @@ snapshot() {
       echo "  memory.events  : $(tr '\n' ' ' < "$POOL/memory.events" 2>/dev/null)"
       echo "  memory.pressure: $(sed -n 2p "$POOL/memory.pressure" 2>/dev/null)"
       echo "  io.pressure    : $(sed -n 2p "$POOL/io.pressure" 2>/dev/null)"
+      echo "  io.max         : $(cat "$POOL/io.max" 2>/dev/null)"
+      echo "  io.weight      : $(cat "$POOL/io.weight" 2>/dev/null)  (NO-OP on mq-deadline; io.max is the real bound)"
+      echo "  io.stat        : $(tr '\n' ' ' < "$POOL/io.stat" 2>/dev/null)"
       echo "  cpu.stat       : $(tr '\n' ' ' < "$POOL/cpu.stat" 2>/dev/null)"
     else
       echo "  (pool cgroup not found)"
+    fi
+    echo
+    echo "----- desktop (graphical session scope, OUTSIDE the pool) -----"
+    if [ -n "$DESKTOP" ] && [ -d "$DESKTOP" ]; then
+      echo "  scope          : ${DESKTOP#/sys/fs/cgroup}"
+      echo "  memory.pressure: $(sed -n 2p "$DESKTOP/memory.pressure" 2>/dev/null)  <- desktop mem stall (the trigger)"
+      echo "  io.pressure    : $(sed -n 2p "$DESKTOP/io.pressure" 2>/dev/null)  <- desktop io stall (the trigger)"
+      echo "  memory.current : $(human "$(cat "$DESKTOP/memory.current" 2>/dev/null)")"
+      echo "  memory.min     : $(human "$(cat "$DESKTOP/memory.min" 2>/dev/null)")  (desktop RAM guarantee)"
+      echo "  io.latency     : $(cat "$DESKTOP/io.latency" 2>/dev/null)  (desktop io priority target, usec)"
+    else
+      echo "  (desktop session scope not resolved)"
     fi
     echo
     echo "----- top cgroups by memory.current (under user@) -----"
@@ -154,16 +212,18 @@ snapshot: $file" 2>/dev/null || true
   investigate "$file"
 }
 
-echo "$(date -Iseconds)  cgroup-pressure-monitor started (thresh=${THRESH}% full-avg10, interval=${INTERVAL}s, cooldown=${COOLDOWN}s, investigate=${CGPM_INVESTIGATE:-off})" >> "$LOG"
+echo "$(date -Iseconds)  cgroup-pressure-monitor started (DESKTOP-scoped, thresh=${THRESH}% full-avg10, interval=${INTERVAL}s, cooldown=${COOLDOWN}s, investigate=${CGPM_INVESTIGATE:-off})" >> "$LOG"
 
 while :; do
-  m=$(full_avg10 /proc/pressure/memory); m=${m:-0}
-  i=$(full_avg10 /proc/pressure/io);     i=${i:-0}
   now=$(date +%s)
-  if awk -v m="$m" -v i="$i" -v t="$THRESH" 'BEGIN{exit !(m>=t || i>=t)}'; then
-    if [ $((now - last_snap)) -ge "$COOLDOWN" ]; then
-      snapshot "mem_full_avg10=${m}%  io_full_avg10=${i}%  (>= ${THRESH}%)"
-      last_snap=$now
+  if resolve_desktop; then
+    dm=$(full_avg10 "$DESKTOP/memory.pressure"); dm=${dm:-0}
+    di=$(full_avg10 "$DESKTOP/io.pressure");     di=${di:-0}
+    if awk -v m="$dm" -v i="$di" -v t="$THRESH" 'BEGIN{exit !(m>=t || i>=t)}'; then
+      if [ $((now - last_snap)) -ge "$COOLDOWN" ]; then
+        snapshot "DESKTOP stall (${DESKTOP##*/}): mem_full_avg10=${dm}%  io_full_avg10=${di}%  (>= ${THRESH}%)"
+        last_snap=$now
+      fi
     fi
   fi
   sleep "$INTERVAL"
