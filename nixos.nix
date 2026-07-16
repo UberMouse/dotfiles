@@ -324,12 +324,17 @@
         uid=$(loginctl show-session "$s" -p User --value 2>/dev/null)
         [ "$u" = "taylorl" ] || continue
         case "$t" in x11|wayland) ;; *) continue ;; esac
+        # MemoryMin: desktop RAM is never reclaimed (whole ancestor chain).
         [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=6G 2>/dev/null || true
-        # MemoryMin: desktop RAM never reclaimed. IOLatencyTargetSec: Xorg's disk
-        # I/O jumps the queue -- if the session's I/O latency exceeds 50ms the
-        # kernel throttles the competing build pool -- so a parallel-build I/O
-        # storm (mq-deadline shares one queue) can't stall the desktop.
-        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G "IOLatencyTargetSec=/dev/sda 50ms" 2>/dev/null || true
+        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G 2>/dev/null || true
+        # io.latency: Xorg's disk I/O jumps the queue -- when the session's I/O
+        # latency exceeds 50ms the kernel throttles the competing build pool, so a
+        # parallel-build storm (mq-deadline shares one queue) can't stall the
+        # desktop. systemd 260 has NO runtime IOLatencyTargetSec property
+        # ("Unknown assignment"), so write the cgroup file directly (we are root;
+        # the io controller is enabled on the session scope). 8:0=sda, 50000us=50ms.
+        scope="/sys/fs/cgroup/user.slice/user-$uid.slice/session-$s.scope"
+        [ -w "$scope/io.latency" ] && echo "8:0 target=50000" > "$scope/io.latency" 2>/dev/null || true
       done
     '';
   };
