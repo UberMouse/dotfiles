@@ -360,12 +360,18 @@
       MemoryHigh = "16G";
       MemoryMax = "18G";
 
-      # Deprioritise the pool's disk I/O (default weight 100) so its swap-out and
-      # build writes yield to the interactive desktop under contention -- I/O was
-      # the secondary freeze contributor (io PSI full ~8%). Best-effort: a device
-      # whose scheduler ignores weights simply drops this with no harm.
+      # Hard write cap on the pool's disk I/O. This host's I/O scheduler is
+      # mq-deadline, which IGNORES io.weight (only BFQ honours it) -- so an
+      # ABSOLUTE io.max is the only thing that actually bounds a parallel-build
+      # I/O storm (an io PSI full ~42% stall was traced to exactly this: builds
+      # saturating the virtual-disk queue while Xorg waits behind them). Validated
+      # live that this throttles BUFFERED writes too (ext4 cgroup-writeback),
+      # which is what builds do -- unlike io.weight. 200 MB/s leaves virtual-disk
+      # queue headroom; io.latency=50ms on the graphical session scope (nixos.nix)
+      # gives Xorg's I/O priority on top. sda is SSD-backed on the host (the VM
+      # misreports rotational=1). Tune from cgroup-pressure-monitor snapshots.
       IOAccounting = true;
-      IOWeight = 50;
+      IOWriteBandwidthMax = "/dev/sda 200M";
     };
   };
 
