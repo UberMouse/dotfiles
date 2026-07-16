@@ -329,7 +329,7 @@
         # I/O jumps the queue -- if the session's I/O latency exceeds 50ms the
         # kernel throttles the competing build pool -- so a parallel-build I/O
         # storm (mq-deadline shares one queue) can't stall the desktop.
-        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G IOLatencyTargetSec=50ms 2>/dev/null || true
+        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G "IOLatencyTargetSec=/dev/sda 50ms" 2>/dev/null || true
       done
     '';
   };
