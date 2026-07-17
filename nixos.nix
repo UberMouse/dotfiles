@@ -293,13 +293,23 @@
   # none of the guarantee and stays the reclaim target; the session scope claims
   # it (below). Pairs with earlyoom (avoids Xorg/i3, prefers build workers) as the
   # last resort.
+  #
+  # 8G (raised from 6G): the first desktop-gated pressure event (2026-07-17 14:31)
+  # showed the pool bloating to 15G/16G-high let global reclaim brush the desktop's
+  # pages ABOVE its 6G floor -- desktop mem PSI touched 15.87% (mild; no disk swap,
+  # desktop stayed at 6.6G). The desktop resident set is ~6.6G, so a 6G floor left
+  # ~0.6G exposed to reclaim scanning. An 8G floor puts the WHOLE desktop working
+  # set under the untouchable band -> global reclaim can't reach it, the pool eats
+  # all reclaim to zram. Surgical: does NOT throttle pool builds (memory.high stays
+  # 16G); costs the pool ~2G of box headroom before it becomes the sole reclaim
+  # target. Tune further from the next (harder) desktop event.
   systemd.slices.user.sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = "6G";
+    MemoryMin = "8G";
   };
   systemd.slices."user-".sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = "6G";
+    MemoryMin = "8G";
   };
 
   # The graphical session lives in a TRANSIENT session-<N>.scope (system-owned,
@@ -325,8 +335,10 @@
         [ "$u" = "taylorl" ] || continue
         case "$t" in x11|wayland) ;; *) continue ;; esac
         # MemoryMin: desktop RAM is never reclaimed (whole ancestor chain).
-        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=6G 2>/dev/null || true
-        systemctl set-property --runtime "session-$s.scope" MemoryMin=6G 2>/dev/null || true
+        # 8G (was 6G): keeps the full ~6.6G desktop working set under the
+        # untouchable band so global reclaim from a 15G pool can't brush it.
+        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=8G 2>/dev/null || true
+        systemctl set-property --runtime "session-$s.scope" MemoryMin=8G 2>/dev/null || true
         # io.latency: Xorg's disk I/O jumps the queue -- when the session's I/O
         # latency exceeds 50ms the kernel throttles the competing build pool, so a
         # parallel-build storm (mq-deadline shares one queue) can't stall the

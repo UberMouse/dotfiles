@@ -346,19 +346,26 @@
       #   * too LOW (12G): the pool sits at its ceiling in perpetual reclaim-
       #     throttle, every allocation gets a penalty delay -> everything CRAWLS
       #     (memory PSI full ~32%, high breached 1700+ times).
-      # 16G keeps the pool fast (its ~14G working set fits without reclaim churn
-      # -- lowering it to 12G caused perpetual throttle). The FREEZE is now
-      # prevented instead by desktop memory.min protection (see nixos.nix:
-      # user.slice / user-<uid>.slice / the graphical session scope), which
-      # guarantees the desktop's RAM so the pool -- never Xorg -- absorbs reclaim
-      # (it swaps its own cold node heaps to fast zram). MemoryMax=18G is a
-      # runaway backstop: a pathological fleet gets one OOM-killed build
+      # 20G/22G (raised from 16G/18G 2026-07-17): now that the desktop's RAM is
+      # hard-guaranteed by memory.min=8G (see nixos.nix), the FREEZE mode above
+      # can't happen -- the pool, never Xorg, absorbs any overcommit by swapping
+      # its own cold node heaps to fast zram. At the 16G ceiling the pool rode its
+      # high while holding ~5.5G in zram swap (constant compress/decompress churn)
+      # even though the box had 8+G free/available at idle. So we let the pool
+      # hold more resident: MemoryHigh=20G trades a ~2.6G peak overcommit (20G pool
+      # + 8G desktop + ~1.6G app on 27G, absorbed by zram) for less reclaim churn
+      # and better build throughput. NOTE this is a THROUGHPUT bet, not a desktop-
+      # stall fix -- desktop stalls are global-reclaim allocation-latency at storm
+      # peaks, cut by the 8G floor, not by the pool ceiling; if peak stalls worsen,
+      # revert live with `systemctl --user revert worktrees.slice`. (12G was tried
+      # and caused perpetual reclaim-throttle -- everything crawled.) MemoryMax=22G
+      # is the runaway backstop: a pathological fleet gets one OOM-killed build
       # (contained in-pool; earlyoom already prefers build workers) rather than
       # the whole box swapping to death. cgroup-pressure-monitor.service captures
       # forensics + auto-diagnoses each remaining stall so we tune from data.
       MemoryAccounting = true;
-      MemoryHigh = "16G";
-      MemoryMax = "18G";
+      MemoryHigh = "20G";
+      MemoryMax = "22G";
 
       # Hard write cap on the pool's disk I/O. This host's I/O scheduler is
       # mq-deadline, which IGNORES io.weight (only BFQ honours it) -- so an
