@@ -19,6 +19,7 @@ let
     order += "ethernet _first_"
     order += "battery all"
     order += "disk /"
+    order += "cpu_usage"
     order += "load"
     order += "memory"
     order += "tztime local"
@@ -39,6 +40,12 @@ let
 
     disk "/" {
             format = "%avail"
+    }
+
+    cpu_usage {
+            format = "CPU %usage"
+            degraded_threshold = 60
+            max_threshold = 85
     }
 
     load {
