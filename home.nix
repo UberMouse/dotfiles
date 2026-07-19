@@ -109,7 +109,6 @@
       unstable-pkgs.pi-coding-agent
       unstable-pkgs.rush
 
-      unstable-small-pkgs.code-cursor-fhs
       unstable-small-pkgs.claude-code
     ];
 
