@@ -787,17 +787,23 @@ in
       # shows up as the "agents" bucket in wt-cgroup-status; every process the
       # agent view dispatches inherits that cgroup. cgroup v2 forbids processes in
       # an inner slice that has children, hence a child slice rather than the pool
-      # root. No-ops gracefully to a direct run if the pool isn't active.
+      # root. No-ops gracefully to a direct run if the pool unit isn't installed.
+      #
+      # Gate on the pool UNIT being loaded, never on its cgroup directory
+      # existing: systemd only materializes a slice's cgroup while it holds
+      # active units, so once the last worktree slice exits the directory
+      # vanishes and a -d test deadlocks (the pool can only activate when
+      # something is placed in it, but the test refuses to place anything until
+      # it is active) — silently dropping the whole fleet outside the budget.
+      # systemd-run auto-starts the parent slice chain, so placement is all the
+      # bootstrap that is needed. Same guard .claude/hooks/worktree-setup.sh uses.
       set -u
 
       claude=${unstable-small-pkgs.claude-code}/bin/claude
-      id=${pkgs.coreutils}/bin/id
+      systemctl=${pkgs.systemd}/bin/systemctl
       systemd_run=${pkgs.systemd}/bin/systemd-run
 
-      u=$($id -u)
-      pool="/sys/fs/cgroup/user.slice/user-$u.slice/user@$u.service/worktrees.slice"
-
-      if [ -d "$pool" ]; then
+      if [ "$("$systemctl" --user show worktrees.slice -p LoadState --value 2>/dev/null)" = "loaded" ]; then
         exec "$systemd_run" --user --scope --quiet --collect \
           --slice=worktrees-agents.slice \
           --description="claude agents (worktrees pool)" \
