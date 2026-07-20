@@ -345,26 +345,37 @@
       #   * too LOW (12G): the pool sits at its ceiling in perpetual reclaim-
       #     throttle, every allocation gets a penalty delay -> everything CRAWLS
       #     (memory PSI full ~32%, high breached 1700+ times).
-      # 20G/22G (raised from 16G/18G 2026-07-17): now that the desktop's RAM is
-      # hard-guaranteed by memory.min=8G (see nixos.nix), the FREEZE mode above
-      # can't happen -- the pool, never Xorg, absorbs any overcommit by swapping
-      # its own cold node heaps to fast zram. At the 16G ceiling the pool rode its
-      # high while holding ~5.5G in zram swap (constant compress/decompress churn)
-      # even though the box had 8+G free/available at idle. So we let the pool
-      # hold more resident: MemoryHigh=20G trades a ~2.6G peak overcommit (20G pool
-      # + 8G desktop + ~1.6G app on 27G, absorbed by zram) for less reclaim churn
-      # and better build throughput. NOTE this is a THROUGHPUT bet, not a desktop-
-      # stall fix -- desktop stalls are global-reclaim allocation-latency at storm
-      # peaks, cut by the 8G floor, not by the pool ceiling; if peak stalls worsen,
-      # revert live with `systemctl --user revert worktrees.slice`. (12G was tried
-      # and caused perpetual reclaim-throttle -- everything crawled.) MemoryMax=22G
-      # is the runaway backstop: a pathological fleet gets one OOM-killed build
-      # (contained in-pool; earlyoom already prefers build workers) rather than
-      # the whole box swapping to death. cgroup-pressure-monitor.service captures
-      # forensics + auto-diagnoses each remaining stall so we tune from data.
+      # 20G/22G was tried 2026-07-17..07-21 as a THROUGHPUT bet (let the pool hold
+      # more resident now that memory.min=8G stops Xorg being the reclaim victim).
+      # REVERTED to 16G/18G 2026-07-21 on decisive evidence: at a 20G ceiling the
+      # pool's `memory.events high` counter read **0** in every single forensic
+      # snapshot -- the throttle NEVER fired, not once. On a 27 GiB box that also
+      # owes the desktop an 8 GiB floor, the machine runs out of RAM at ~19G pool
+      # usage, i.e. BEFORE the pool can reach its own limit. A ceiling above what
+      # the box can physically deliver is not a limit at all, so global reclaim
+      # won the race every time and the desktop paid for it in allocation latency
+      # (7 stalls, desktop memory PSI full 13-40%, free RAM 172-525 MiB). At 16G
+      # that same counter logged 16000-24000 events per incident -- that is the
+      # pool absorbing its own pressure, which is the entire point.
+      #
+      # The "16G freezes / 12G crawls" seesaw recorded above is now stale on BOTH
+      # ends: the 16G freeze predates memory.min=8G (2026-07-17), and the 12G crawl
+      # was a live set-property trial (never committed -- git only ever had 16G or
+      # 20G) that predates both memory.min AND the kswapd headroom added 07-21
+      # (watermark_scale_factor 125->300, see nixos.nix). Both of those change what
+      # happens when the pool throttles: it now reclaims into zram against a box
+      # with a real free-page buffer, instead of against one already at the wall.
+      # 16 + 8 = 24 on 27 GiB leaves genuine headroom for kernel + page cache.
+      #
+      # MemoryMax=18G is the runaway backstop: a pathological fleet gets one
+      # OOM-killed build (contained in-pool; earlyoom already prefers build
+      # workers) rather than the whole box swapping to death.
+      # cgroup-pressure-monitor.service captures forensics + auto-diagnoses each
+      # remaining stall so we keep tuning from data. Watch `memory.events high`:
+      # if it is 0 after a build storm, the ceiling is too loose again.
       MemoryAccounting = true;
-      MemoryHigh = "20G";
-      MemoryMax = "22G";
+      MemoryHigh = "16G";
+      MemoryMax = "18G";
 
       # Hard write cap on the pool's disk I/O. This host's I/O scheduler is
       # mq-deadline, which IGNORES io.weight (only BFQ honours it) -- so an
@@ -378,6 +389,35 @@
       # misreports rotational=1). Tune from cgroup-pressure-monitor snapshots.
       IOAccounting = true;
       IOWriteBandwidthMax = "/dev/sda 200M";
+    };
+  };
+
+  # Standby cap for the agents fleet, a child of the pool above.
+  #
+  # `claude-agents` (scriptBins.nix) systemd-runs `claude agents` into
+  # worktrees-agents.slice; declaring the slice here gives that transient
+  # placement a persistent set of limits.
+  #
+  # Added 2026-07-21: forensics showed this slice had quietly become the single
+  # LARGEST consumer in the pool -- 8.1 GB during the 11:33 stall, 6.8 GB at
+  # rest, versus 4.7 GB for the actual build (prettier-3x) it was competing
+  # with. ~1.8 GB of that is a dozen idle `claude bg-spare` daemons. That is
+  # STANDBY footprint, not throughput, which is exactly what should be paged out
+  # first: unlike squeezing the pool as a whole, capping it costs no build speed.
+  # 4G lets real agent work run while forcing cold spare heaps into zram instead
+  # of holding resident RAM the desktop needs to allocate from.
+  #
+  # No MemoryMax: this is a soft throttle only. Agents are interactive and an
+  # OOM kill here would surface as a mysterious dead session, whereas the pool's
+  # own 18G MemoryMax still backstops the whole subtree.
+  systemd.user.slices."worktrees-agents" = {
+    Unit = {
+      Description = "Claude agents fleet (worktrees pool child)";
+      Documentation = "file:scriptBins.nix";
+    };
+    Slice = {
+      MemoryAccounting = true;
+      MemoryHigh = "4G";
     };
   };
 
