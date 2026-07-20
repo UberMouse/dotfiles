@@ -208,8 +208,49 @@
     "vm.page-cluster" = 0;
     # Reclaim earlier/more aggressively so kswapd keeps ahead of allocation
     # spikes instead of dropping into slow direct reclaim (the load spikes).
+    #
+    # 125 -> 300 (2026-07-21): six desktop stalls between 07-17 and 07-20 all
+    # showed the SAME signature in ~/.local/state/cgroup-pressure -- on-disk swap
+    # 0 B and desktop memory.current BELOW its 8G memory.min (so its pages were
+    # never evicted: memory.min held), but global free RAM collapsed to
+    # 172-244 MiB and the desktop stalled in *direct* reclaim on every new page
+    # fault. memory.min guarantees the pages you already hold; it cannot
+    # manufacture free ones. At wsf=125 on a 27 GiB box kswapd only aims to keep
+    # ~750 MiB free, which a parallel build fleet outruns in seconds. 300 raises
+    # that target to ~2 GiB, so reclaim happens in kswapd's background thread
+    # BEFORE an allocating task has to do it inline. Preferred over lowering the
+    # pool's MemoryHigh because that knob seesaws between whole-machine freeze
+    # (20G) and perpetual reclaim-throttle crawl (12G) -- see home.nix -- whereas
+    # a bigger free buffer costs nothing at idle and no build throughput.
     "vm.watermark_boost_factor" = 0;
-    "vm.watermark_scale_factor" = 125;
+    "vm.watermark_scale_factor" = 300;
+    # Headroom for atomic/order-N allocations under the same storms. 66 MiB is
+    # the kernel's auto-sized default for this box and is thin once the free
+    # buffer above is being actively worked.
+    "vm.min_free_kbytes" = 262144; # 256 MiB (was auto: 67584 = 66 MiB)
+
+    # Writeback smoothing. write() only dirties page cache and returns; the disk
+    # write happens later, and these two numbers decide when. The ratio defaults
+    # (10%/20% of *dirtyable* memory -- free + reclaimable cache, so multiple GB
+    # on this box) let a build pile up gigabytes of dirty pages before writeback
+    # even STARTS, then dump them in one burst that owns the virtual disk queue;
+    # the desktop's next mmap fault (font, .so, browser cache) waits behind it.
+    # That is the 2026-07-21 09:55 stall: a worktree wrote 2.35 GB and the
+    # desktop hit io.pressure full avg10 29.5% while the pool's own 200 MB/s
+    # io.max never bit. io.max throttles WRITEBACK, but dirty pages accumulate in
+    # RAM regardless of it, and ext4's jbd2 journal traffic is charged to the
+    # root cgroup, not the writer's -- so neither escape route is the pool's to
+    # cap. Absolute *_bytes (not ratios) bound the burst regardless of RAM: worst
+    # case ~5 s of queue drain instead of ~25 s.
+    #
+    # TRADEOFF: a shorter window also means fewer writes get coalesced, and
+    # short-lived temp files that used to be created+deleted while still dirty
+    # (zero disk I/O) now actually hit the platter -- and /tmp here is on the
+    # root ext4, not tmpfs. If builds slow measurably, raise the BACKGROUND
+    # threshold to 512M-1G and keep dirty_bytes at 1G: the hard ceiling is what
+    # protects the desktop, the background one is what costs throughput.
+    "vm.dirty_background_bytes" = 268435456; # 256 MiB: start flushing early
+    "vm.dirty_bytes" = 1073741824; # 1 GiB: hard ceiling on dirty pages
   };
   # =========================================================================
 
