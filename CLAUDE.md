@@ -26,7 +26,7 @@ This is also aliased as `hms` in the shell.
 - `work-vm.nix` — VMware hardware config (imported by nixos.nix)
 
 **Application modules** (imported by home.nix):
-- `i3.nix`, `zsh.nix`, `neovim.nix`, `scriptBins.nix`
+- `i3.nix`, `zsh.nix`, `neovim.nix`, `scriptBins/` (per-script files under `scriptBins/bins/`, wired by `scriptBins/default.nix`)
 
 **Custom packages** (applied as overlays in flake.nix):
 - `packages/claude-code/package.nix` — claude-code CLI (prebuilt binary)

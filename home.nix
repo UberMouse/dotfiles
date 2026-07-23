@@ -2,7 +2,7 @@
 , unstable-small-pkgs, ... }:
 
 {
-  imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins.nix ];
+  imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins ];
   # Home Manager needs a bit of information about you and the
   # paths it should manage.
   home.username = "taylorl";
@@ -394,7 +394,7 @@
 
   # Standby cap for the agents fleet, a child of the pool above.
   #
-  # `claude-agents` (scriptBins.nix) systemd-runs `claude agents` into
+  # `claude-agents` (scriptBins/bins/claude-agents.sh) systemd-runs `claude agents` into
   # worktrees-agents.slice; declaring the slice here gives that transient
   # placement a persistent set of limits.
   #
@@ -413,7 +413,7 @@
   systemd.user.slices."worktrees-agents" = {
     Unit = {
       Description = "Claude agents fleet (worktrees pool child)";
-      Documentation = "file:scriptBins.nix";
+      Documentation = "file:scriptBins/bins/claude-agents.sh";
     };
     Slice = {
       MemoryAccounting = true;
