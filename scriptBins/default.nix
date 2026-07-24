@@ -105,12 +105,17 @@ in
     (sh { name = "wt-cgroup-status"; runtimeInputs = [ pkgs.gawk pkgs.coreutils ]; bashOptions = [ "nounset" ]; })
     (sh {
       name = "claude-agents";
-      runtimeInputs = [ pkgs.systemd unstable-small-pkgs.claude-code ];
+      runtimeInputs = [ pkgs.systemd pkgs.procps pkgs.coreutils unstable-small-pkgs.claude-code ];
       bashOptions = [ "nounset" ];
     })
     (sh {
       name = "claude-usage";
       runtimeInputs = [ pkgs.curl pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils unstable-small-pkgs.claude-code ];
+      bashOptions = [ "nounset" ];
+    })
+    (sh {
+      name = "claude-agents-reattach";
+      runtimeInputs = [ pkgs.systemd pkgs.procps pkgs.gnugrep pkgs.coreutils ];
       bashOptions = [ "nounset" ];
     })
 

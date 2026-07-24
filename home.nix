@@ -392,32 +392,39 @@
     };
   };
 
-  # Standby cap for the agents fleet, a child of the pool above.
+  # Container slice for the Claude background-agent fleet, a child of the pool
+  # above. NOT a throttle: it carries no MemoryHigh of its own, so the fleet is
+  # governed only by the pool's 16G high (and the desktop's 8G memory.min floor).
+  # It exists to (a) give the fleet a distinct, observable bucket under the pool
+  # -- the "agents" line in wt-cgroup-status -- and (b) be the placement target
+  # for claude-agents-reattach, which re-homes the cc-daemon and every worker it
+  # forks into worktrees-agents.slice/fleet.
   #
-  # `claude-agents` (scriptBins/bins/claude-agents.sh) systemd-runs `claude agents` into
-  # worktrees-agents.slice; declaring the slice here gives that transient
-  # placement a persistent set of limits.
+  # WHY NO CAP (history). A 4G MemoryHigh lived here 2026-07-21..07-24 to page
+  # out idle `claude bg-spare` standby heaps (~1.8 GB of a dozen cold spares)
+  # without costing build speed -- back when this slice held ONLY agent standby.
+  # It was removed 2026-07-24 once the design changed to run the *active* fleet
+  # here: the cc-daemon + live agents + their MCP servers + agent-spawned
+  # monorepo-jobs build daemons, all re-homed by claude-agents-reattach. Against
+  # that ~7-8 GB active working set the 4G soft cap pinned the slice at its
+  # ceiling -- memory PSI full ~60%, 38k high-breach events, 2.3 GB forced into
+  # swap -- so the fleet crawled while the pool above it sat at only 4 of 16 GB.
+  # A sub-cap below the pool is the wrong tool once agents ARE the pool's primary
+  # tenant: the pool's own 16G high is the single agent+build budget, and its
+  # MemoryMax=18G still backstops a runaway subtree with one contained OOM.
   #
-  # Added 2026-07-21: forensics showed this slice had quietly become the single
-  # LARGEST consumer in the pool -- 8.1 GB during the 11:33 stall, 6.8 GB at
-  # rest, versus 4.7 GB for the actual build (prettier-3x) it was competing
-  # with. ~1.8 GB of that is a dozen idle `claude bg-spare` daemons. That is
-  # STANDBY footprint, not throughput, which is exactly what should be paged out
-  # first: unlike squeezing the pool as a whole, capping it costs no build speed.
-  # 4G lets real agent work run while forcing cold spare heaps into zram instead
-  # of holding resident RAM the desktop needs to allocate from.
-  #
-  # No MemoryMax: this is a soft throttle only. Agents are interactive and an
-  # OOM kill here would surface as a mysterious dead session, whereas the pool's
-  # own 18G MemoryMax still backstops the whole subtree.
+  # The `claude agents` UI is deliberately kept OUT of this slice (and the whole
+  # pool) so it stays responsive under memory pressure; only the daemon and the
+  # work it invokes live here. Fork inheritance means that split cannot be
+  # inherited from an out-of-pool UI, so claude-agents.sh pulls the daemon in
+  # once at launch via claude-agents-reattach. See both scripts for the details.
   systemd.user.slices."worktrees-agents" = {
     Unit = {
       Description = "Claude agents fleet (worktrees pool child)";
-      Documentation = "file:scriptBins/bins/claude-agents.sh";
+      Documentation = "file:scriptBins/bins/claude-agents-reattach.sh";
     };
     Slice = {
       MemoryAccounting = true;
-      MemoryHigh = "4G";
     };
   };
 
