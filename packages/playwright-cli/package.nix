@@ -51,14 +51,14 @@ let
 in
 buildNpmPackage (finalAttrs: {
   pname = "playwright-cli";
-  version = "0.1.7";
+  version = "0.1.12";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@playwright/cli/-/cli-${finalAttrs.version}.tgz";
-    hash = "sha256-irw1CARad6w4/tFbpi8pY4mDaQF191b+jxr8ZSkaQMc=";
+    hash = "sha256-Z/jOxi/p+r+VmNPgVla0/FrBAm2F/utSwVCYnWyoiAo=";
   };
 
-  npmDepsHash = "sha256-S0z7i5tU9rP1jBhrCR/yDsboWSmBWFqKHeQ/F4QYvvU=";
+  npmDepsHash = "sha256-HqgJVRc7Q9LCxVcERYWU9+2SjPug/YSzTuJ+/AXuwew=";
 
   postPatch = ''
     cp ${./package-lock.json} package-lock.json

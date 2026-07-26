@@ -6,11 +6,11 @@
 }:
 buildNpmPackage {
   pname = "rush";
-  version = "5.165.0";
+  version = "5.178.0";
 
   src = ./.;
 
-  npmDepsHash = "sha256-e58+r4KyeFmxXC2du3ulcUUsYtO7h9ySDCYS8CAtshI=";
+  npmDepsHash = "sha256-2i8WkQM9r5leZUHgpNd0yKU8ODiRveJe7ONwFfvnsFI=";
 
   dontNpmBuild = true;
 
