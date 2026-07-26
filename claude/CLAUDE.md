@@ -2,3 +2,4 @@
 - Whenever you add debug logging, ensure it is tagged with greppable string, and include a regex that will match all of the debug logging after you have added the logging. If you expand on the logging in follow up messages ensure the regex is updated and re-emitted.
 - NEVER include an effort estimate that uses a unit of time
 - I CAN run `sudo` commands directly (e.g. `hms` = `sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse`) — the user gets a harness prompt to allow the sudo call and approves it. Don't hand sudo commands back for the user to run; run them myself.
+- always provide running commentary with what you are doing
