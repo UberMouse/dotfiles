@@ -463,4 +463,75 @@
       Nice = 10;
     };
   };
+
+  # The ACTUATOR half of the pressure system -- the monitor above only observes.
+  #
+  # WHY. Between 2026-07-17 and 07-28 the monitor accumulated 129 snapshots and
+  # ~40 Claude analyses, and changed nothing: each one is a report ABOUT a freeze
+  # already endured. Meanwhile the supply-side knobs are exhausted. Every stall
+  # on record shows io_full_avg10 = 0.00 and cpu full = 0.00 -- it is memory,
+  # every time -- with the desktop sitting BELOW its 8G memory.min (so memory.min
+  # held; its pages were never evicted) and stalling anyway in *direct reclaim*
+  # because global free RAM collapsed to 200-500 MiB. memory.min guarantees the
+  # pages you already hold; it cannot manufacture free ones. Committed_AS runs
+  # ~126% of CommitLimit (45.8 / 36.3 GiB, 07-28): the box is not mis-partitioned,
+  # it is oversubscribed, and nothing bounds DEMAND. This service is the first
+  # thing here that acts on the demand side.
+  #
+  # Three duties, cheapest first, each escalating only if the last failed:
+  #   A. reclaim the fleet's COLD pages (idle `claude bg-spare` standby heaps --
+  #      ~2.9 GB of 16 spares measured 07-28) via memory.reclaim. Measured live:
+  #      512 MB freed in 0.18 s with no zram growth, i.e. the pages were clean
+  #      and simply dropped. The point is not that RAM appears from nowhere --
+  #      MemAvailable already counted them -- but that the reclaim happens HERE,
+  #      proactively, instead of inline in the desktop's page-fault path, which
+  #      is exactly the direct-reclaim stall being eliminated. memory.high was
+  #      tried on this slice 07-21..07-24 and reverted (it pinned the ACTIVE
+  #      fleet at its ceiling); memory.reclaim is one-shot with no standing
+  #      allocation penalty, so it does not repeat that mistake.
+  #   B. cap concurrent BUILD scopes while memory is tight, freezing the excess
+  #      so N run at full speed instead of six thrashing together and all
+  #      crawling. Victims rotate so none starves; the cap disengages the moment
+  #      pressure clears. True spawn-time admission control belongs in
+  #      ~/code/kawaka/.claude/hooks/worktree-setup.sh (a different repo), so
+  #      this gates EXECUTION instead -- which also covers already-running work.
+  #   C. if the desktop stalls anyway: reclaim, re-measure, and only then brake
+  #      the single largest build scope for a few seconds.
+  #
+  # Only mj-<name>.scope (the monorepo-jobs build daemon) is ever frozen. The
+  # worktree slice ABOVE it also adopts the interactive Claude session, so
+  # freezing the slice would pause a session the user may be mid-conversation
+  # with; freezing the mj-* scope inside it pauses only the build. The agents
+  # fleet and the desktop session scope are never frozen -- the fleet is
+  # reclaimed from, never paused.
+  #
+  # Set CGGOV_DRYRUN=1 to log every decision while touching nothing.
+  # Log lines are tagged CGGOV:
+  #   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN)' \
+  #     ~/.local/state/cgroup-pressure/governor.log
+  systemd.user.services.cgroup-governor = {
+    Unit.Description = "cgroup v2 memory governor (proactive reclaim + build concurrency cap + stall brake)";
+    Install.WantedBy = [ "default.target" ];
+    Service = {
+      Environment = [
+        "PATH=${lib.makeBinPath [
+          pkgs.coreutils pkgs.procps pkgs.gawk pkgs.gnused
+          pkgs.util-linux pkgs.findutils
+        ]}"
+      ];
+      ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-governor.sh}";
+      # The governor guarantees thaw three ways internally (per-freeze deadline,
+      # EXIT trap, startup sweep) but none survive SIGKILL. ExecStopPost is the
+      # fourth and runs however the service dies, so a build can never be left
+      # frozen -- the one failure mode here that would not self-correct.
+      ExecStopPost = "${pkgs.bash}/bin/bash ${./scripts/cgroup-thaw-all.sh}";
+      Restart = "always";
+      RestartSec = 10;
+      # Must stay responsive under exactly the pressure it exists to relieve, so
+      # it runs at a better nice than the monitor (Nice=10, which only has to
+      # write files). 0 is as good as it gets: this user's RLIMIT_NICE is 0, so a
+      # NEGATIVE nice is refused outright and would fail the unit at startup.
+      Nice = 0;
+    };
+  };
 }
