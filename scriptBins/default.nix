@@ -78,6 +78,26 @@ let
       text = builtins.readFile (./bins + "/${name}.sh");
     };
 
+  # One tiny fork+exec+wait binary PER op-cached consumer. 1Password names its
+  # authorization prompt after `op`'s PARENT process (resolved via
+  # /proc/<ppid>/exe), so a script caller always surfaced as its interpreter:
+  # every prompt read ".../python3.13", and the grant 1Password remembered was
+  # pinned to that shared interpreter -- i.e. to every Python script on the box.
+  # A named binary per consumer makes the prompt say "op-1p-bk" and confines the
+  # grant to that one caller. bins/op-1p-shim.c explains why it forks, not execs.
+  #
+  # "unknown" is the fallback for any caller that does not pass `--as`, so the
+  # prompt still never degrades back to naming the interpreter.
+  #
+  # These are deliberately NOT on PATH: op-cached-daemon invokes them by
+  # absolute store path via @opShimPaths@, and that substituted text is also
+  # what keeps them in the daemon's runtime closure.
+  opShimCallers = [ "bk" "sentry" "unknown" ];
+  opShims = pkgs.lib.genAttrs opShimCallers
+    (caller: pkgs.writeCBin "op-1p-${caller}" (builtins.readFile ./bins/op-1p-shim.c));
+  opShimPaths = builtins.toJSON
+    (pkgs.lib.mapAttrs (caller: drv: "${drv}/bin/op-1p-${caller}") opShims);
+
   # Python scripts can't use writeShellApplication, so read the real file and
   # substitute @tokens@ for the store paths they need (interpreter + tools).
   py = name: subs:
@@ -119,7 +139,10 @@ in
       bashOptions = [ "nounset" ];
     })
 
-    (py "op-cached-daemon" { python3 = "${pkgs.python313}/bin/python3"; })
+    (py "op-cached-daemon" {
+      python3 = "${pkgs.python313}/bin/python3";
+      inherit opShimPaths;
+    })
     (py "op-cached" { python3 = "${pkgs.python313}/bin/python3"; })
     (py "wt-cgroup-i3status" {
       python3 = "${pkgs.python313}/bin/python3";
