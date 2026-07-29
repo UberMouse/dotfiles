@@ -155,6 +155,12 @@ try:
             if key in cache and now - cache[key][1] < ttl:
                 log(f"cache hit for {uri} (caller={caller})")
                 encoded = cache[key][0]
+                # ttl measures IDLE time, not age: every hit slides the deadline
+                # forward, so a secret asked for more often than once per ttl is
+                # never re-fetched and never re-prompts. The 1Password grant the
+                # fetch was authorized under has the same shape (it lapses on
+                # inactivity), so an entry kept warm by use stays legitimate.
+                cache[key] = (encoded, now)
             else:
                 log(f"cache miss for {uri} (caller={caller}), calling op read via {shim}...")
                 value, rc = run_via_shim(shim, ["op", "read", "--account", account, uri])
