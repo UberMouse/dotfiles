@@ -505,6 +505,25 @@
   # fleet and the desktop session scope are never frozen -- the fleet is
   # reclaimed from, never paused.
   #
+  # DUTIES B AND C WERE DEAD CODE 2026-07-28..07-31 and this is worth knowing
+  # before trusting any conclusion drawn in that window. list_build_scopes()
+  # skipped empty leaves with `[ -s cgroup.procs ]`, but cgroup.procs is a kernfs
+  # seq_file that always stats as size 0 -- so the test was unconditionally false,
+  # the candidate list was ALWAYS empty, and the governor silently ran only its
+  # two cheap duties (reclaim + sweep). `grep -c 'CGGOV|FREEZE' governor.log` read
+  # 0 across the entire file. 07-31 was the worst day on record (42 stall events
+  # vs a prior peak of 28) and 184 of its 188 stall detections logged "no build
+  # scope to brake (pressure is not from builds)" while 21 freezable scopes --
+  # including one at 5.0 GB -- sat right there in the pool. That message was the
+  # bug reporting itself as a finding, and it is why 07-28's "act on stalls"
+  # change did not move the trend: the actuator never actuated. Fixed 07-31 by
+  # reading a pid instead of stat'ing the file.
+  #
+  # Consequence for tuning: every stall analysis in ~/.local/state/cgroup-pressure
+  # from 07-28 to 07-31 describes a machine with NO working demand-side control,
+  # so their unanimous "lower MemoryHigh to 11-12G" recommendation was reasoning
+  # about a system that does not exist any more. Re-measure before acting on it.
+  #
   # Set CGGOV_DRYRUN=1 to log every decision while touching nothing.
   # Log lines are tagged CGGOV:
   #   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN)' \

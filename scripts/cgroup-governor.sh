@@ -413,13 +413,24 @@ maybe_sweep() {
 # and browser workers. The agents slice contributes its `transient` leaf but
 # never `fleet` -- live agents are reclaimed from, never paused.
 list_build_scopes() {
-  local sl sc m
+  local sl sc m p1
   shopt -s nullglob
   for sl in "$POOL"/worktrees-*.slice; do
     for sc in "$sl"/mj-*.scope "$sl"/transient; do
       [ -e "$sc/cgroup.freeze" ] || continue
-      # Skip an empty transient leaf: freezing nothing buys nothing.
-      [ -s "$sc/cgroup.procs" ] || continue
+      # Skip an empty leaf: freezing nothing buys nothing. This MUST read a pid
+      # rather than test the file's size -- cgroup.procs is a kernfs seq_file and
+      # always stats as st_size=0 no matter how many pids it holds, so the
+      # obvious `[ -s ]` is unconditionally false. It was, from 2026-07-28 until
+      # 07-31, and it silently disabled the entire actuator: list_build_scopes
+      # returned empty on every call, so duty B (the concurrency cap) and duty C
+      # (the stall brake) never ran once -- `grep -c 'CGGOV|FREEZE' governor.log`
+      # was 0 across the whole file while the log recorded 184 stalls in a single
+      # day as "no build scope to brake (pressure is not from builds)". The
+      # pressure WAS from builds; the governor just could not see any of the 21
+      # live candidates. Only the two cheap duties (reclaim, sweep) ever ran.
+      read -r p1 < "$sc/cgroup.procs" 2>/dev/null || continue
+      [ -n "$p1" ] || continue
       read -r m < "$sc/memory.current" 2>/dev/null || m=""
       # A leaf without +memory delegated reports nothing; fall back to summed RSS
       # so it can still be ranked rather than silently sorting as zero.
@@ -665,7 +676,12 @@ while :; do
         sleep "$FREEZE_SECS"
         thaw_scope "$biggest" "brake released after ${FREEZE_SECS}s"
       else
-        log "STALL|no build scope to brake (pressure is not from builds)"
+        # Genuinely nothing freezable: no mj-*.scope and no populated transient
+        # leaf in the pool. Do NOT read this as "the builds are innocent" -- that
+        # was the old wording and it was actively misleading for three days while
+        # list_build_scopes was broken (see the note there). It means only that
+        # the governor has no lever, so the stall must be ridden out.
+        log "STALL|no freezable scope in pool (nothing to brake)"
       fi
       ;;
   esac
