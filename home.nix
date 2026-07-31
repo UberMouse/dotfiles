@@ -428,6 +428,50 @@
     };
   };
 
+  # Home for the `claude agents` FleetView TUI itself. Keeping it OUT of the pool
+  # (above) stops it being memory-throttled, but exemption is not priority, and
+  # 2026-07-31 showed the difference matters: with the pool's memory stalls fixed
+  # and the desktop flat at 0.00% memory PSI, the UI was still visibly laggy. Its
+  # own scope told the story -- cpu.pressure full avg10 climbing 1.7 -> 6.0% with
+  # memory AND io pressure both a flat 0.00 in every window. It was stalling on
+  # CPU alone, an axis nothing in the pressure/governor work touches.
+  #
+  # The cause was that a bare `tmux-spawn-*.scope` grants nothing. The desktop
+  # session has memory.min=8G + io.latency=50ms; the pool has its own budget and
+  # io.max; the UI had memory.min=0, no io.latency, and cpu.weight=100 -- the
+  # SAME weight as a slice running twelve cores of typechecks. It was the least
+  # protected interactive thing on the box, competing at par with the fleet while
+  # the kernel burned ~68% of the machine in reclaim/zram.
+  #
+  # CPUWeight is the right instrument rather than a quota: it is work-conserving,
+  # so the pool still gets the whole box when the UI is idle, and the UI only
+  # wins the scheduler when it actually has work -- which for a TUI is exactly
+  # the redraw it is currently losing.
+  #
+  # MemoryHigh EXISTS TO CONTAIN A FORK LEAK, not to bound the TUI (which runs
+  # ~200 MB). The cc-daemon is forked BY the UI and so inherits this slice until
+  # claude-agents-reattach re-homes it into worktrees-agents.slice. That window
+  # is normally seconds, but if the reattach ever fails the whole agent fleet
+  # would inherit CPUWeight=5000 and outrank the desktop 50:1 -- strictly worse
+  # than the bug this slice fixes. Today the same leak lands in a NEUTRAL tmux
+  # scope and is merely unbudgeted; landing it in a PRIVILEGED one is a new
+  # hazard, so cap it: a leaked fleet hits this ceiling almost immediately and
+  # throttles loudly instead of silently starving the desktop. 2G is 10x the
+  # TUI's real footprint, so it can never bind in normal operation.
+  systemd.user.slices."claude-ui" = {
+    Unit = {
+      Description = "Claude agents FleetView UI (interactive, out of pool)";
+      Documentation = "file:scriptBins/bins/claude-agents.sh";
+    };
+    Slice = {
+      CPUWeight = 5000;
+      MemoryAccounting = true;
+      MemoryMin = "512M";
+      MemoryHigh = "2G";
+      IOAccounting = true;
+    };
+  };
+
   # Memory/IO pressure monitor. Watches system PSI and, whenever the machine
   # actually stalls (full-avg10 >= 20%), captures a forensic snapshot (per-cgroup
   # memory, top procs by RSS, pool stats, swap) + a desktop alert so a transient

@@ -39,4 +39,24 @@ if [ "$(systemctl --user show worktrees.slice -p LoadState --value 2>/dev/null)"
   ) &
 fi
 
+# Run the TUI in claude-ui.slice, which carries CPUWeight=5000 + memory.min so
+# it actually OUTRANKS the fleet for CPU rather than merely escaping the pool's
+# memory cap. Exemption is not priority: measured 2026-07-31, this TUI stalled on
+# cpu.pressure full avg10 6% with memory and io pressure both flat 0.00, because
+# a bare tmux-spawn scope gives cpu.weight=100 -- par with the twelve-core pool.
+# See the slice definition in home.nix for the full reasoning.
+#
+# --scope (not --service) is required: it runs the command in the CALLER's
+# context, inheriting the terminal, so the TUI keeps its tty. A --service would
+# be detached from the pty and useless here. --collect reaps the transient unit
+# on exit so repeated launches do not leave failed scope units behind.
+#
+# Gate on the slice UNIT being loaded, same as the pool guard above -- on a host
+# without this config the fallback is a plain unwrapped launch.
+if [ "$(systemctl --user show claude-ui.slice -p LoadState --value 2>/dev/null)" = "loaded" ] \
+   && command -v systemd-run >/dev/null 2>&1; then
+  exec systemd-run --user --quiet --collect --scope --slice=claude-ui.slice \
+       -- "$claude" agents "$@"
+fi
+
 exec "$claude" agents "$@"
