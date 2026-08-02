@@ -1,5 +1,5 @@
 #!/usr/bin/env @python3@
-import socket, os, subprocess, base64, time, signal, sys, json
+import socket, os, subprocess, base64, time, signal, sys, json, shutil, stat, grp
 
 LOG = os.environ.get("OP_CACHED_DEBUG", "") != ""
 
@@ -20,6 +20,50 @@ ttl = int(os.environ.get("OP_CACHED_TTL", "900"))
 idle_timeout = int(os.environ.get("OP_CACHED_IDLE_TIMEOUT", "1800"))
 
 log(f"starting: sock={sock_path} ttl={ttl} idle={idle_timeout}")
+
+# `op` is resolved ONCE, here, rather than looked up on PATH per request.
+#
+# 1Password's desktop-app integration authorizes a client purely by the GID of
+# the socket peer: it must hold `onepassword-cli`. On NixOS that GID comes from
+# the setgid wrapper programs._1password.enable installs at
+# /run/wrappers/bin/op. The plain 1password-cli binary sitting in
+# /run/current-system/sw/bin has no setgid bit, and dies with the thoroughly
+# misleading "connecting to desktop app: read: connection reset".
+#
+# Which of the two a bare PATH lookup finds is a coin flip, and a losing flip is
+# sticky: this daemon inherits its environment from whichever client happened to
+# spawn it, then outlives that client and serves everyone afterwards. A daemon
+# first spawned from a systemd user session -- whose PATH puts
+# /run/current-system/sw/bin ahead of /run/wrappers/bin -- broke every consumer
+# until it idled out, while `op` typed straight into a shell kept working. That
+# split made it look like 1Password's fault rather than ours.
+WRAPPER_OP = "/run/wrappers/bin/op"
+
+def resolve_op():
+    """(path, error): the `op` to run, and why it cannot possibly work."""
+    path = WRAPPER_OP if os.access(WRAPPER_OP, os.X_OK) else shutil.which("op")
+    if path is None:
+        return None, "op-cached: no `op` binary found"
+    try:
+        cli_gid = grp.getgrnam("onepassword-cli").gr_gid
+    except KeyError:
+        # No such group, so this box does not gate CLI access on it. Nothing to
+        # check, and nothing that would make a plain binary wrong.
+        return path, None
+    st = os.stat(path)
+    if (st.st_mode & stat.S_ISGID and st.st_gid == cli_gid) or cli_gid in os.getgroups():
+        return path, None
+    # Report this ourselves instead of letting `op` fail: its own message blames
+    # the desktop app and sends you to the app-integration troubleshooting page,
+    # which is the one place the answer is not.
+    return path, (
+        f"op-cached: {path} is not setgid onepassword-cli, and this daemon is "
+        f"not in that group, so 1Password will reset the connection. Expected "
+        f"the wrapper at {WRAPPER_OP} (programs._1password.enable)."
+    )
+
+OP, OP_ERROR = resolve_op()
+log(f"op={OP}" + (f" UNUSABLE: {OP_ERROR}" if OP_ERROR else ""))
 
 cache = {}
 
@@ -162,8 +206,15 @@ try:
                 # inactivity), so an entry kept warm by use stays legitimate.
                 cache[key] = (encoded, now)
             else:
+                # Checked here, not at startup: an already-cached secret is
+                # still perfectly good, so only a fetch needs a working `op`.
+                if OP_ERROR:
+                    log(f"refusing to fetch: {OP_ERROR}")
+                    err = base64.b64encode(OP_ERROR.encode()).decode()
+                    conn.sendall(f"ERR\t{err}\n".encode())
+                    continue
                 log(f"cache miss for {uri} (caller={caller}), calling op read via {shim}...")
-                value, rc = run_via_shim(shim, ["op", "read", "--account", account, uri])
+                value, rc = run_via_shim(shim, [OP, "read", "--account", account, uri])
                 if rc != 0:
                     log(f"op read failed rc={rc}: {value}")
                     err = base64.b64encode(value.rstrip(b"\n") or b"op read failed").decode()
