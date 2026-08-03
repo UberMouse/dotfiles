@@ -597,4 +597,55 @@
       Nice = 0;
     };
   };
+
+  # Machine-global build admission semaphore -- the DEMAND-side half.
+  #
+  # The governor above gates EXECUTION (freeze the Nth build once it is already
+  # running and already holding its memory). This gates ADMISSION (do not let the
+  # Nth build start). The governor's own header explains why it settled for the
+  # weaker lever -- "true admission control gates at spawn, but the spawn point
+  # is [...] a different repo" -- and this service is that lever, reached by
+  # publishing a semaphore any repo can take a slot from instead of trying to
+  # reach into the spawn site itself.
+  #
+  # WHY BOTH STILL EXIST. Freezing cannot shrink a peak, because a frozen cgroup
+  # keeps every anon page resident -- that is why governor.log shows a ~20 s
+  # FREEZE/THAW "cap rotation" that never converges. Admission control cannot
+  # shrink a peak that has ALREADY formed either, since it only governs what
+  # starts next. They cover different halves of the timeline: this service stops
+  # the storm assembling, the governor brakes one that assembled anyway (from
+  # work that predates the semaphore, or from tenants that never take slots at
+  # all -- the agents fleet, MCP servers, browsers). Once the semaphore has a
+  # measured track record the governor's freeze duty is the natural thing to
+  # retire; it should NOT be retired before then, on the evidence that duties B
+  # and C were silently dead for three days in July and the trend got worse.
+  #
+  # Sizing, from 429 samples of worktrees.slice at 10 s (2026-08-03, 80 min):
+  # p50 12.57G / p90 15.08G / max 16.00G against a 16G MemoryHigh, mean 11.93G
+  # (73% -- healthy), memory PSI p50 0.0% / p90 16.6% / max 81.1%. Median
+  # pressure is ZERO: this box is not short of RAM on average, only during the
+  # ~10% of the time when independent worktrees burst together. Defaults are
+  # tuned to that shape and all overridable by env; see the script header.
+  #
+  # Log lines are tagged BUILDSEM:
+  #   grep -E 'BUILDSEM\|(START|STOP|TIGHTEN|LOOSEN|SETTLE|ACQUIRED|TIMEOUT)' \
+  #     ~/.local/state/cgroup-pressure/build-semaphore.log
+  systemd.user.services.build-semaphore-controller = {
+    Unit.Description = "Build admission semaphore controller (pressure-adaptive slot count)";
+    Install.WantedBy = [ "default.target" ];
+    Service = {
+      ExecStart = "${pkgs.python313}/bin/python3 ${./scripts/build-semaphore-controller.py}";
+      Restart = "always";
+      RestartSec = 10;
+      # Same reasoning as the governor: it has to keep making decisions during
+      # the pressure it exists to relieve.
+      Nice = 0;
+      # No ExecStopPost cleanup is needed, and that is a property of the design
+      # rather than an omission: the controller restricts capacity by HOLDING
+      # flocks, and the kernel drops every flock when the process dies. However
+      # this unit exits -- clean stop, crash, SIGKILL, OOM -- capacity returns to
+      # maximum on its own. The failure mode is "no throttling", never "stuck
+      # throttled", which is the correct direction for a build system to fail in.
+    };
+  };
 }

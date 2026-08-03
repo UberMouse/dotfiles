@@ -39,6 +39,37 @@ let
       case "$a" in --browser | --browser=*) has_browser=1 ;; esac
     done
 
+    # Browser LAUNCH takes a slot from the machine-global build semaphore. It is
+    # the only subcommand gated here, and that is a deliberate line:
+    #
+    #   * `open` forks a chromium, which is a large, spiky allocation and the
+    #     one thing several agents can plausibly do at the same instant. Making
+    #     those launches queue is exactly what the semaphore is for.
+    #   * every other subcommand (goto/click/snapshot/eval/...) drives a browser
+    #     that is ALREADY running. Gating them would queue cheap operations
+    #     behind heft typechecks for no memory benefit, and would badly hurt
+    #     agent latency.
+    #   * the launched browser OUTLIVES this process, so a slot held across
+    #     `open` could never represent its resident memory anyway. That memory is
+    #     accounted for the honest way instead: a resident browser shows up as
+    #     worktrees.slice memory pressure, and the controller is pressure-
+    #     adaptive, so it tightens for browsers automatically without anyone
+    #     having to model them. See scripts/build-semaphore-controller.py.
+    #
+    # Re-invoking THIS wrapper under kx-build-slot (rather than wrapping $entry
+    # directly) keeps the `exec -a "$0"` argv[0] fixup below intact -- prefixing
+    # the exec would otherwise apply -a to kx-build-slot instead of the CLI.
+    # kx-build-slot exports KX_BUILD_SLOT_HELD, so the re-entry falls straight
+    # through this branch rather than looping.
+    #
+    # Soft dependency on purpose: if kx-build-slot is not installed (or the
+    # controller was never started) this is a no-op and the CLI behaves exactly
+    # as it did before. The semaphore is a scheduling hint, never a requirement.
+    if [ "$cmd" = open ] && [ -z "''${KX_BUILD_SLOT_HELD:-}" ] \
+       && command -v kx-build-slot >/dev/null 2>&1; then
+      exec kx-build-slot --label playwright-open -- "$0" "$@"
+    fi
+
     # --browser=chromium points the `open` command at the nix-provided bundled
     # chromium. Upstream's default is the "chrome" channel, which expects Google
     # Chrome at /opt/google/chrome/chrome (not the nix chromium).

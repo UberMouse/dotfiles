@@ -123,6 +123,14 @@ in
     (sh { name = "sentry"; runtimeInputs = [ unstable-pkgs.sentry ]; bashOptions = [ "errexit" ]; })
     (sh { name = "autosquash-branch"; runtimeInputs = [ pkgs.git ]; bashOptions = [ "errexit" ]; })
     (sh { name = "wt-cgroup-status"; runtimeInputs = [ pkgs.gawk pkgs.coreutils ]; bashOptions = [ "nounset" ]; })
+    # Client half of the build admission semaphore (controller lives in
+    # home.nix). Deliberately NOT errexit: the slot scan relies on `flock -n`
+    # failing on a busy slot, which is the normal path, not an error.
+    (sh {
+      name = "kx-build-slot";
+      runtimeInputs = [ pkgs.util-linux pkgs.coreutils pkgs.gawk ];
+      bashOptions = [ "nounset" ];
+    })
     (sh {
       name = "claude-agents";
       runtimeInputs = [ pkgs.systemd pkgs.procps pkgs.coreutils unstable-small-pkgs.claude-code ];

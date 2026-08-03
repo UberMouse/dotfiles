@@ -1,3 +1,6 @@
 local*
 keyring.deb
 .nvimlog
+# `python3 -m py_compile scripts/*.py` (the syntax check before a rebuild) drops
+# these next to the source; nix would otherwise see them as untracked noise.
+__pycache__/
