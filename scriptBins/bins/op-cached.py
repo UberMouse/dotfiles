@@ -11,6 +11,10 @@ def log(msg):
 runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 sock_path = os.path.join(runtime_dir, "op-cached.sock")
 pid_path = os.path.join(runtime_dir, "op-cached.pid")
+# Seconds to wait for accept(). A live daemon listens with a backlog of 16 and
+# accepts instantly no matter what it is busy with, so this only has to outlast
+# scheduling noise -- it is not sized for any real work.
+CONNECT_TIMEOUT = float(os.environ.get("OP_CACHED_CONNECT_TIMEOUT", "5"))
 
 args = sys.argv[1:]
 log(f"start: args={args}")
@@ -141,7 +145,28 @@ def ensure_daemon():
 def send_request():
     log("connecting to daemon...")
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # The timeout goes on BEFORE connect, which is the whole point. connect() on
+    # a unix socket only blocks once the listen backlog is full -- i.e. when the
+    # daemon has stopped calling accept() -- so a blocked connect is not a slow
+    # daemon, it is a dead-in-the-water one. Setting the timeout after connect
+    # (as this did) left that case completely untimed, so a daemon wedged on one
+    # bad request took out every op-cached caller until the next reboot, even
+    # though restart_daemon() below has always known how to fix it. It simply
+    # never got to run.
+    #
+    # Measured, because the exception is not the obvious one: against a full
+    # backlog a timeout-mode connect surfaces the kernel's EAGAIN as
+    # BlockingIOError immediately, and only reports TimeoutError in other
+    # stalls. Both subclass OSError, which is what the handler below keys on --
+    # so catch OSError, never TimeoutError specifically.
+    #
+    # ensure_daemon() cannot cover this: a wedged daemon still has a live pid
+    # and a bound socket, so every check it makes passes.
+    s.settimeout(CONNECT_TIMEOUT)
     s.connect(sock_path)
+    # Generous from here on. A cache miss blocks until a human approves the
+    # 1Password dialog, and timing that out would abandon the fetch and cost an
+    # extra prompt on the retry. Only the connect needs to be brisk.
     s.settimeout(300)
     log("connected, sending request...")
     s.sendall(f"READ2\t{caller}\t{account}\t{uri}\n".encode())
@@ -177,7 +202,15 @@ try:
 except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
     log(f"connection failed ({e}), retrying with fresh daemon...")
     restart_daemon()
-    response = send_request()
+    # Guarded, because this retry is no longer the rare path it was: a connect
+    # timeout now routes here. Callers run us as TOKEN="$(op-cached read ...)",
+    # and a Python traceback on stderr there is far less legible than saying
+    # what actually went wrong.
+    try:
+        response = send_request()
+    except OSError as e2:
+        sys.stderr.write(f"op-cached: daemon unreachable after restart: {e2}\n")
+        sys.exit(1)
 
 status, payload = parse_response(response)
 

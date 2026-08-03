@@ -92,8 +92,16 @@ def run_via_shim(shim, argv):
         proc.stdout.close()
         proc.wait()  # reaps the short-lived intermediate parent only
 
+        # Read to the shim's NEWLINE, never to EOF. write_status() sends exactly
+        # "%d\n", so the newline is a complete message and waiting past it buys
+        # nothing -- while waiting for EOF means waiting for every process that
+        # inherited the write end to exit. `op` forks a singleton `op daemon`
+        # that used to be one of them and never exits, which wedged this loop
+        # for the rest of the session (see the close() in op-1p-shim.c). That
+        # leak is fixed at the source; this is the backstop, so if `op` ever
+        # leaks the fd again it costs us nothing instead of everything.
         raw = b""
-        while True:
+        while b"\n" not in raw:
             chunk = os.read(status_r, 16)
             if not chunk:
                 break
@@ -109,7 +117,18 @@ def run_via_shim(shim, argv):
             os.close(status_w)
         os.close(status_r)
 
+_cleaned = False
+
 def cleanup(*_):
+    # Runs twice on SIGTERM: once from the handler, then again from the outer
+    # finally as the SystemExit it raises unwinds. Without this guard the second
+    # pass sees the files it just deleted, concludes a newer daemon owns them,
+    # and logs exactly that -- a plainly false statement in the logs of a
+    # component whose failures are already hard enough to read.
+    global _cleaned
+    if _cleaned:
+        sys.exit(0)
+    _cleaned = True
     log("cleanup")
     # Only remove the files while they are still OURS. A client that replaced us
     # may already have started a newer daemon which rebound both paths; blindly
@@ -142,7 +161,13 @@ log(f"pid={os.getpid()}")
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 sock.bind(sock_path)
 os.chmod(sock_path, 0o600)
-sock.listen(1)
+# Backlog well above the 1 this used to use. Requests are served one at a time
+# and a cache miss can sit for minutes waiting on a 1Password prompt, so with a
+# backlog of 1 a perfectly healthy-but-busy daemon left extra callers blocked
+# inside connect(). The client now treats a connect() that does not complete as
+# "this daemon is wedged, replace it", and that verdict is only sound if a live
+# daemon accepts immediately regardless of what it is currently doing.
+sock.listen(16)
 sock.settimeout(idle_timeout)
 log("listening")
 

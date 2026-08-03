@@ -87,6 +87,29 @@ int main(int argc, char **argv)
         _exit(1);
     }
     if (child == 0) {
+        /* Close the status fd before exec, or it outlives this whole exchange.
+         *
+         * The daemon hands it over with Popen(pass_fds=...), which explicitly
+         * CLEARS close-on-exec -- that is what pass_fds is for -- so `op`
+         * inherits it. `op` in turn forks a SINGLETON `op daemon` helper (it
+         * flocks $XDG_RUNTIME_DIR/op-daemon.pid), which inherits it again and
+         * then runs for the rest of the session. That helper daemonizes fds
+         * 0/1/2 but leaves an unexpected extra fd alone, so a write end of the
+         * status pipe stays open forever, the daemon's read on it never sees
+         * EOF, and op-cached wedges mid-request: it never returns to accept(),
+         * and every later client hangs.
+         *
+         * Only ever observed after a reboot, and the singleton is why: on a
+         * warm machine some earlier `op` already started the helper, so this
+         * fetch forks nothing and the pipe closes cleanly. Fresh boot, and
+         * op-cached is usually the first `op` on the box, so it is the one that
+         * spawns it. Measured 2026-08-04 -- daemon pid 7532 blocked in
+         * anon_pipe_read on pipe:[78899], write end held by `op daemon` fd 6.
+         *
+         * The shim's own copy stays open on purpose: the parent still needs it
+         * to report `op`'s exit status once waitpid returns. If execvp below
+         * fails, the parent reports 127 for us. */
+        close((int)status_fd);
         execvp(argv[2], &argv[2]);
         perror("op-1p-shim: exec");
         _exit(127);
