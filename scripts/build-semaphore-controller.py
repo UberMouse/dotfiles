@@ -331,7 +331,17 @@ def main():
                 # keeps the aggressive state reserved for demonstrated harm
                 # rather than for a threshold this box crosses routinely.
                 limit = CFG["floor"] if hot_psi else max(CFG["floor"], CFG["soft_floor"])
-                allowed = max(limit, allowed - CFG["step_down"])
+                # The outer min() is load-bearing: a tighten must NEVER raise
+                # capacity. Without it, `max(limit, allowed - step_down)` reads
+                # max(4, -1) = 4 once PSI has already driven allowed to 1, so a
+                # subsequent predictive-only tick RAISES 1 -> 4 -- a loosen
+                # wearing a TIGHTEN label, and one that skips the dwell guard
+                # entirely. Observed live 2026-08-03 14:23 as a 1->4->2->1 ring,
+                # which is precisely the oscillation the fast-tighten/slow-loosen
+                # asymmetry exists to prevent. Loosening has exactly one route
+                # out of this function: the LOOSEN branch below, gated on the
+                # long PSI window and on dwell.
+                allowed = min(allowed, max(limit, allowed - CFG["step_down"]))
                 bits = []
                 if hot_psi:
                     bits.append(f"psi10={psi10:.1f}%")
