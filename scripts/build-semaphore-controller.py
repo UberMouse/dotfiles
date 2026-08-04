@@ -90,12 +90,18 @@
 #      that completed in less than one tick.
 #
 #      Fix: cap the number of slots standing FREE, not just the number in use.
-#      Availability becomes `occupied + burst`, so capacity is handed out at a
-#      bounded RATE (burst jobs per interval) rather than all at once. The step
-#      becomes a ramp, and a ramp is something a lagged loop can close on: by
-#      the time the sixth job starts, the first two have been visible to psi10
-#      for ten seconds. Capacity still reaches `allowed` under sustained demand;
-#      it just has to climb there, and can be stopped part-way.
+#      Availability becomes `grant_base + burst`, replenished on its own clock,
+#      so capacity is handed out at a bounded RATE rather than all at once. The
+#      step becomes a ramp, and a ramp is something a lagged loop can close on.
+#      Capacity still reaches `allowed` under sustained demand; it just has to
+#      climb there, and can be stopped part-way.
+#
+#      The grant clock is separate from the control interval for a reason worth
+#      keeping: psi10 is a TEN-SECOND average, so granting every 5 s tick admits
+#      the second and third pair against a signal that cannot yet contain any
+#      evidence of the first. A ramp that outruns its own feedback is just a
+#      slower step. Granting every 15 s makes each grant fully visible before
+#      the next is released.
 #
 #   2. `allowed` GREW ON AN EMPTY BOX. Every LOOSEN above fired on psi60=0.0%
 #      measured while nothing was running. That is not evidence the next value
@@ -148,7 +154,13 @@ from pathlib import Path
 
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
 SEM_DIR = Path(os.environ.get("KX_BUILD_SEM_DIR", f"{RUNTIME}/kx-build-sem"))
-STATE_DIR = Path.home() / ".local/state/cgroup-pressure"
+# Overridable so the test harness does not write its synthetic runs into the
+# real log. Not hypothetical: the 2026-08-03 log contains a stray test START
+# line interleaved with production decisions, which is exactly the kind of thing
+# that costs an hour when reading back a timeline months later.
+STATE_DIR = Path(
+    os.environ.get("KX_SEM_STATE_DIR", Path.home() / ".local/state/cgroup-pressure")
+)
 LOG = STATE_DIR / "build-semaphore.log"
 
 UID = os.getuid()
@@ -189,9 +201,18 @@ CFG = dict(
     # Total slot files created. The ceiling can never exceed this.
     max_slots=_int("KX_SEM_MAX_SLOTS", 16),
     # Never admit more than this many heavy jobs at once, however calm the box
-    # looks. 12 matches the pool's CPUQuota=1200% -- admitting more concurrent
-    # heavy jobs than there are grantable cores buys nothing but memory.
-    ceil=_int("KX_SEM_CEIL", 12),
+    # looks. Originally 12, to match the pool's CPUQuota=1200% -- but cores were
+    # never the binding resource here. Sizing by the one that is:
+    #
+    #     (16 GiB pool - ~3 GiB of tenants that take no slots) / ~1.5 GiB a heft
+    #       = ~8 concurrent
+    #
+    # and the measurement agrees: on 2026-08-04 the box reached 100% of
+    # memory.high and psi10=48% at SEVEN concurrent jobs, four short of the
+    # nominal ceiling. A cap the machine cannot reach without stalling is not a
+    # cap, it is decoration -- every excursion above ~8 was recovered by the
+    # tighten path rather than prevented by the ceiling.
+    ceil=_int("KX_SEM_CEIL", 8),
     # Never admit fewer than this. 1, not 0 -- see FLOOR note above.
     floor=_int("KX_SEM_FLOOR", 1),
     # The lowest capacity the PREDICTIVE (memory.high fraction) signal may reach
@@ -224,6 +245,16 @@ CFG = dict(
     # two new heavy jobs per interval, turning an idle-to-saturated step into a
     # ~5 s-per-pair ramp that the lagged feedback can actually close on.
     burst=_int("KX_SEM_BURST", 2),
+    # How often the burst window is REPLENISHED, as distinct from how often the
+    # loop ticks. Decoupled deliberately: at one grant per 5 s tick the ramp
+    # reaches seven concurrent jobs in under twenty seconds, but psi10 is a
+    # TEN-SECOND average, so the second, third and fourth pair are all admitted
+    # against a signal that cannot yet contain any evidence of the first. The
+    # ramp outruns the only thing able to stop it. 15 s guarantees each grant is
+    # fully visible in psi10 before the next one is released -- the loop still
+    # ticks at `interval` and can still TIGHTEN at any moment, it just cannot
+    # hand out more concurrency until the last handful has been accounted for.
+    grant_every=_float("KX_SEM_GRANT_EVERY", 15.0),
     # Assumed peak RSS of one gated job, for the memory gate. 1.5 GiB is the
     # middle of the measured heft typecheck range (0.6-2.3 GB); the largest
     # single observation was 2312 MB. Deliberately not the maximum: sizing the
@@ -450,8 +481,21 @@ class Semaphore:
 
 def main():
     sem = Semaphore(SEM_DIR, CFG["max_slots"])
-    allowed = CFG["ceil"]
+    # START CONSERVATIVE AND EARN THE REST. Initialising to `ceil` asserts that
+    # maximum concurrency is safe having measured precisely nothing -- the same
+    # unearned credit the idle ratchet was accruing, just banked at startup
+    # instead. It is not a hypothetical: this service restarts on every
+    # `nixos-rebuild switch`, and the run at 14:33 on 2026-08-04 restarted into
+    # allowed=12 and was pinned at 100% of memory.high seventy seconds later.
+    # soft_floor is the same value the predictive signal is trusted to reach on
+    # its own, which makes it the natural "no evidence either way" position.
+    allowed = max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"]))
     last_up = 0.0
+    # The burst window: `grant_base` is occupancy as of the last replenishment,
+    # so admissions between grants are bounded by burst rather than by how fast
+    # jobs happen to arrive.
+    grant_base = 0
+    last_grant = 0.0
     stop = {"now": False}
 
     def _term(_sig, _frm):
@@ -469,7 +513,8 @@ def main():
         f"tighten>{CFG['tighten_psi']}% high>{CFG['tighten_high_frac'] * 100:.0f}% "
         f"loosen<{CFG['loosen_psi']}% step-{CFG['step_down']}/+{CFG['step_up']} "
         f"dwell={CFG['dwell']}s interval={CFG['interval']}s "
-        f"burst={CFG['burst']} job={CFG['job_bytes'] / 2**30:.1f}G"
+        f"burst={CFG['burst']}/{CFG['grant_every']}s "
+        f"job={CFG['job_bytes'] / 2**30:.1f}G start={allowed}"
     )
 
     prev_effective = None
@@ -508,13 +553,28 @@ def main():
                     burst = max(0, int(room))
                     mem_gated = True
 
-            def admit_target(cap, _occ=occupied, _burst=burst):
-                """Slots to leave free, given a capacity ceiling of `cap`."""
+            # Replenish the burst window on its own clock. Re-basing on CURRENT
+            # occupancy rather than adding to the old base is what keeps this a
+            # window and not a leaky accumulator: unused grants expire instead of
+            # piling up into exactly the batch admission this exists to prevent.
+            tick = time.monotonic()
+            if occupied is not None and (tick - last_grant) >= CFG["grant_every"]:
+                grant_base = occupied
+                last_grant = tick
+
+            def admit_target(cap, _occ=occupied, _burst=burst, _base=grant_base):
+                """Slots to leave free, given a capacity ceiling of `cap`.
+
+                Measured from `grant_base`, not from live occupancy, so that a
+                job finishing frees a slot for a REPLACEMENT immediately (which
+                does not raise concurrency) while additional concurrency waits
+                for the next grant (which does).
+                """
                 if _occ is None:
                     # No occupancy signal: fail open to pre-burst-gate behaviour
                     # rather than guessing. `allowed` alone still bounds things.
                     return cap
-                t = min(cap, _occ + _burst)
+                t = min(cap, _base + _burst)
                 # Never gate the machine to a standstill. With nothing running,
                 # at least one job must be able to start or the build system
                 # makes no progress at all -- and every caller would then sit out
