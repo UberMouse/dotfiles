@@ -89,19 +89,56 @@
 #      built to react at 5 s resolution and was being asked to absorb a change
 #      that completed in less than one tick.
 #
-#      Fix: cap the number of slots standing FREE, not just the number in use.
-#      Availability becomes `grant_base + burst`, replenished on its own clock,
-#      so capacity is handed out at a bounded RATE rather than all at once. The
-#      step becomes a ramp, and a ramp is something a lagged loop can close on.
-#      Capacity still reaches `allowed` under sustained demand; it just has to
-#      climb there, and can be stopped part-way.
+#      Fix: cap the number of slots standing FREE, not just the number in use --
+#      at ONE -- and make each one individually earned. Availability is
+#      `occupied + 1` while the box passes a load test, and `occupied` while it
+#      does not. The step becomes a ramp, and a ramp is something a lagged loop
+#      can close on. Capacity still reaches `allowed` under sustained demand; it
+#      just has to climb there one job at a time, and can be stopped part-way.
 #
-#      The grant clock is separate from the control interval for a reason worth
-#      keeping: psi10 is a TEN-SECOND average, so granting every 5 s tick admits
-#      the second and third pair against a signal that cannot yet contain any
-#      evidence of the first. A ramp that outruns its own feedback is just a
-#      slower step. Granting every 15 s makes each grant fully visible before
-#      the next is released.
+#      GROWTH IS PACED; STEADY STATE IS NOT. The lever is a HIGH-WATER MARK:
+#      the highest concurrency this box has held while the load test was
+#      passing. Admissions up to the mark are replacements and cost nothing;
+#      going above it is growth, and growth has to pass the load test and wait
+#      out the spacing. The mark falls whenever the test fails, so a level the
+#      box can no longer sustain stops counting as demonstrated.
+#
+#      The alternative -- make EVERY admission earn its own grant, replacements
+#      included -- is the stricter reading and it was measured before being
+#      rejected. This workload runs 15.3 admissions a minute with a median gap
+#      of 3 s between them (1138 admissions over 74 minutes, 2026-08-04); jobs
+#      average about 20 s. One admission per 15 s caps the machine at 4 a
+#      minute, which is not a throttle but a 4x throughput cut, and the queue it
+#      builds is unbounded. kx-build-slot gives up after 600 s and runs the job
+#      UNGATED -- so the strict reading's end state is no gate at all. A
+#      throttle that collapses under the load it exists to manage is worse than
+#      none, because it also lies about being there.
+#
+#      Note what the mark is NOT: it is not a second cap. `allowed` still bounds
+#      it, the load test still gates it, and a replacement batch is still sized
+#      to the memory actually free (see `absorbable`). It only settles the
+#      question of which admissions have to wait -- and the answer is the ones
+#      that take the box somewhere it has not already been.
+#
+#      The two halves of the load test fail independently, so both are required:
+#
+#        * MEMORY: at least TWO jobs' worth of room to memory.high. Two, not
+#          one, so the admitted job cannot consume the last of the headroom --
+#          requiring slack beyond the incoming job stops admission one job
+#          earlier than the wall, which is the difference between a queue and an
+#          OOM kill.
+#        * STALL: psi10 at or below the quiet threshold. A pool with 4 GB free
+#          can still be thrashing on reclaim; a quiet pool can still be one
+#          allocation from the ceiling. Neither number alone means "healthy".
+#
+#      And the spacing clock runs from the last GROWTH STEP, not from the last
+#      admission. psi10 is a TEN-SECOND average, so a level raised five seconds
+#      after the previous one is judged against a signal that cannot yet contain
+#      any evidence of it. A ramp that outruns its own feedback is just a slower
+#      step. Resetting the clock on every admission instead would be worse than
+#      useless here: under steady churn the mark is touched constantly, so the
+#      clock would never run out and concurrency would freeze at whatever level
+#      it first reached.
 #
 #   2. `allowed` GREW ON AN EMPTY BOX. Every LOOSEN above fired on psi60=0.0%
 #      measured while nothing was running. That is not evidence the next value
@@ -114,13 +151,12 @@
 #      about a path, and you cannot learn anything about the path without
 #      putting something on it.
 #
-# The MEMORY GATE is the third leg, and the only one measured in the unit that
-# actually runs out. Slots are a proxy for memory; when the pool has less than
-# one job's worth of room left to memory.high, the proxy is simply wrong, and
-# the gate closes the burst window regardless of what the slot arithmetic or PSI
-# says. It cannot deadlock -- with nothing running, one slot is always free (see
-# FLOOR) -- so a pool held near its ceiling by tenants that take no slots delays
-# the next build without ever preventing builds.
+# The LOAD TEST is the third leg, and the only one measured in the units that
+# actually run out. Slots are a proxy for memory; when the pool is near its
+# ceiling the proxy is simply wrong, and no slot opens regardless of what the
+# slot arithmetic says. It cannot deadlock -- with nothing running, one slot is
+# always free (see FLOOR) -- so a pool held near its ceiling by tenants that
+# take no slots delays the next build without ever preventing builds.
 #
 # FLOOR is 1, never 0: a floored semaphore must still make progress or the build
 # system deadlocks. At the floor, heavy jobs run strictly one at a time, which is
@@ -240,21 +276,30 @@ CFG = dict(
     # must comfortably exceed how long an in-flight heft keeps its pages after
     # admission stops, or the loop re-opens into memory that has not drained.
     dwell=_float("KX_SEM_DWELL", 60.0),
-    # How many slots may stand FREE at once -- the burst budget. See "WHY
-    # CAPACITY IS NOT THE SAME AS AVAILABILITY" in the header. 2 admits at most
-    # two new heavy jobs per interval, turning an idle-to-saturated step into a
-    # ~5 s-per-pair ramp that the lagged feedback can actually close on.
-    burst=_int("KX_SEM_BURST", 2),
-    # How often the burst window is REPLENISHED, as distinct from how often the
-    # loop ticks. Decoupled deliberately: at one grant per 5 s tick the ramp
-    # reaches seven concurrent jobs in under twenty seconds, but psi10 is a
-    # TEN-SECOND average, so the second, third and fourth pair are all admitted
-    # against a signal that cannot yet contain any evidence of the first. The
-    # ramp outruns the only thing able to stop it. 15 s guarantees each grant is
-    # fully visible in psi10 before the next one is released -- the loop still
-    # ticks at `interval` and can still TIGHTEN at any moment, it just cannot
-    # hand out more concurrency until the last handful has been accounted for.
+    # How far the high-water mark may move in one step -- the GROWTH quantum.
+    # One: concurrency climbs to a level it has never held one job at a time,
+    # and each step has to pass the load test below.
+    free_slots=_int("KX_SEM_FREE_SLOTS", 1),
+    # Minimum seconds between one GROWTH step and the next. Replacements are not
+    # subject to this (see the high-water mark note in the header) -- only moves
+    # to a concurrency level the box has not yet demonstrated. psi10 is a
+    # TEN-SECOND average, so a level raised five seconds after the last one is
+    # judged against a signal that cannot yet contain any evidence of it. 15 s
+    # guarantees each step is fully visible before the next is considered.
     grant_every=_float("KX_SEM_GRANT_EVERY", 15.0),
+    # THE LOAD TEST, part one: how many jobs' worth of memory must remain free
+    # before another slot is opened. TWO, not one, and the difference is the
+    # whole point -- at one, the admitted job is allowed to consume the last of
+    # the headroom, which is precisely how the pool reached 100% of memory.high
+    # at six concurrent on 2026-08-04. Requiring slack beyond the incoming job
+    # means admission stops one job EARLIER than the wall.
+    grant_headroom_jobs=_float("KX_SEM_GRANT_HEADROOM_JOBS", 2.0),
+    # THE LOAD TEST, part two: nothing may be stalling. Memory headroom says
+    # there is room; this says the box is not already struggling to use what it
+    # has. Both must hold, because they fail independently -- a pool with 4 GB
+    # free can still be thrashing on reclaim, and a quiet pool can still be one
+    # allocation from the ceiling.
+    grant_psi=_float("KX_SEM_GRANT_PSI", 3.0),
     # Assumed peak RSS of one gated job, for the memory gate. 1.5 GiB is the
     # middle of the measured heft typecheck range (0.6-2.3 GB); the largest
     # single observation was 2312 MB. Deliberately not the maximum: sizing the
@@ -458,15 +503,18 @@ class Semaphore:
 
         return self.max_slots - len(self.held)
 
-    def publish(self, allowed, effective, occupied=None, target=None):
+    def publish(self, allowed, effective, occupied=None, target=None, mark=None):
         # Field 0 stays `allowed` and field 2 stays `max_slots`: the i3status
         # block reads field 0 positionally. New fields are appended, never
         # inserted, so an older reader keeps working across a partial deploy.
         try:
             occ = "-" if occupied is None else str(occupied)
             tgt = "-" if target is None else str(target)
+            mk = "-" if mark is None else str(mark)
             tmp = self.dir / "allowed.tmp"
-            tmp.write_text(f"{allowed} {effective} {self.max_slots} {occ} {tgt}\n")
+            tmp.write_text(
+                f"{allowed} {effective} {self.max_slots} {occ} {tgt} {mk}\n"
+            )
             tmp.replace(self.dir / "allowed")
         except OSError:
             pass
@@ -491,11 +539,12 @@ def main():
     # its own, which makes it the natural "no evidence either way" position.
     allowed = max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"]))
     last_up = 0.0
-    # The burst window: `grant_base` is occupancy as of the last replenishment,
-    # so admissions between grants are bounded by burst rather than by how fast
-    # jobs happen to arrive.
-    grant_base = 0
-    last_grant = 0.0
+    # THE HIGH-WATER MARK: the highest concurrency this box has held while the
+    # load test was passing. Admissions up to it are replacements and cost
+    # nothing; going above it is growth and has to be earned. Starts at zero, so
+    # a fresh controller has demonstrated nothing and climbs from the floor.
+    mark = 0
+    last_growth = 0.0
     stop = {"now": False}
 
     def _term(_sig, _frm):
@@ -513,8 +562,9 @@ def main():
         f"tighten>{CFG['tighten_psi']}% high>{CFG['tighten_high_frac'] * 100:.0f}% "
         f"loosen<{CFG['loosen_psi']}% step-{CFG['step_down']}/+{CFG['step_up']} "
         f"dwell={CFG['dwell']}s interval={CFG['interval']}s "
-        f"burst={CFG['burst']}/{CFG['grant_every']}s "
-        f"job={CFG['job_bytes'] / 2**30:.1f}G start={allowed}"
+        f"grow+{CFG['free_slots']} every>={CFG['grant_every']}s "
+        f"needs {CFG['grant_headroom_jobs']}x{CFG['job_bytes'] / 2**30:.1f}G free "
+        f"and psi10<={CFG['grant_psi']}% start={allowed}"
     )
 
     prev_effective = None
@@ -531,50 +581,82 @@ def main():
 
             occupied = sem.occupancy()
 
-            # The MEMORY GATE. `allowed` counts slots; this counts bytes, and
-            # bytes are what actually run out. If the pool has less than one
-            # job's worth of room left to memory.high, admitting another job is
-            # how the box earns an OOM kill, whatever the slot arithmetic says.
+            tick = time.monotonic()
+
+            # THE LOAD TEST. `allowed` counts slots; this counts bytes and
+            # stalls, which are what actually run out. Both halves must hold,
+            # and both are about the box's ability to absorb ONE MORE heavy job:
+            # memory says there is room for it with slack to spare, PSI says
+            # nothing is already struggling with what is resident.
             #
             # This deliberately reaches further than the predictive tighten,
             # which the header notes may only drive to soft_floor because the
             # pool contains tenants that take no slots and will not give memory
-            # back. The gate does not have that problem, for two reasons: it
-            # stops only NEW admissions rather than forcing the running set down
-            # to one, and it cannot deadlock, because the occupied == 0 rule
-            # below always leaves a slot free when no build is running at all.
-            # So a pool held near its ceiling by the agents fleet delays the next
-            # build; it can never stop builds happening.
-            burst = CFG["burst"]
-            mem_gated = False
-            if pool_mem is not None:
-                room = (pool_mem[1] - pool_mem[0]) // CFG["job_bytes"]
-                if room < burst:
-                    burst = max(0, int(room))
-                    mem_gated = True
+            # back. The test does not have that problem, for two reasons: it
+            # withholds only NEW admissions rather than forcing the running set
+            # down, and it cannot deadlock, because the occupied == 0 rule below
+            # always leaves a slot free when no build is running at all. A pool
+            # held near its ceiling by the agents fleet delays the next build; it
+            # can never stop builds happening.
+            need = CFG["grant_headroom_jobs"] * CFG["job_bytes"]
+            headroom = None if pool_mem is None else pool_mem[1] - pool_mem[0]
+            # Unreadable memory is NO SIGNAL, not a refusal: a pool with
+            # memory.high unset would otherwise serialise every build forever.
+            mem_ok = headroom is None or headroom >= need
+            psi_ok = psi10 is None or psi10 <= CFG["grant_psi"]
+            healthy = mem_ok and psi_ok
 
-            # Replenish the burst window on its own clock. Re-basing on CURRENT
-            # occupancy rather than adding to the old base is what keeps this a
-            # window and not a leaky accumulator: unused grants expire instead of
-            # piling up into exactly the batch admission this exists to prevent.
-            tick = time.monotonic()
-            if occupied is not None and (tick - last_grant) >= CFG["grant_every"]:
-                grant_base = occupied
-                last_grant = tick
+            # Move the mark. Upward only on evidence -- occupancy that was
+            # actually reached while the load test passed -- and downward
+            # whenever the test fails, so a level the box can no longer sustain
+            # stops being treated as demonstrated. Growth restarts the spacing
+            # clock; replacements do not touch it, which is the entire point:
+            # under steady churn the mark is hit constantly, and a clock reset on
+            # every admission would freeze concurrency at whatever level
+            # happened to be reached first.
+            if occupied is not None:
+                if not healthy:
+                    mark = min(mark, occupied)
+                elif occupied > mark:
+                    mark = occupied
+                    last_growth = tick
 
-            def admit_target(cap, _occ=occupied, _burst=burst, _base=grant_base):
-                """Slots to leave free, given a capacity ceiling of `cap`.
+            grow = (
+                healthy
+                and occupied is not None
+                and occupied >= mark
+                and (tick - last_growth) >= CFG["grant_every"]
+            )
 
-                Measured from `grant_base`, not from live occupancy, so that a
-                job finishing frees a slot for a REPLACEMENT immediately (which
-                does not raise concurrency) while additional concurrency waits
-                for the next grant (which does).
-                """
+            # How many jobs the CURRENT headroom can absorb, keeping one job's
+            # worth of slack in hand. This is what bounds a replacement batch:
+            # when a build phase ends, five jobs can finish within one interval
+            # and the mark alone would offer all five slots back at once. Five
+            # simultaneous admissions need five jobs' worth of memory, but the
+            # load test above only ever checked for two -- so the batch, not the
+            # test, would decide how far the pool overshot. Sizing the offer to
+            # the headroom keeps admission honest at any batch size: roomy pool,
+            # several may restart together; tight pool, strictly one at a time.
+            absorbable = (
+                None
+                if headroom is None
+                else max(0, int(headroom // CFG["job_bytes"]) - 1)
+            )
+
+            def admit_target(cap, _occ=occupied, _mark=mark, _grow=grow):
+                """Slots to offer, given a capacity ceiling of `cap`."""
                 if _occ is None:
-                    # No occupancy signal: fail open to pre-burst-gate behaviour
-                    # rather than guessing. `allowed` alone still bounds things.
+                    # No occupancy signal: fail open to pre-gate behaviour rather
+                    # than guessing. `allowed` alone still bounds things.
                     return cap
-                t = min(cap, _base + _burst)
+                if not healthy:
+                    # Offer nothing new; the running set drains and the mark
+                    # follows it down.
+                    t = min(cap, _occ)
+                else:
+                    t = min(cap, _mark + (CFG["free_slots"] if _grow else 0))
+                if absorbable is not None:
+                    t = min(t, _occ + absorbable)
                 # Never gate the machine to a standstill. With nothing running,
                 # at least one job must be able to start or the build system
                 # makes no progress at all -- and every caller would then sit out
@@ -587,12 +669,12 @@ def main():
             # Is `allowed` ITSELF the binding constraint? That is the only
             # question a loosen has any business answering, and the test must be
             # against `allowed` rather than against the target in effect. The
-            # weaker test (occupied >= target) is satisfied whenever the MEMORY
-            # GATE is what is holding admission back -- allowed=8, occupied=3,
-            # burst=0 gives target=3, which reads as "saturated" and grows the
-            # cap to 9 on the strength of a constraint that has nothing to do
-            # with slots. Requiring the cap to be genuinely full keeps the
-            # ratchet answering to demand alone.
+            # weaker test (occupied >= target) is satisfied on EVERY tick that
+            # withholds a grant -- target is `occupied` exactly then, so it reads
+            # as "saturated" and would grow the cap on the strength of the load
+            # test refusing, or merely of the spacing clock running. Requiring
+            # the cap to be genuinely full keeps the ratchet answering to demand
+            # alone.
             cap_saturated = occupied is None or occupied >= allowed
 
             hot_psi = psi10 is not None and psi10 > CFG["tighten_psi"]
@@ -660,38 +742,37 @@ def main():
 
             target = admit_target(allowed)
             effective = sem.reconcile(target)
-            sem.publish(allowed, effective, occupied, target)
+            sem.publish(allowed, effective, occupied, target, mark)
 
-            now = time.monotonic()
             if reason and allowed != before:
                 log(
                     f"{reason} allowed {before} -> {allowed} "
-                    f"(occupied {occupied} target {target} effective {effective})"
+                    f"(occupied {occupied} mark {mark} target {target} "
+                    f"effective {effective})"
                 )
             elif (
-                target < allowed
-                # Every slot on offer is taken, so the capacity being held back
-                # is capacity something is waiting for. This is a DIFFERENT test
-                # from the one guarding LOOSEN above, deliberately: that one asks
-                # whether `allowed` is full (it never is while the gate binds),
-                # this one asks whether what was actually offered is. Without the
-                # distinction, `target < allowed` alone is true on every tick of
-                # an idle box -- the gate working as designed, with nothing
-                # waiting on it -- and logging that twice a minute forever says
-                # nothing at all.
+                # Only a grant withheld on LOAD is worth a line. Withholding on
+                # spacing is the ordinary rhythm of the thing -- true of most
+                # ticks between admissions -- and logging it would bury the
+                # decisions under its own metronome. `target < allowed` keeps
+                # quiet when the cap is the real constraint, since the TIGHTEN
+                # lines already tell that story.
+                not healthy
+                and target < allowed
                 and occupied is not None
-                and occupied >= target
-                and (now - last_hold_log) >= CFG["hold_log_every"]
+                and (tick - last_hold_log) >= CFG["hold_log_every"]
             ):
-                # The gate is biting: capacity exists but is not being handed out
-                # this instant. Throttled, because on a busy stretch this is true
-                # of most ticks and one line per tick would bury the decisions.
-                why = "burst" if not mem_gated else f"mem free={(pool_mem[1] - pool_mem[0]) / 2**30:.1f}G"
+                bits = []
+                if not mem_ok:
+                    bits.append(
+                        f"free={headroom / 2**30:.1f}G<{need / 2**30:.1f}G"
+                    )
+                if not psi_ok:
+                    bits.append(f"psi10={psi10:.1f}%")
                 log(
-                    f"HOLD {why} occupied={occupied} target={target} "
-                    f"allowed={allowed} burst={burst}"
+                    f"HOLD {' '.join(bits)} occupied={occupied} allowed={allowed}"
                 )
-                last_hold_log = now
+                last_hold_log = tick
             elif effective != prev_effective and reason is None and target >= allowed:
                 # Capacity moved without a decision: jobs returned slots the
                 # controller had been waiting to take. Worth seeing, since it is
