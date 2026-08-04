@@ -112,6 +112,13 @@ def held_slots():
     would be competing with the builds it is reporting on. /proc/locks is
     read-only, cannot interfere, and is one small read (~112 lines here) plus a
     stat per slot.
+
+    The key is the full (major, minor, inode), not the inode alone. Slot files
+    sit on tmpfs and carry very low inode numbers -- 58-73 as measured -- which
+    collide freely with inodes on any other small filesystem, and an inode-only
+    match would report an unrelated lock elsewhere on the machine as a busy build
+    slot. Silently, and only sometimes, which is the worst way for a status
+    readout to be wrong.
     """
     inodes = {}
     try:
@@ -119,7 +126,9 @@ def held_slots():
             if not name.startswith("slot."):
                 continue
             try:
-                inodes[os.stat(os.path.join(SEM_DIR, name)).st_ino] = int(name.split(".")[-1])
+                st = os.stat(os.path.join(SEM_DIR, name))
+                key = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+                inodes[key] = int(name.split(".")[-1])
             except (OSError, ValueError):
                 continue
     except OSError:
@@ -132,22 +141,28 @@ def held_slots():
             for line in f:
                 if "FLOCK" not in line:
                     continue
+                # Rows containing '->' are blocked WAITERS, not holders, and
+                # counting them would over-report occupancy exactly when the
+                # semaphore is contended.
+                if "->" in line:
+                    continue
                 fields = line.split()
                 for idx, field in enumerate(fields):
                     parts = field.split(":")
                     if len(parts) != 3:
                         continue
                     try:
-                        ino = int(parts[2])
+                        # maj:min are hex in this file; the inode is decimal.
+                        key = (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
                     except ValueError:
                         continue
-                    if ino in inodes:
+                    if key in inodes:
                         # The pid column sits immediately before the
                         # major:minor:inode column in every /proc/locks row.
                         try:
-                            held[inodes[ino]] = int(fields[idx - 1])
+                            held[inodes[key]] = int(fields[idx - 1])
                         except (ValueError, IndexError):
-                            held[inodes[ino]] = -1
+                            held[inodes[key]] = -1
                     break
     except OSError:
         return None
