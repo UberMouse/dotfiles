@@ -44,8 +44,12 @@
 #
 # THE CONTROL LOOP, and why it does not oscillate like the governor does.
 # Capacity is varied by this process HOLDING slots itself: slots are handed out
-# from the bottom, and the controller takes them from the top, so the two meet
-# in the middle without ever fighting over the same file. Consequences:
+# from the bottom, and the controller takes them from the top, so in the common
+# case the two meet in the middle without fighting over the same file. (That is
+# an optimisation rather than a correctness property -- reconcile() counts slots
+# instead of splitting the index range at a boundary, so a contested file costs
+# one retry and nothing more. See its docstring for why counting is required.)
+# Consequences:
 #
 #   * Tightening is naturally graceful. The controller can only take a slot that
 #     is free, so lowering capacity does not preempt a running job -- it just
