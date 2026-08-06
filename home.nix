@@ -358,6 +358,34 @@
       # that same counter logged 16000-24000 events per incident -- that is the
       # pool absorbing its own pressure, which is the entire point.
       #
+      # 18G/20G FROM 2026-08-06, and the margin is the whole argument. The run-out
+      # point is (MemTotal - the desktop's 8G floor): on the 27 GiB figure above
+      # that is ~19G, which is why a 20G ceiling could never fire. This host
+      # actually reports MemTotal 29.19 GiB (the "27 GiB" above was always
+      # approximate), so run-out sits at ~21.2G and an 18G ceiling keeps ~3.2 GiB
+      # of margin beneath it -- the throttle can still engage before global
+      # reclaim does, which is exactly what 20G lost. It is a smaller margin than
+      # 16G bought, so this is the loosest setting the box can take, not a step on
+      # the way to a looser one. The 20G/22G revert above stands as the warning.
+      #
+      # HONESTY ABOUT WHY IT WAS SET: this was applied in anticipation of a VM RAM
+      # increase that had NOT yet landed. MemTotal was still 29.19 GiB at the time
+      # (unchanged, no offline memory blocks, vmw_balloon loaded but delivering
+      # nothing -- VMware needs a power-off, not a reboot). So the margin arithmetic
+      # above is for the SMALL box, deliberately: it has to hold on 29.19 GiB, and
+      # it gets roomier, not tighter, once the extra RAM appears.
+      #
+      # THE TEST IS UNCHANGED and it is the one this comment has always specified:
+      # watch `memory.events high`. Non-zero after a build storm means the pool is
+      # absorbing its own pressure. A reading of 0 means the ceiling has gone loose
+      # again and this change should be reverted to 16G/18G, exactly as 20G was.
+      #
+      # MemoryMax MOVES WITH IT, and must. At MemoryHigh=MemoryMax there is no
+      # throttle band at all: the pool would step from unthrottled straight to an
+      # OOM kill with no reclaim zone between them, deleting the very mechanism the
+      # paragraphs above credit for keeping stalls in-pool. 20G preserves the same
+      # 2 GiB backstop gap that 16G/18G had.
+      #
       # The "16G freezes / 12G crawls" seesaw recorded above is now stale on BOTH
       # ends: the 16G freeze predates memory.min=8G (2026-07-17), and the 12G crawl
       # was a live set-property trial (never committed -- git only ever had 16G or
@@ -367,15 +395,15 @@
       # with a real free-page buffer, instead of against one already at the wall.
       # 16 + 8 = 24 on 27 GiB leaves genuine headroom for kernel + page cache.
       #
-      # MemoryMax=18G is the runaway backstop: a pathological fleet gets one
+      # MemoryMax=20G is the runaway backstop: a pathological fleet gets one
       # OOM-killed build (contained in-pool; earlyoom already prefers build
       # workers) rather than the whole box swapping to death.
       # cgroup-pressure-monitor.service captures forensics + auto-diagnoses each
       # remaining stall so we keep tuning from data. Watch `memory.events high`:
       # if it is 0 after a build storm, the ceiling is too loose again.
       MemoryAccounting = true;
-      MemoryHigh = "16G";
-      MemoryMax = "18G";
+      MemoryHigh = "18G";
+      MemoryMax = "20G";
 
       # Hard write cap on the pool's disk I/O. This host's I/O scheduler is
       # mq-deadline, which IGNORES io.weight (only BFQ honours it) -- so an
@@ -394,7 +422,7 @@
 
   # Container slice for the Claude background-agent fleet, a child of the pool
   # above. NOT a throttle: it carries no MemoryHigh of its own, so the fleet is
-  # governed only by the pool's 16G high (and the desktop's 8G memory.min floor).
+  # governed only by the pool's 18G high (and the desktop's 8G memory.min floor).
   # It exists to (a) give the fleet a distinct, observable bucket under the pool
   # -- the "agents" line in wt-cgroup-status -- and (b) be the placement target
   # for claude-agents-reattach, which re-homes the cc-daemon and every worker it
@@ -410,8 +438,8 @@
   # ceiling -- memory PSI full ~60%, 38k high-breach events, 2.3 GB forced into
   # swap -- so the fleet crawled while the pool above it sat at only 4 of 16 GB.
   # A sub-cap below the pool is the wrong tool once agents ARE the pool's primary
-  # tenant: the pool's own 16G high is the single agent+build budget, and its
-  # MemoryMax=18G still backstops a runaway subtree with one contained OOM.
+  # tenant: the pool's own 18G high is the single agent+build budget, and its
+  # MemoryMax=20G still backstops a runaway subtree with one contained OOM.
   #
   # The `claude agents` UI is deliberately kept OUT of this slice (and the whole
   # pool) so it stays responsive under memory pressure; only the daemon and the
