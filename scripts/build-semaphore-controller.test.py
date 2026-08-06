@@ -58,7 +58,8 @@ env.update(
     KX_SEM_MAX_SLOTS="16",
     KX_SEM_CEIL="12",
     KX_SEM_SOFT_FLOOR="4",
-    KX_SEM_FREE_SLOTS="1",
+    KX_SEM_GROW_STEP="1",
+    KX_SEM_BURST="2",
     KX_SEM_GRANT_EVERY="4",
     KX_SEM_GRANT_HEADROOM_JOBS="2",
     KX_SEM_GRANT_PSI="3",
@@ -207,6 +208,33 @@ check("batch capped by headroom", free_slots(), 1)
 set_pool(0, 0, 4)
 settle()
 check("batch opens up when roomy", free_slots(), 2)
+
+# 5d. THE DRAIN, and the regression that made this test exist. The mark is a
+#     memory of the PEAK, so on its own it keeps the window open at the peak
+#     long after the jobs that earned it have gone -- measured 2026-08-06 as
+#     `occupied=1 target=8`, seven slots free over an all-but-idle box, every
+#     one of them takeable in the same instant. That is the original step-input
+#     bug rebuilt out of the parts meant to prevent it, and it is worst exactly
+#     here, because a drain is when the next burst arrives.
+#
+#     Availability must therefore track the RUNNING SET, not the high-water
+#     mark. The mark is asserted to survive unchanged, so this can only pass
+#     because the free-slot cap is doing the work -- not because the mark
+#     quietly decayed, which would fix the symptom by discarding what the box
+#     had genuinely demonstrated.
+release_all()
+settle()
+check("drain does not reopen the window", free_slots(), 2)
+check("offer follows occupancy down", state()[4], "2")
+check("mark survives the drain", state()[5], "4")
+
+# 5e. And the way back up is the same ramp, not a rebound to the mark: the two
+#     free slots are all there is, and taking them buys two more, not four.
+hold()
+hold()
+settle()
+check("drain refills two at a time", state()[3], "2")
+check("back to the mark, not past it", state()[4], "4")
 
 # 6. Load test, memory half: room for one more job is not enough, two is the
 #    bar, so admission stops one job short of the wall.

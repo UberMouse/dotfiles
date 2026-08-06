@@ -89,12 +89,33 @@
 #      built to react at 5 s resolution and was being asked to absorb a change
 #      that completed in less than one tick.
 #
-#      Fix: cap the number of slots standing FREE, not just the number in use --
-#      at ONE -- and make each one individually earned. Availability is
-#      `occupied + 1` while the box passes a load test, and `occupied` while it
-#      does not. The step becomes a ramp, and a ramp is something a lagged loop
-#      can close on. Capacity still reaches `allowed` under sustained demand; it
-#      just has to climb there one job at a time, and can be stopped part-way.
+#      Fix: bound availability at BOTH ends, because the two ends fail
+#      differently and neither bound implies the other.
+#
+#        * A CAP ON THE SLOTS STANDING FREE (`burst`, 2). However much
+#          concurrency this box has already proved it can carry, at most two
+#          jobs may start before the loop gets a tick to look at what they did.
+#          This bounds the STEP SIZE of the input.
+#        * A PACE ON GROWTH (the high-water mark plus `grow_step`, below). Going
+#          somewhere the box has not already been costs a load test and a
+#          spacing interval. This bounds the RATE.
+#
+#      Availability is therefore `occupied + burst` at its most generous, and
+#      `occupied` while the load test fails. The step becomes a ramp, and a ramp
+#      is something a lagged loop can close on. Capacity still reaches `allowed`
+#      under sustained demand; it just has to climb there a couple of jobs at a
+#      time, and can be stopped part-way.
+#
+#      BOTH BOUNDS ARE REQUIRED, and shipping only the second reproduces the
+#      original bug wearing different numbers. The 2026-08-04 mark rework did
+#      exactly that, and the regression was measured on 2026-08-06 against a
+#      synthetic pool: a run that peaked at 8 concurrent and then drained to ONE
+#      job published `occupied=1 target=8 effective=8` and sat there --
+#      seven slots standing free over an all-but-idle box, takeable in the same
+#      instant. A mark is a memory of the peak, and a memory of the peak is
+#      precisely the wrong thing to leave holding the door open, because the
+#      drain is exactly when the next burst arrives. The mark answers "how high
+#      may this go"; it was never entitled to answer "how many may start now".
 #
 #      GROWTH IS PACED; STEADY STATE IS NOT. The lever is a HIGH-WATER MARK:
 #      the highest concurrency this box has held while the load test was
@@ -114,11 +135,15 @@
 #      throttle that collapses under the load it exists to manage is worse than
 #      none, because it also lies about being there.
 #
-#      Note what the mark is NOT: it is not a second cap. `allowed` still bounds
-#      it, the load test still gates it, and a replacement batch is still sized
-#      to the memory actually free (see `absorbable`). It only settles the
-#      question of which admissions have to wait -- and the answer is the ones
-#      that take the box somewhere it has not already been.
+#      Note what the mark is NOT: it is not a second cap, and it is not a
+#      licence to open the whole window at once. `allowed` still bounds it, the
+#      load test still gates it, `burst` still caps how much of it may stand
+#      free, and a replacement batch is still sized to the memory actually free
+#      (see `absorbable`). It only settles the question of which admissions have
+#      to WAIT -- and the answer is the ones that take the box somewhere it has
+#      not already been. Returning to a level already demonstrated is not free
+#      of charge either; it is merely free of the SPACING, and still arrives two
+#      jobs per tick rather than all at once.
 #
 #      The two halves of the load test fail independently, so both are required:
 #
@@ -279,7 +304,25 @@ CFG = dict(
     # How far the high-water mark may move in one step -- the GROWTH quantum.
     # One: concurrency climbs to a level it has never held one job at a time,
     # and each step has to pass the load test below.
-    free_slots=_int("KX_SEM_FREE_SLOTS", 1),
+    #
+    # Renamed from KX_SEM_FREE_SLOTS, which is what this knob genuinely was
+    # before the mark existed and was actively misleading afterwards -- it
+    # bounds how fast the CEILING may rise, not how many slots stand free. Two
+    # different quantities behind one name is how the cap below came to be
+    # deleted by a commit that believed it was merely rewording it.
+    grow_step=_int("KX_SEM_GROW_STEP", 1),
+    # THE FREE-SLOT CAP: how many slots may stand FREE at once, no matter how
+    # much headroom the mark or the memory gate would otherwise allow. This is
+    # the bound on STEP SIZE, and it is the one thing here that keeps a drain
+    # from re-arming the burst that the ramp exists to prevent -- see "BOTH
+    # BOUNDS ARE REQUIRED" in the header.
+    #
+    # 2, not 1: at 1 the only way to reach any concurrency at all is one
+    # admission per control interval, which turns every phase boundary (where
+    # several jobs finish within one tick) into a needless queue. 2 admits at
+    # most two new heavy jobs before the loop gets to look at them, which at a
+    # 5 s interval is a ramp psi10's ten-second window can still resolve.
+    burst=_int("KX_SEM_BURST", 2),
     # Minimum seconds between one GROWTH step and the next. Replacements are not
     # subject to this (see the high-water mark note in the header) -- only moves
     # to a concurrency level the box has not yet demonstrated. psi10 is a
@@ -562,7 +605,7 @@ def main():
         f"tighten>{CFG['tighten_psi']}% high>{CFG['tighten_high_frac'] * 100:.0f}% "
         f"loosen<{CFG['loosen_psi']}% step-{CFG['step_down']}/+{CFG['step_up']} "
         f"dwell={CFG['dwell']}s interval={CFG['interval']}s "
-        f"grow+{CFG['free_slots']} every>={CFG['grant_every']}s "
+        f"grow+{CFG['grow_step']} every>={CFG['grant_every']}s free<={CFG['burst']} "
         f"needs {CFG['grant_headroom_jobs']}x{CFG['job_bytes'] / 2**30:.1f}G free "
         f"and psi10<={CFG['grant_psi']}% start={allowed}"
     )
@@ -654,7 +697,22 @@ def main():
                     # follows it down.
                     t = min(cap, _occ)
                 else:
-                    t = min(cap, _mark + (CFG["free_slots"] if _grow else 0))
+                    t = min(cap, _mark + (CFG["grow_step"] if _grow else 0))
+                # THE FREE-SLOT CAP, and the reason it is a separate term from
+                # everything above it. Each clause so far answers "how high may
+                # concurrency go" -- the cap, the mark, the load test. None of
+                # them answers "how many may start in the same instant", and on
+                # a DRAINING box the two diverge completely: occupancy falls to
+                # 1 while the mark still remembers 8, so the window the mark
+                # leaves open is seven wide at precisely the moment the loop has
+                # the least evidence about what is coming next.
+                #
+                # Clamping to `occupied + burst` makes availability track the
+                # running set instead of the peak. It costs nothing in steady
+                # state -- a finished job drops occupancy and the target with
+                # it, so the free pool stays pinned at `burst` rather than
+                # growing, and a waiting job still starts immediately.
+                t = min(t, _occ + CFG["burst"])
                 if absorbable is not None:
                     t = min(t, _occ + absorbable)
                 # Never gate the machine to a standstill. With nothing running,

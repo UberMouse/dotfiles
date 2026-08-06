@@ -6,14 +6,18 @@
 # mirroring i3status's built-in defaults, passes those coloured blocks
 # through untouched, and prepends our own:
 #
-#   ◱ 4/12   build semaphore: slots in use / current capacity.
+#   ◱ 4/6    build semaphore: slots in use / slots ACQUIRABLE RIGHT NOW.
 #            "idle" dimmed when nothing holds a slot; "off" dimmed when the
 #            controller is not running at all. Those two are deliberately
 #            DISTINCT: a dead controller and an idle one look identical from
 #            occupancy alone, and this repo has been bitten repeatedly by
 #            components that were silently doing nothing while looking healthy.
-#            The denominator is the LIVE capacity, so watching it fall (12 -> 4)
-#            is watching the controller throttle under memory pressure.
+#            The denominator is `effective`, not the `allowed` cap -- the cap
+#            says how high concurrency may go, which is not the same as how many
+#            jobs could start this instant, and reading the former as the latter
+#            is what hid a live regression (see sem_block). So the gap between
+#            the two numbers is the burst window, and watching it stay small is
+#            watching the ramp work.
 #
 #   ⚙ 2.4/12c 4.2G/16G 3wt   worktrees.slice: cores/cap, mem/cap, active
 #            buckets, coloured by peak CPU-or-mem utilisation; "⚙ idle" dimmed
@@ -200,8 +204,15 @@ def sem_block():
         return block("◱ off", DIM, name="buildsem")
 
     try:
+        # Field 0 is `allowed` (the cap the loop is aiming at), field 1 is
+        # `effective` (what the controller is not holding back, i.e. what a job
+        # could actually take right now). Field 1 is written by every publish,
+        # including the two-field one on STOP, so this cannot IndexError against
+        # a controller mid-shutdown.
         with open(os.path.join(SEM_DIR, "allowed")) as f:
-            allowed = int(f.read().split()[0])
+            fields = f.read().split()
+        allowed = int(fields[0])
+        effective = int(fields[1])
     except (OSError, ValueError, IndexError):
         return block("◱ off", DIM, name="buildsem")
 
@@ -209,12 +220,25 @@ def sem_block():
     if used == 0:
         return block("◱ idle", DIM, name="buildsem")
 
-    # used > allowed is legitimate mid-tighten (jobs drain rather than being
-    # preempted), and shows as saturated red -- which is the honest reading:
-    # demand is over the cap and the next job will queue.
+    # THE NUMBER IS AVAILABILITY, THE COLOUR IS THROTTLING, and they are drawn
+    # from different denominators on purpose.
+    #
+    # Showing used/`allowed` made the bar read as though the whole cap were
+    # takeable: an 8-wide `allowed` with one job running looked like "seven
+    # free" when the controller may be offering two. `effective` is the honest
+    # count, so used/effective at saturation means "nothing free right now".
+    #
+    # But that saturation is the ORDINARY state of a healthy ramp -- the free
+    # cap deliberately keeps availability a couple of jobs ahead of occupancy,
+    # so the bar would sit at its warning colour permanently. Being at
+    # `allowed`, on the other hand, is the real throttle: it means demand has
+    # reached the cap and the next job queues on the control loop rather than on
+    # the ramp. So the colour keeps `allowed` as its denominator. used > allowed
+    # is legitimate mid-tighten (jobs drain rather than being preempted) and
+    # correctly shows as saturated red.
     u = used / allowed if allowed > 0 else 1.0
     color = GREEN if u < 0.5 else (YELLOW if u < 1.0 else RED)
-    return block(f"◱ {used}/{allowed}", color, name="buildsem")
+    return block(f"◱ {used}/{effective}", color, name="buildsem")
 
 prev_usage = None
 prev_t = None
