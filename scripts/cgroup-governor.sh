@@ -168,6 +168,7 @@ state="NORMAL"
 last_state=""
 last_sweep=0                 # maybe_sweep rate limiter
 last_tick=0                  # loop-lag watchdog
+deleg_warned=0               # ensure_delegation: warn once, not every tick
 reclaim_pid=""               # in-flight backgrounded reclaim, if any
 # Thresholds pre-scaled to the integer hundredths psi_full_avg10 returns, so the
 # per-tick comparison is a shell integer test and not an awk invocation.
@@ -540,6 +541,45 @@ reclaim_from() {
   reclaim_pid=$!
 }
 
+# Re-assert +memory +pids on the agents slice so its children stay ACCOUNTED.
+#
+# claude-agents-reattach writes this once, at reattach. systemd prunes it back to
+# empty on every user-unit reload -- i.e. on every nixos-rebuild switch -- because
+# it keeps in a slice's subtree_control only what some CHILD UNIT asks for, and
+# `fleet`/`transient` are raw mkdir cgroups, not units, so systemd sees no reason
+# to keep anything. See the FLEET comment near the top: observed 07-28 as a leaf
+# holding 46 procs with no memory.current at all.
+#
+# The window between a rebuild and the next reattach is therefore one where
+# `fleet` and `transient` report NOTHING -- which is why the per-child figures in
+# the pressure monitor's stall analyses ("fleet 9.5 GB") cannot be trusted for
+# those two: they are read from files that may not exist. Re-asserting every tick
+# closes that window for good; the governor already runs forever and already has
+# the path.
+#
+# ACCOUNTING ONLY. This sets no limit and changes no scheduling -- it restores
+# visibility. The reclaim target above stays the SLICE, which is correct either
+# way (parent reclaim covers the whole subtree) and does not depend on this.
+ensure_delegation() {
+  local sc=""
+  [ -e "$FLEET/cgroup.subtree_control" ] || return 0
+  # An EMPTY subtree_control is exactly the state being repaired, and `read`
+  # returns non-zero on it (EOF before any delimiter), so its exit status must
+  # NOT gate the repair -- testing it would skip the only case that matters.
+  read -r sc 2>/dev/null < "$FLEET/cgroup.subtree_control"
+  case " $sc " in *" memory "*) deleg_warned=0; return 0 ;; esac
+  if printf '+memory +pids' 2>/dev/null > "$FLEET/cgroup.subtree_control"; then
+    deleg_warned=0
+    log "DELEGATE|re-enabled +memory +pids on worktrees-agents.slice (had been cleared)"
+  elif [ "$deleg_warned" = 0 ]; then
+    # cgroup v2 refuses this while processes sit DIRECTLY in the slice (the
+    # no-internal-process rule), which is a real transient state during reattach.
+    # Worth saying once -- never fail silently -- but not every five seconds.
+    deleg_warned=1
+    log "DELEGATE|cannot enable +memory +pids on worktrees-agents.slice (procs directly in it?) - fleet/transient stay unaccounted"
+  fi
+}
+
 # A bash trap handler does NOT terminate the shell by itself, so the signal
 # handler must exit explicitly -- otherwise SIGTERM thaws everything and then
 # the loop merrily carries on, `systemctl --user stop` blocks until its timeout,
@@ -579,6 +619,9 @@ while :; do
       thaw_scope "$sc" "deadline ${held}s >= ${MAX_FREEZE_SECS}s"
     fi
   done
+
+  # --- 0b. Keep the agents subtree accounted. Cheap, fork-free, every tick. ---
+  ensure_delegation
 
   resolve_desktop || { sleep "$INTERVAL"; continue; }
   # Three fork-free reads. Previously three awk processes, every five seconds,
