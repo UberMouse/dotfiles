@@ -1,5 +1,11 @@
 #!/usr/bin/env @python3@
-import socket, os, sys, base64, time, subprocess, signal
+import socket
+import os
+import sys
+import base64
+import time
+import subprocess
+import signal
 
 LOG = os.environ.get("OP_CACHED_DEBUG", "") != ""
 

@@ -138,6 +138,7 @@
                   statix
                   deadnix
                   shellcheck
+                  ruff
                   python313
                 ];
               }
@@ -146,16 +147,34 @@
                 statix check .
                 deadnix --fail .
                 shellcheck scripts/*.sh
+                # ruff is the semantic layer py_compile lacks (undefined
+                # names, unused imports); config in ruff.toml. --no-cache:
+                # ${self} is a read-only store path.
+                ruff check --no-cache scripts/ scriptBins/bins/
                 export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
                 python3 -m py_compile scripts/*.py scriptBins/bins/*.py
 
-                # Repo-specific tripwires. Each of these encodes a rule that was
-                # once broken silently (see CLAUDE.md's standing traps):
-                #  1. pgrep -f is banned (kx-proc-find is the replacement)
-                #  2. /home/taylorl literals in nix (one allowed definition)
-                #  3. the pool cgroup path must carry the KX_POOL override
-                #  4. every repo path CLAUDE.md names must exist (docs-liveness)
+                # Repo-specific tripwires. Each check encodes a rule that was
+                # once broken silently (see CLAUDE.md's standing traps and the
+                # per-check comments in the script): pgrep/pkill -f, compgen,
+                # /home/taylorl literals, KX_POOL overrides, occupancy-guard
+                # shape, docs-liveness, spec/fetcher pairing, op-shim roster.
                 python3 ${./scripts/lint-tripwires.py}
+                touch $out
+              '';
+
+          # `nix flake check` must fail on an unformatted tree, or the
+          # formatter output is advisory and the next whole-tree reformat
+          # commit (plus .git-blame-ignore-revs entry) is only a matter of
+          # time. The tree is copied because --fail-on-change still WRITES
+          # the formatted result before erroring, and ${self} is read-only.
+          formatting =
+            checkPkgs.runCommand "formatting" { nativeBuildInputs = [ self.formatter.${system} ]; }
+              ''
+                cp -r ${self} tree
+                chmod -R +w tree
+                cd tree
+                treefmt --tree-root=. --fail-on-change --no-cache
                 touch $out
               '';
         };

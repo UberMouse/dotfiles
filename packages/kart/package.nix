@@ -4,7 +4,6 @@
   fetchurl,
   autoPatchelfHook,
   makeWrapper,
-  versionCheckHook,
   openssl_3,
   libz,
   libffi,

@@ -1,5 +1,15 @@
 #!/usr/bin/env @python3@
-import socket, os, subprocess, base64, time, signal, sys, json, shutil, stat, grp
+import socket
+import os
+import subprocess
+import base64
+import time
+import signal
+import sys
+import json
+import shutil
+import stat
+import grp
 
 LOG = os.environ.get("OP_CACHED_DEBUG", "") != ""
 
@@ -249,9 +259,9 @@ try:
                 encoded = base64.b64encode(value.rstrip(b"\n")).decode()
                 cache[key] = (encoded, now)
 
-            log(f"sending OK response")
+            log("sending OK response")
             conn.sendall(f"OK\t{encoded}\n".encode())
-            log(f"response sent")
+            log("response sent")
         finally:
             conn.close()
             log("connection closed")

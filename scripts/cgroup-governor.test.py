@@ -143,11 +143,8 @@ check("governor never tests -s on cgroup.procs (kernfs st_size is always 0)",
 check("STALL path max-scans in bash (no sort|head|cut pipeline)",
       any("sort -rn" in ln.split("#", 1)[0] for ln in gov_src.splitlines()),
       False)
-for name, src in (("governor", gov_src), ("monitor", mon_src)):
-    check(f"{name} never uses pgrep -f (matches itself and every editor)",
-          "pgrep -f" in src, False)
-    check(f"{name} never uses compgen (not compiled into nixpkgs bash)",
-          "compgen" in src, False)
+# (pgrep -f and compgen bans moved to scripts/lint-tripwires.py, which covers
+# every script and bin rather than just these two files.)
 
 # ---------------------------------------------------------------------------
 # 2. The pure-bash PSI parser -- both copies, governor and monitor, driven

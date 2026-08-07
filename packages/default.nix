@@ -14,9 +14,7 @@ let
   # nixpkgs' `rush` is GNU Rush, a restricted login shell. Overlaying that
   # name replaced an unrelated package globally, so ours is `rushjs`.
   attrName = n: if n == "rush" then "rushjs" else n;
-  discovered = lib.mapAttrs' (
-    n: _: lib.nameValuePair (attrName n) (./. + "/${n}/package.nix")
-  ) dirs;
+  discovered = lib.mapAttrs' (n: _: lib.nameValuePair (attrName n) (./. + "/${n}/package.nix")) dirs;
 in
 {
   # Attr names the flake's `packages` output should expose -- derived from

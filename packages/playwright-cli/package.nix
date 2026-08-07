@@ -149,7 +149,7 @@ buildNpmPackage (finalAttrs: {
   # npmDepsHash stayed valid, so the wrong build was silent. Deriving from
   # the lock means a stale lock now fetches the old tarball (consistent,
   # just not-updated) instead of mixing the two.
-  version = (lib.importJSON ./package-lock.json).version;
+  inherit (lib.importJSON ./package-lock.json) version;
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@playwright/cli/-/cli-${finalAttrs.version}.tgz";

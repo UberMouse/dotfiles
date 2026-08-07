@@ -30,7 +30,12 @@
 #      (default 0.15, i.e. 15% of one core).
 #      KX_BUILD_SEM_DIR -- semaphore directory (default $XDG_RUNTIME_DIR/kx-build-sem).
 import functools
-import sys, os, json, time, subprocess, signal
+import sys
+import os
+import json
+import time
+import subprocess
+import signal
 
 I3STATUS = "@i3status@"
 

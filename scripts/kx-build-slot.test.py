@@ -212,7 +212,7 @@ check("empty semaphore does not stall", el < 3, True)
 #    emit a line whose field positions match both this suite's writer and the
 #    client's positional read (`cut -d' ' -f8` for healthy). The FIELDS tuple
 #    in the controller is the contract; these assertions are its enforcement.
-import importlib.util
+import importlib.util  # noqa: E402  (deliberate: only this section needs it)
 
 spec = importlib.util.spec_from_file_location(
     "bsc", Path(__file__).resolve().parent / "build-semaphore-controller.py"

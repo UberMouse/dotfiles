@@ -21,8 +21,9 @@ This is also aliased as `hms` in the shell.
 ## Verify Before You Switch
 
 - `nix flake check` — builds the full system closure, runs the lints
-  (statix, deadnix, shellcheck on `scripts/`, py_compile, forbidden-pattern
-  and docs-liveness checks), and runs the fast semaphore suite in the sandbox.
+  (statix, deadnix, shellcheck on `scripts/`, ruff + py_compile,
+  forbidden-pattern and docs-liveness tripwires), fails on an unformatted
+  tree, and runs the deterministic test suites in the sandbox.
 - `nix build .#<name>` — builds one custom package in isolation (seconds);
   the way to verify a version/hash bump.
 - `scripts/run-tests.sh` — all five script test suites (~200 assertions, all
@@ -100,8 +101,10 @@ Heavy jobs (typechecks, jest shards, browser launches) wrap themselves in
 **holding slots itself** — it withholds from the top, clients scan from the
 bottom, and the two never contend. Every tool in this subsystem honours a
 `KX_POOL` env override for the pool cgroup path (tests point it at a synthetic
-tree); the default string is byte-identical at every site and the lint check
-trips if a copy drifts.
+tree); the sites spell the default differently (`$USERAT`, `$U`, f-strings),
+so the lint check enforces the invariant that actually matters — every
+path-construction site carries its `KX_POOL`/`KX_SEM_POOL` override within
+two lines.
 
 Traps when diagnosing it:
 

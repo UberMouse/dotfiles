@@ -1,0 +1,9 @@
+# Ruff config for scripts/ and scriptBins/bins/ (ran from the flake's lint
+# check). Default rules, minus two style codes that are house style here:
+# compact one-line guards (`if cond: return` / `a = 1; b = 2`) are used
+# deliberately in the op-cached pair and the daemon scripts.
+[lint]
+ignore = [
+  "E701", # multiple statements on one line (colon)
+  "E702", # multiple statements on one line (semicolon)
+]
