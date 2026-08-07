@@ -207,6 +207,7 @@
 # Tunables are env vars, all optional; defaults are in CFG below.
 
 import collections
+import dataclasses
 import errno
 import fcntl
 import os
@@ -260,9 +261,15 @@ def _float(name, default):
         return default
 
 
-CFG = dict(
+# The tunables, as a FROZEN DATACLASS rather than a dict: a typo'd key is an
+# eval-time AttributeError with a name in it, not a runtime KeyError inside
+# the control loop of a service that restarts every 10 s -- and the test
+# suite constructs Config() with only the overrides it cares about instead of
+# hand-maintaining a parallel dict that breaks on every new knob.
+@dataclasses.dataclass(frozen=True)
+class Config:
     # Total slot files created. The ceiling can never exceed this.
-    max_slots=_int("KX_SEM_MAX_SLOTS", 16),
+    max_slots: int = 16
     # Never admit more than this many heavy jobs at once, however calm the box
     # looks. Originally 12, to match the pool's CPUQuota=1200% -- but cores were
     # never the binding resource here. Sizing by the one that is:
@@ -277,34 +284,34 @@ CFG = dict(
     # ceiling. A cap the machine cannot reach without stalling is not a cap, it
     # is decoration. If the pool's memory.high moves materially (18G since
     # 2026-08-06), re-derive this.
-    ceil=_int("KX_SEM_CEIL", 8),
+    ceil: int = 8
     # Never admit fewer than this. 1, not 0 -- see FLOOR note above.
-    floor=_int("KX_SEM_FLOOR", 1),
+    floor: int = 1
     # The lowest capacity the PREDICTIVE (memory.high fraction) signal may reach
     # on its own. Only measured stalling (PSI) may go below this, down to floor.
     # See the tightening branch for why the two signals are not equivalent.
-    soft_floor=_int("KX_SEM_SOFT_FLOOR", 4),
+    soft_floor: int = 4
     # Control interval.
-    interval=_float("KX_SEM_INTERVAL", 5.0),
+    interval: float = 5.0
     # Tighten when the pool's SHORT-window memory stall exceeds this. The
     # measured p90 is 16.6% and median is 0.0%, so 15% fires on the bursts we
     # care about and stays silent through the calm 90%.
-    tighten_psi=_float("KX_SEM_TIGHTEN_PSI", 15.0),
+    tighten_psi: float = 15.0
     # Loosen only when the LONG window is this quiet. Well below tighten_psi so
     # the two thresholds cannot chatter against each other.
-    loosen_psi=_float("KX_SEM_LOOSEN_PSI", 3.0),
+    loosen_psi: float = 3.0
     # Predictive tighten: also tighten when the pool is this close to its
     # memory.high, before PSI has had time to register. Reclaim latency is the
     # symptom; approaching the ceiling is the cause, and it is visible earlier.
-    tighten_high_frac=_float("KX_SEM_TIGHTEN_HIGH_FRAC", 0.90),
+    tighten_high_frac: float = 0.90
     # Slots surrendered per tightening tick (multiplicative-ish decrease).
-    step_down=_int("KX_SEM_STEP_DOWN", 2),
+    step_down: int = 2
     # Slots regained per loosening tick (additive increase).
-    step_up=_int("KX_SEM_STEP_UP", 1),
+    step_up: int = 1
     # Minimum seconds between two increases. This is the anti-ring guard: it
     # must comfortably exceed how long an in-flight heft keeps its pages after
     # admission stops, or the loop re-opens into memory that has not drained.
-    dwell=_float("KX_SEM_DWELL", 60.0),
+    dwell: float = 60.0
     # How far the high-water mark may move in one step -- the GROWTH quantum.
     # One: concurrency climbs to a level it has never held one job at a time,
     # and each step has to pass the load test below.
@@ -314,7 +321,7 @@ CFG = dict(
     # bounds how fast the CEILING may rise, not how many slots stand free. Two
     # different quantities behind one name is how the cap below came to be
     # deleted by a commit that believed it was merely rewording it.
-    grow_step=_int("KX_SEM_GROW_STEP", 1),
+    grow_step: int = 1
     # THE FREE-SLOT CAP: how many slots may stand FREE at once, no matter how
     # much headroom the mark or the memory gate would otherwise allow. This is
     # the bound on STEP SIZE, and it is the one thing here that keeps a drain
@@ -326,51 +333,72 @@ CFG = dict(
     # several jobs finish within one tick) into a needless queue. 2 admits at
     # most two new heavy jobs before the loop gets to look at them, which at a
     # 5 s interval is a ramp psi10's ten-second window can still resolve.
-    burst=_int("KX_SEM_BURST", 2),
+    burst: int = 2
     # Minimum seconds between one GROWTH step and the next. Replacements are not
     # subject to this (see the high-water mark note in the header) -- only moves
     # to a concurrency level the box has not yet demonstrated. psi10 is a
     # TEN-SECOND average, so a level raised five seconds after the last one is
     # judged against a signal that cannot yet contain any evidence of it. 15 s
     # guarantees each step is fully visible before the next is considered.
-    grant_every=_float("KX_SEM_GRANT_EVERY", 15.0),
+    grant_every: float = 15.0
     # THE LOAD TEST, part one: how many jobs' worth of memory must remain free
     # before another slot is opened. TWO, not one, and the difference is the
     # whole point -- at one, the admitted job is allowed to consume the last of
     # the headroom, which is precisely how the pool reached 100% of memory.high
     # at six concurrent on 2026-08-04. Requiring slack beyond the incoming job
     # means admission stops one job EARLIER than the wall.
-    grant_headroom_jobs=_float("KX_SEM_GRANT_HEADROOM_JOBS", 2.0),
+    grant_headroom_jobs: float = 2.0
     # THE LOAD TEST, part two: nothing may be stalling. Memory headroom says
     # there is room; this says the box is not already struggling to use what it
     # has. Both must hold, because they fail independently -- a pool with 4 GB
     # free can still be thrashing on reclaim, and a quiet pool can still be one
     # allocation from the ceiling.
-    grant_psi=_float("KX_SEM_GRANT_PSI", 3.0),
+    grant_psi: float = 3.0
     # Assumed peak RSS of one gated job, for the memory gate. 1.5 GiB is the
     # middle of the measured heft typecheck range (0.6-2.3 GB); the largest
     # single observation was 2312 MB. Deliberately not the maximum: sizing the
     # gate to the worst case would hold admission shut through the pool states
     # the median job passes through comfortably.
-    job_bytes=_int("KX_SEM_JOB_BYTES", 1610612736),
+    job_bytes: int = 1610612736
     # Minimum seconds between two HOLD log lines. The gate engages on most ticks
     # of a busy period and logging each one would bury the decisions.
-    hold_log_every=_float("KX_SEM_HOLD_LOG_EVERY", 30.0),
-)
+    hold_log_every: float = 30.0
+    # THE RESIDENT CAP: how many slots resident-browser keepers may hold
+    # before NEW resident admissions are refused. Nothing else bounds
+    # residency -- each admitted browser raises the floor by one, so without
+    # a cap 16 browsers make every slot keeper-held, every build waits out
+    # its full timeout and then runs UNGATED: the gate disabled by the very
+    # tenants it exists to account for, on a box that looked healthy at each
+    # individual admission. The cap only gates NEW admissions (via the
+    # published health bit that resident jobs wait on); accounting for
+    # residents already past it stays honest, so the floor still reflects
+    # reality. None (the default) derives to what the build ceiling leaves
+    # over, so browsers can never squeeze builds below their full ceiling.
+    max_resident: int | None = None
 
-# THE RESIDENT CAP: how many slots resident-browser keepers may hold before NEW
-# resident admissions are refused. Nothing else bounds residency -- each
-# admitted browser raises the floor by one, so without a cap 16 browsers make
-# every slot keeper-held, every build waits out its full timeout and then runs
-# UNGATED: the gate disabled by the very tenants it exists to account for, on a
-# box that looked healthy at each individual admission. The cap only gates NEW
-# admissions (via the published health bit that resident jobs wait on);
-# accounting for residents already past it stays honest, so the floor still
-# reflects reality. Defaults to what the build ceiling leaves over, so browsers
-# can never squeeze builds below their full ceiling.
-CFG["max_resident"] = _int(
-    "KX_SEM_MAX_RESIDENT", max(1, CFG["max_slots"] - CFG["ceil"])
-)
+    def __post_init__(self):
+        if self.max_resident is None:
+            object.__setattr__(
+                self, "max_resident", max(1, self.max_slots - self.ceil)
+            )
+
+    @classmethod
+    def from_env(cls):
+        """Every field overridable via KX_SEM_<UPPER_NAME>; unset or garbage
+        falls back to the field default (garbage-tolerant on purpose: this is
+        a systemd service, and a typo'd Environment= line must degrade to
+        defaults, not crash-loop)."""
+        kwargs = {}
+        for f in dataclasses.fields(cls):
+            env = f"KX_SEM_{f.name.upper()}"
+            if env not in os.environ:
+                continue
+            conv = _float if f.type == "float" else _int
+            kwargs[f.name] = conv(env, f.default)
+        return cls(**kwargs)
+
+
+CFG = Config.from_env()
 
 
 def log(msg):
@@ -385,24 +413,33 @@ def log(msg):
     sys.stderr.flush()
 
 
-def read_psi(path, field="full", key="avg10"):
-    """Return a PSI percentage, or None when the file is absent/unreadable.
+def read_psi(path, field="full"):
+    """(avg10, avg60) PSI percentages, or (None, None) when unreadable.
 
     None means "no signal" and is treated as calm -- the pool cgroup simply may
     not exist yet (it materialises on the first heavy command), and a missing
     pool must not be read as a stalled one.
+
+    Both windows come from ONE pass over one read, for the same reason
+    read_pool_mem reads its pair together: the two decisions made from them
+    should see a single consistent sample (and the old shape parsed the whole
+    file twice per tick for no reason).
     """
+    avg10 = avg60 = None
     try:
         for line in (path / "memory.pressure").read_text().splitlines():
             parts = line.split()
             if parts and parts[0] == field:
                 for p in parts[1:]:
                     k, _, v = p.partition("=")
-                    if k == key:
-                        return float(v)
+                    if k == "avg10":
+                        avg10 = float(v)
+                    elif k == "avg60":
+                        avg60 = float(v)
+                break
     except (OSError, ValueError):
-        return None
-    return None
+        return (None, None)
+    return (avg10, avg60)
 
 
 def read_pool_mem(path):
@@ -646,35 +683,49 @@ class Semaphore:
         "target", "mark", "resident", "healthy",
     )
 
+    @staticmethod
+    def _fmt(v):
+        """One published field: None -> the '-' readers fail open on, bools ->
+        the 0/1 the shell gate compares against."""
+        if v is None:
+            return "-"
+        if v is True:
+            return "1"
+        if v is False:
+            return "0"
+        return str(v)
+
     def publish(
         self, allowed, effective, occupied=None, target=None, mark=None,
         resident=None, healthy=None,
     ):
-        # See FIELDS above for the format contract. Readers wanting BUILD
+        # See FIELDS above for the format contract; the line is BUILT from
+        # that tuple, so appending a field is one FIELDS entry + one value
+        # here, not a hand-count of f-string positions. Readers wanting BUILD
         # occupancy want occupied - resident.
+        #
+        # `healthy` is THE LOAD TEST'S VERDICT, published so that jobs which
+        # will become RESIDENT can wait for it. A build takes a slot and
+        # gives it back; a resident browser takes one and never does, so the
+        # floor rises to accommodate it -- which means admitting one opens
+        # the door for the next. Measured 2026-08-07: twelve browsers
+        # admitted in a row onto a pool at 15.5G of 16G with psi10=40%,
+        # because the progress-floor slot is free by construction and nothing
+        # marked it build-only. `allowed` had correctly fallen to 1 the whole
+        # time; residents were simply not answering to it.
+        #
+        # Publishing the verdict rather than a resident cap keeps one policy
+        # in one place: browsers queue on exactly the memory and PSI evidence
+        # that gates builds, and there is no second number to keep in step.
         try:
-            occ = "-" if occupied is None else str(occupied)
-            tgt = "-" if target is None else str(target)
-            mk = "-" if mark is None else str(mark)
-            res = "-" if resident is None else str(resident)
-            # THE LOAD TEST'S VERDICT, published so that jobs which will become
-            # RESIDENT can wait for it. A build takes a slot and gives it back;
-            # a resident browser takes one and never does, so the floor rises to
-            # accommodate it -- which means admitting one opens the door for the
-            # next. Measured 2026-08-07: twelve browsers admitted in a row onto a
-            # pool at 15.5G of 16G with psi10=40%, because the progress-floor
-            # slot is free by construction and nothing marked it build-only.
-            # `allowed` had correctly fallen to 1 the whole time; residents were
-            # simply not answering to it.
-            #
-            # Publishing the verdict rather than a resident cap keeps one policy
-            # in one place: browsers queue on exactly the memory and PSI evidence
-            # that gates builds, and there is no second number to keep in step.
-            hl = "-" if healthy is None else ("1" if healthy else "0")
+            values = dict(
+                allowed=allowed, effective=effective,
+                max_slots=self.max_slots, occupied=occupied, target=target,
+                mark=mark, resident=resident, healthy=healthy,
+            )
             tmp = self.dir / "allowed.tmp"
             tmp.write_text(
-                f"{allowed} {effective} {self.max_slots} {occ} {tgt} {mk} "
-                f"{res} {hl}\n"
+                " ".join(self._fmt(values[f]) for f in self.FIELDS) + "\n"
             )
             tmp.replace(self.dir / "allowed")
             self._publish_warned = False
@@ -725,16 +776,23 @@ Inputs = collections.namedtuple(
     "Inputs", "now psi10 psi60 pool_mem occupied resident"
 )
 
+# One capacity transition. `tag` is the branch that fired (TIGHTEN / LOOSEN /
+# RECLAIM) as its own FIELD -- it used to be the first token of a free-text
+# string, which meant every consumer (the log formatter, the test suite's
+# tags()) re-derived the type with .split()[0]. `detail` is the human half of
+# the line; `before`/`after` are the allowed-capacity span.
+Reason = collections.namedtuple("Reason", "tag detail before after")
+
 # The verdict. `state` is the successor State; `target` feeds reconcile();
 # `healthy` is the raw load-test verdict the policy itself acts on, while
 # `published_healthy` additionally folds in the resident cap and is what goes
-# into the state file. `reasons` is a list of (text, before, after) capacity
-# transitions -- a list, not a single variable, because a RECLAIM clamp and a
-# TIGHTEN can fire on the same tick and each deserves its own log line (the
-# old single `reason` let the later branch overwrite the earlier one, so the
-# reclaim never reached the log). `notes` are complete log lines (RESIDENT-CAP
-# edges) to emit verbatim; `hold` is a ready-made HOLD line or None, which the
-# caller rate-limits before logging.
+# into the state file. `reasons` is a list of Reason transitions -- a list,
+# not a single variable, because a RECLAIM clamp and a TIGHTEN can fire on
+# the same tick and each deserves its own log line (the old single `reason`
+# let the later branch overwrite the earlier one, so the reclaim never
+# reached the log). `notes` are complete log lines (RESIDENT-CAP edges) to
+# emit verbatim; `hold` is a ready-made HOLD line or None, which the caller
+# rate-limits before logging.
 Decision = collections.namedtuple(
     "Decision", "state target healthy published_healthy reasons notes hold"
 )
@@ -782,9 +840,9 @@ def decide(state, inputs, cfg):
     # bounds move but the LOAD TEST does not -- browser memory still has
     # to pass the same free-bytes and PSI checks as anything else, so
     # this widens the bookkeeping, never the machine's real budget.
-    floor_dyn = min(cfg["max_slots"], cfg["floor"] + resident)
-    soft_floor_dyn = min(cfg["max_slots"], cfg["soft_floor"] + resident)
-    ceil_dyn = min(cfg["max_slots"], cfg["ceil"] + resident)
+    floor_dyn = min(cfg.max_slots, cfg.floor + resident)
+    soft_floor_dyn = min(cfg.max_slots, cfg.soft_floor + resident)
+    ceil_dyn = min(cfg.max_slots, cfg.ceil + resident)
     # Growth must never be blocked by a ceiling that has slipped BELOW
     # the floor, which max_slots clamping can do once residents are many.
     ceil_dyn = max(ceil_dyn, floor_dyn)
@@ -797,8 +855,8 @@ def decide(state, inputs, cfg):
     # is a clamp, not a tighten: it can only ever reduce `allowed`.
     if allowed > ceil_dyn:
         reasons.append(
-            (f"RECLAIM resident={resident} ceiling {ceil_dyn}",
-             allowed, ceil_dyn)
+            Reason("RECLAIM", f"resident={resident} ceiling {ceil_dyn}",
+                   allowed, ceil_dyn)
         )
         allowed = ceil_dyn
 
@@ -817,12 +875,12 @@ def decide(state, inputs, cfg):
     # below always leaves a slot free when no build is running at all. A pool
     # held near its ceiling by the agents fleet delays the next build; it
     # can never stop builds happening.
-    need = cfg["grant_headroom_jobs"] * cfg["job_bytes"]
+    need = cfg.grant_headroom_jobs * cfg.job_bytes
     headroom = None if pool_mem is None else pool_mem[1] - pool_mem[0]
     # Unreadable memory is NO SIGNAL, not a refusal: a pool with
     # memory.high unset would otherwise serialise every build forever.
     mem_ok = headroom is None or headroom >= need
-    psi_ok = psi10 is None or psi10 <= cfg["grant_psi"]
+    psi_ok = psi10 is None or psi10 <= cfg.grant_psi
     healthy = mem_ok and psi_ok
 
     # The RESIDENT CAP folds into the PUBLISHED health bit only: that
@@ -830,11 +888,11 @@ def decide(state, inputs, cfg):
     # ignore it), so refusing it when residents are at cap gates
     # exactly the admissions the cap is about -- while `healthy` keeps
     # its own meaning for every decision this function makes about builds.
-    resident_full = resident >= cfg["max_resident"]
+    resident_full = resident >= cfg.max_resident
     if resident_full != was_resident_full:
         notes.append(
             f"RESIDENT-CAP {'engaged' if resident_full else 'released'} "
-            f"resident={resident} cap={cfg['max_resident']}"
+            f"resident={resident} cap={cfg.max_resident}"
         )
         was_resident_full = resident_full
 
@@ -857,7 +915,7 @@ def decide(state, inputs, cfg):
         healthy
         and occupied is not None
         and occupied >= mark
-        and (now - last_growth) >= cfg["grant_every"]
+        and (now - last_growth) >= cfg.grant_every
     )
 
     # How many jobs the CURRENT headroom can absorb, keeping one job's
@@ -872,7 +930,7 @@ def decide(state, inputs, cfg):
     absorbable = (
         None
         if headroom is None
-        else max(0, int(headroom // cfg["job_bytes"]) - 1)
+        else max(0, int(headroom // cfg.job_bytes) - 1)
     )
 
     # Is `allowed` ITSELF the binding constraint? That is the only
@@ -886,9 +944,9 @@ def decide(state, inputs, cfg):
     # alone.
     cap_saturated = occupied is None or occupied >= allowed
 
-    hot_psi = psi10 is not None and psi10 > cfg["tighten_psi"]
+    hot_psi = psi10 is not None and psi10 > cfg.tighten_psi
     hot_high = (
-        high_frac is not None and high_frac > cfg["tighten_high_frac"]
+        high_frac is not None and high_frac > cfg.tighten_high_frac
     )
 
     if hot_psi or hot_high:
@@ -925,7 +983,7 @@ def decide(state, inputs, cfg):
         # out of this function: the LOOSEN branch below, gated on the
         # long PSI window and on dwell.
         before = allowed
-        allowed = min(allowed, max(limit, allowed - cfg["step_down"]))
+        allowed = min(allowed, max(limit, allowed - cfg.step_down))
         bits = []
         if hot_psi:
             bits.append(f"psi10={psi10:.1f}%")
@@ -937,10 +995,10 @@ def decide(state, inputs, cfg):
         # after): the caller logs only real transitions, but a non-empty
         # `reasons` also records that a decision branch fired at all,
         # which is what suppresses a SETTLE line on the same tick.
-        reasons.append(("TIGHTEN " + " ".join(bits), before, allowed))
+        reasons.append(Reason("TIGHTEN", " ".join(bits), before, allowed))
     elif (
         psi60 is not None
-        and psi60 < cfg["loosen_psi"]
+        and psi60 < cfg.loosen_psi
         # Only grow capacity that is actually being USED. A quiet PSI on
         # an idle box is not evidence that a larger `allowed` is safe --
         # it is the absence of evidence, measured on a machine doing
@@ -952,12 +1010,12 @@ def decide(state, inputs, cfg):
         # not grow cwnd while the sender is idle.
         and cap_saturated
         and allowed < ceil_dyn
-        and (now - last_up) >= cfg["dwell"]
+        and (now - last_up) >= cfg.dwell
     ):
         before = allowed
-        allowed = min(ceil_dyn, allowed + cfg["step_up"])
+        allowed = min(ceil_dyn, allowed + cfg.step_up)
         last_up = now
-        reasons.append((f"LOOSEN psi60={psi60:.1f}%", before, allowed))
+        reasons.append(Reason("LOOSEN", f"psi60={psi60:.1f}%", before, allowed))
 
     # HOW MANY SLOTS TO OFFER, given the capacity just settled on. This was
     # a closure (admit_target) that mixed default-argument capture with
@@ -972,7 +1030,7 @@ def decide(state, inputs, cfg):
             # follows it down.
             target = min(allowed, occupied)
         else:
-            target = min(allowed, mark + (cfg["grow_step"] if grow else 0))
+            target = min(allowed, mark + (cfg.grow_step if grow else 0))
         # THE FREE-SLOT CAP, and the reason it is a separate term from
         # everything above it. Each clause so far answers "how high may
         # concurrency go" -- the cap, the mark, the load test. None of
@@ -987,7 +1045,7 @@ def decide(state, inputs, cfg):
         # state -- a finished job drops occupancy and the target with
         # it, so the free pool stays pinned at `burst` rather than
         # growing, and a waiting job still starts immediately.
-        target = min(target, occupied + cfg["burst"])
+        target = min(target, occupied + cfg.burst)
         if absorbable is not None:
             target = min(target, occupied + absorbable)
         # Never gate the machine to a standstill. With nothing running,
@@ -1040,7 +1098,7 @@ def decide(state, inputs, cfg):
 
 
 def main(sleep=time.sleep):
-    sem = Semaphore(SEM_DIR, CFG["max_slots"])
+    sem = Semaphore(SEM_DIR, CFG.max_slots)
     # START CONSERVATIVE AND EARN THE REST. Initialising to `ceil` asserts that
     # maximum concurrency is safe having measured precisely nothing -- the same
     # unearned credit the idle ratchet was accruing, just banked at startup
@@ -1056,9 +1114,9 @@ def main(sleep=time.sleep):
     # first interval with the residents' slots subtracted from build capacity.
     state = State(
         allowed=min(
-            CFG["max_slots"],
+            CFG.max_slots,
             sem.resident()
-            + max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"])),
+            + max(CFG.floor, min(CFG.soft_floor, CFG.ceil)),
         ),
         # THE HIGH-WATER MARK: the highest concurrency this box has held while
         # the load test was passing. Admissions up to it are replacements and
@@ -1079,14 +1137,14 @@ def main(sleep=time.sleep):
     # TIGHTEN/LOOSEN line in this file can be interpreted without having to know
     # which build of the script produced it.
     log(
-        f"START dir={SEM_DIR} pool={POOL} max={CFG['max_slots']} "
-        f"ceil={CFG['ceil']} floor={CFG['floor']} soft_floor={CFG['soft_floor']} "
-        f"tighten>{CFG['tighten_psi']}% high>{CFG['tighten_high_frac'] * 100:.0f}% "
-        f"loosen<{CFG['loosen_psi']}% step-{CFG['step_down']}/+{CFG['step_up']} "
-        f"dwell={CFG['dwell']}s interval={CFG['interval']}s "
-        f"grow+{CFG['grow_step']} every>={CFG['grant_every']}s free<={CFG['burst']} "
-        f"needs {CFG['grant_headroom_jobs']}x{CFG['job_bytes'] / 2**30:.1f}G free "
-        f"and psi10<={CFG['grant_psi']}% max_resident={CFG['max_resident']} "
+        f"START dir={SEM_DIR} pool={POOL} max={CFG.max_slots} "
+        f"ceil={CFG.ceil} floor={CFG.floor} soft_floor={CFG.soft_floor} "
+        f"tighten>{CFG.tighten_psi}% high>{CFG.tighten_high_frac * 100:.0f}% "
+        f"loosen<{CFG.loosen_psi}% step-{CFG.step_down}/+{CFG.step_up} "
+        f"dwell={CFG.dwell}s interval={CFG.interval}s "
+        f"grow+{CFG.grow_step} every>={CFG.grant_every}s free<={CFG.burst} "
+        f"needs {CFG.grant_headroom_jobs}x{CFG.job_bytes / 2**30:.1f}G free "
+        f"and psi10<={CFG.grant_psi}% max_resident={CFG.max_resident} "
         f"start={state.allowed}"
     )
 
@@ -1094,8 +1152,7 @@ def main(sleep=time.sleep):
     last_hold_log = 0.0
     try:
         while not stop["now"]:
-            psi10 = read_psi(POOL, "full", "avg10")
-            psi60 = read_psi(POOL, "full", "avg60")
+            psi10, psi60 = read_psi(POOL, "full")
             pool_mem = read_pool_mem(POOL)
             occupied = sem.occupancy()
             resident = sem.resident()
@@ -1124,16 +1181,16 @@ def main(sleep=time.sleep):
             # Every decision that MOVED `allowed` gets its own line with its
             # own before/after: a RECLAIM clamp and a TIGHTEN can fire on the
             # same tick, and each transition is worth a line of its own.
-            moved = [(text, b, a) for (text, b, a) in d.reasons if a != b]
+            moved = [r for r in d.reasons if r.after != r.before]
             if moved:
-                for text, b, a in moved:
+                for r in moved:
                     log(
-                        f"{text} allowed {b} -> {a} "
+                        f"{r.tag} {r.detail} allowed {r.before} -> {r.after} "
                         f"(occupied {occupied} mark {state.mark} "
                         f"target {d.target} effective {effective})"
                     )
             elif d.hold is not None and (
-                (now - last_hold_log) >= CFG["hold_log_every"]
+                (now - last_hold_log) >= CFG.hold_log_every
             ):
                 # decide() already vetted this as a withheld-on-load line; the
                 # throttle here only keeps a long busy period from logging one
@@ -1153,10 +1210,10 @@ def main(sleep=time.sleep):
                 log(f"SETTLE allowed={state.allowed} effective={effective}")
             prev_effective = effective
 
-            sleep(CFG["interval"])
+            sleep(CFG.interval)
     finally:
         sem.release_all()
-        sem.publish(CFG["max_slots"], CFG["max_slots"])
+        sem.publish(CFG.max_slots, CFG.max_slots)
         log("STOP released all slots (capacity restored to maximum)")
 
 

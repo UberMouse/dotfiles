@@ -33,16 +33,12 @@ spec.loader.exec_module(bsc)
 
 GIB = 2**30
 
-# Production-shaped config, passed EXPLICITLY -- decide() never reads the
-# module's CFG, which is the property that keeps these tests deterministic
-# whatever env vars the machine happens to export.
-CFG = dict(
-    max_slots=16, ceil=8, floor=1, soft_floor=4, interval=5.0,
-    tighten_psi=15.0, loosen_psi=3.0, tighten_high_frac=0.90,
-    step_down=2, step_up=1, dwell=60.0, grow_step=1, burst=2,
-    grant_every=15.0, grant_headroom_jobs=2.0, grant_psi=3.0,
-    job_bytes=int(1.5 * GIB), hold_log_every=30.0, max_resident=8,
-)
+# A default Config, passed EXPLICITLY -- decide() never reads the module's
+# CFG, which is the property that keeps these tests deterministic whatever
+# env vars the machine happens to export. Config() takes the field defaults
+# (max_resident derives to max_slots - ceil = 8), so a production default
+# change is deliberately visible here as test churn.
+CFG = bsc.Config(job_bytes=int(1.5 * GIB))
 
 
 def st(allowed=4, mark=0, last_up=0.0, last_growth=0.0,
@@ -62,7 +58,11 @@ def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
 
 
 def tags(d):
-    return [text.split()[0] for text, _b, _a in d.reasons]
+    return [r.tag for r in d.reasons]
+
+
+def span(r):
+    return (r.before, r.after)
 
 
 # --- Tightening ------------------------------------------------------------
@@ -82,7 +82,7 @@ d = bsc.decide(st(allowed=8), inp(cur=15.0, occupied=8), CFG)  # 93.75% of high
 check("predictive tighten steps down", d.state.allowed, 6)
 d = bsc.decide(st(allowed=5), inp(cur=15.0, occupied=5), CFG)
 check("predictive stops at the soft floor", d.state.allowed, 4)
-check("predictive reason says so", "[predictive" in d.reasons[0][0], True)
+check("predictive reason says so", "[predictive" in d.reasons[0].detail, True)
 
 # THE TIGHTEN-NEVER-RAISES min(): once PSI has driven allowed below the soft
 # floor, a predictive-only tick must NOT lift it back up -- that would be a
@@ -91,7 +91,7 @@ check("predictive reason says so", "[predictive" in d.reasons[0][0], True)
 d = bsc.decide(st(allowed=1), inp(cur=15.0, occupied=1), CFG)
 check("tighten never raises", d.state.allowed, 1)
 check("no-op tighten still records its branch", len(d.reasons), 1)
-check("no-op tighten span is flat", d.reasons[0][1:], (1, 1))
+check("no-op tighten span is flat", span(d.reasons[0]), (1, 1))
 
 # --- Loosening -------------------------------------------------------------
 
@@ -245,7 +245,7 @@ check("floor guard stands down once a build runs", d.target, 1)
 d = bsc.decide(st(allowed=10, mark=0), inp(occupied=0, resident=0), CFG)
 check("reclaim clamps to the bare ceiling", d.state.allowed, 8)
 check("reclaim reason tagged", tags(d), ["RECLAIM"])
-check("reclaim span", d.reasons[0][1:], (10, 8))
+check("reclaim span", span(d.reasons[0]), (10, 8))
 
 # THE ACCUMULATION FIX: a RECLAIM clamp and a TIGHTEN on the same tick each
 # keep their own (before, after) transition. The old single `reason` variable
@@ -253,8 +253,8 @@ check("reclaim span", d.reasons[0][1:], (10, 8))
 d = bsc.decide(st(allowed=12, mark=8), inp(psi10=50.0, occupied=8,
                                            resident=0), CFG)
 check("reclaim survives a same-tick tighten", tags(d), ["RECLAIM", "TIGHTEN"])
-check("reclaim keeps its own span", d.reasons[0][1:], (12, 8))
-check("tighten keeps its own span", d.reasons[1][1:], (8, 6))
+check("reclaim keeps its own span", span(d.reasons[0]), (12, 8))
+check("tighten keeps its own span", span(d.reasons[1]), (8, 6))
 check("net allowed composes both", d.state.allowed, 6)
 
 # --- The resident cap ------------------------------------------------------
