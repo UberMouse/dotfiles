@@ -27,7 +27,7 @@
 #      measured 07-28) and ~2.9 GB of that is 16 idle `claude bg-spare` standby
 #      heaps -- pre-warmed workers holding pages nothing is reading. claude-code
 #      exposes no knob to cap the spare count (checked: no CLAUDE_*SPARE* symbol
-#      in the 2.1.220 binary), and home.nix records that a 4G MemoryHigh on
+#      in the 2.1.220 binary), and cgroups.nix records that a 4G MemoryHigh on
 #      worktrees-agents.slice was tried 07-21..07-24 and REVERTED -- it pinned
 #      the whole slice at its ceiling and made the ACTIVE fleet crawl.
 #      memory.high is the wrong tool because it penalises every allocation
@@ -156,7 +156,7 @@ POOL="$USERAT/worktrees.slice"
 # 2026-07-28 right after a nixos-rebuild switch: subtree_control empty, leaf with
 # 46 procs and no memory.current at all, slice still reporting 4.9 G). Targeting
 # the leaf would have made this whole duty a silent no-op after every rebuild.
-# The slice's files are guaranteed by MemoryAccounting=true in home.nix.
+# The slice's files are guaranteed by MemoryAccounting=true in cgroups.nix.
 FLEET="$POOL/worktrees-agents.slice"
 DESKTOP=""
 

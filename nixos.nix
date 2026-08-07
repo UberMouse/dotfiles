@@ -1,5 +1,11 @@
 { pkgs, self, ... }:
 
+let
+  user = "taylorl";
+  # Desktop/pool memory partition — the numbers and their invariant live in
+  # one file shared with cgroups.nix (the pool side).
+  memory = import ./memory-policy.nix;
+in
 {
   # Bootloader.
   boot.loader.grub.enable = true;
@@ -115,7 +121,7 @@
   security.pam.services.sudo.rssh = true;
 
   # Define a user account. Don't forget to set a password with ‘passwd’.
-  users.users.taylorl = {
+  users.users.${user} = {
     isNormalUser = true;
     description = "Taylor Lodge";
     extraGroups = [
@@ -137,13 +143,13 @@
     _1password.enable = true;
     _1password-gui = {
       enable = true;
-      polkitPolicyOwners = [ "taylorl" ];
+      polkitPolicyOwners = [ user ];
     };
   };
 
   # Enable automatic login for the user.
   services.displayManager.autoLogin.enable = true;
-  services.displayManager.autoLogin.user = "taylorl";
+  services.displayManager.autoLogin.user = user;
 
   services.tailscale.enable = true;
   services.kolide-launcher.enable = true;
@@ -210,7 +216,7 @@
     # that target to ~2 GiB, so reclaim happens in kswapd's background thread
     # BEFORE an allocating task has to do it inline. Preferred over lowering the
     # pool's MemoryHigh because that knob seesaws between whole-machine freeze
-    # (20G) and perpetual reclaim-throttle crawl (12G) -- see home.nix -- whereas
+    # (20G) and perpetual reclaim-throttle crawl (12G) -- see cgroups.nix -- whereas
     # a bigger free buffer costs nothing at idle and no build throughput.
     "vm.watermark_boost_factor" = 0;
     "vm.watermark_scale_factor" = 300;
@@ -265,7 +271,7 @@
       '';
       mode = "0755";
     };
-    "sudo-keys/taylorl" = {
+    "sudo-keys/${user}" = {
       text = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA1L9W0vC2KwMVNQpxMo+iS0xg8W/8XVVS2x6RZHIJwT";
       mode = "0644";
     };
@@ -309,11 +315,11 @@
   # target. Tune further from the next (harder) desktop event.
   systemd.slices.user.sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = "8G";
+    MemoryMin = memory.desktopMin;
   };
   systemd.slices."user-".sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = "8G";
+    MemoryMin = memory.desktopMin;
   };
 
   # The graphical session lives in a TRANSIENT session-<N>.scope (system-owned,
@@ -339,13 +345,13 @@
         u=$(loginctl show-session "$s" -p Name --value 2>/dev/null)
         t=$(loginctl show-session "$s" -p Type --value 2>/dev/null)
         uid=$(loginctl show-session "$s" -p User --value 2>/dev/null)
-        [ "$u" = "taylorl" ] || continue
+        [ "$u" = "${user}" ] || continue
         case "$t" in x11|wayland) ;; *) continue ;; esac
         # MemoryMin: desktop RAM is never reclaimed (whole ancestor chain).
         # 8G (was 6G): keeps the full ~6.6G desktop working set under the
         # untouchable band so global reclaim from a 15G pool can't brush it.
-        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=8G 2>/dev/null || true
-        systemctl set-property --runtime "session-$s.scope" MemoryMin=8G 2>/dev/null || true
+        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=${memory.desktopMin} 2>/dev/null || true
+        systemctl set-property --runtime "session-$s.scope" MemoryMin=${memory.desktopMin} 2>/dev/null || true
         # io.latency: Xorg's disk I/O jumps the queue -- when the session's I/O
         # latency exceeds 50ms the kernel throttles the competing build pool, so a
         # parallel-build storm (mq-deadline shares one queue) can't stall the

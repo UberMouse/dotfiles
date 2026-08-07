@@ -47,7 +47,7 @@ fi
 # memory cap. Exemption is not priority: measured 2026-07-31, this TUI stalled on
 # cpu.pressure full avg10 6% with memory and io pressure both flat 0.00, because
 # a bare tmux-spawn scope gives cpu.weight=100 -- par with the twelve-core pool.
-# See the slice definition in home.nix for the full reasoning.
+# See the slice definition in cgroups.nix for the full reasoning.
 #
 # --scope (not --service) is required: it runs the command in the CALLER's
 # context, inheriting the terminal, so the TUI keeps its tty. A --service would

@@ -113,9 +113,9 @@ run_investigation() {
 
   # MACHINE FACTS ARE READ LIVE, never hand-copied into the prose. A previous
   # version of this prompt hardcoded "MemoryHigh 16G / MemoryMax 18G" and
-  # "memory.min=6G"; both numbers were retuned in home.nix/nixos.nix and every
+  # "memory.min=6G"; both numbers were retuned in cgroups.nix/nixos.nix and every
   # diagnosis from then on reasoned about a machine that no longer existed --
-  # the exact staleness failure home.nix's 07-28..07-31 note documents for the
+  # the exact staleness failure cgroups.nix's 07-28..07-31 note documents for the
   # governor's dead window. Forks are fine here: this is the (rare, cooled-down)
   # investigate path, not the detection loop the fork budget protects.
   local ncpu mem_gib pool_high pool_max desk_min cpu_cores
