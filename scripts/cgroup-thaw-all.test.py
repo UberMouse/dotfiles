@@ -55,7 +55,29 @@ check("frozen transient leaf thawed",
       (frozen_transient / "cgroup.freeze").read_text().strip(), "0")
 check("fleet deliberately NOT thawed",
       (frozen_fleet / "cgroup.freeze").read_text().strip(), "1")
-check("summary line counts", "2 thawed of 3" in r.stdout, True)
+check("summary line counts", "2 thawed, 0 FAILED, of 3" in r.stdout, True)
+
+# The failure path: a cgroup.freeze the script cannot write must be REPORTED
+# and must fail the run (this is ExecStopPost -- the thaw of last resort; a
+# silent failure here is a permanently hung build). Simulated with a
+# read-only file, which makes bash's redirection fail the same way a
+# delegation loss would.
+POOL2 = Path(tempfile.mkdtemp(prefix="thaw-test-fail."))
+stuck = POOL2 / "worktrees-gamma.slice/mj-gamma.scope"
+stuck.mkdir(parents=True)
+(stuck / "cgroup.freeze").write_text("1\n")
+(stuck / "cgroup.freeze").chmod(0o444)
+r2 = subprocess.run(
+    [BASH, str(SCRIPT)],
+    env={"KX_POOL": str(POOL2), "PATH": "/run/current-system/sw/bin:/usr/bin:/bin"},
+    capture_output=True,
+    text=True,
+)
+check("failed thaw exits non-zero", r2.returncode, 1)
+check("failed thaw is named on stderr", "FAILED to thaw mj-gamma" in r2.stderr, True)
+check("failed thaw counted in summary", "0 thawed, 1 FAILED, of 1" in r2.stdout, True)
+(stuck / "cgroup.freeze").chmod(0o644)
+shutil.rmtree(POOL2, ignore_errors=True)
 
 if fails:
     print("\nFAILURES:", fails)

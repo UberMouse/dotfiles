@@ -207,6 +207,7 @@
 # Tunables are env vars, all optional; defaults are in CFG below.
 
 import collections
+import errno
 import fcntl
 import os
 import signal
@@ -475,6 +476,11 @@ class Semaphore:
         self.dir = directory
         self.max_slots = max_slots
         self.held = {}  # index -> open file object
+        # Warn-once sets for the two paths that must never fail silently
+        # (reconcile's unlockable-slot case and publish's unwritable state
+        # file): membership means "already reported, still broken".
+        self._reconcile_warned = set()
+        self._publish_warned = False
         self.dir.mkdir(parents=True, exist_ok=True)
         for i in range(max_slots):
             self.dir.joinpath(f"slot.{i:02d}").touch(exist_ok=True)
@@ -601,14 +607,29 @@ class Semaphore:
                 fh = open(self._path(i), "w")
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.held[i] = fh
-            except OSError:
-                # Slot busy: a job holds it. Try again next tick. `fh` is None
-                # when open() itself failed, so there is nothing to close.
+            except OSError as e:
+                # EWOULDBLOCK/EAGAIN is the EXPECTED case: a job holds the
+                # slot, try again next tick. Anything else (EACCES, EMFILE,
+                # ENOSPC from open()) means the controller can NEVER withhold
+                # this slot -- the semaphore has silently degraded toward "no
+                # throttling" while the state file keeps publishing whatever
+                # `effective` happens to reach. That must not be silent; the
+                # log is rate-limited by the warned-set so a persistent
+                # condition says so once per slot, not once per tick.
+                if e.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                    if i not in self._reconcile_warned:
+                        self._reconcile_warned.add(i)
+                        log(f"RECONCILE|slot {i} unlockable ({e}) - cannot withhold it")
+                else:
+                    self._reconcile_warned.discard(i)
+                # `fh` is None when open() itself failed: nothing to close.
                 if fh is not None:
                     try:
                         fh.close()
                     except OSError:
                         pass
+            else:
+                self._reconcile_warned.discard(i)
 
         return self.max_slots - len(self.held)
 
@@ -656,8 +677,16 @@ class Semaphore:
                 f"{res} {hl}\n"
             )
             tmp.replace(self.dir / "allowed")
-        except OSError:
-            pass
+            self._publish_warned = False
+        except OSError as e:
+            # The `allowed` file IS the external contract: every client fails
+            # OPEN on a missing/unreadable one. A controller that can no
+            # longer publish keeps throttling internally while every job
+            # behaves as if the semaphore does not exist -- silently, forever.
+            # Warn once per outage rather than once per tick.
+            if not self._publish_warned:
+                self._publish_warned = True
+                log(f"PUBLISH|FAILED to write state file ({e}) - clients now fail open")
 
     def release_all(self):
         for i in list(self.held):

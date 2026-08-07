@@ -82,18 +82,38 @@ timeout_s="${KX_BUILD_SLOT_TIMEOUT:-600}"
 resident_probe=""
 resident_mode=""
 
+# need_value: a flag passed as the LAST argument must be a hard error, not a
+# hang. `shift 2` with only one argument left is refused by bash, `$#` never
+# decreases, and the parse loop spins forever -- `kx-build-slot --timeout`
+# used to hang silently before doing any work.
+need_value() {
+  if [ "$#" -lt 2 ]; then
+    echo "kx-build-slot: $1 needs a value" >&2
+    exit 2
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --label) label="${2:-}"; shift 2 ;;
+    --label) need_value "$@"; label="$2"; shift 2 ;;
     --label=*) label="${1#--label=}"; shift ;;
-    --timeout) timeout_s="${2:-}"; shift 2 ;;
+    --timeout) need_value "$@"; timeout_s="$2"; shift 2 ;;
     --timeout=*) timeout_s="${1#--timeout=}"; shift ;;
-    --resident-probe) resident_probe="${2:-}"; shift 2 ;;
+    --resident-probe) need_value "$@"; resident_probe="$2"; shift 2 ;;
     --resident-probe=*) resident_probe="${1#--resident-probe=}"; shift ;;
     --resident) resident_mode=1; shift ;;
     --) shift; break ;;
     -h|--help)
-      awk '/^# kx-build-slot /{f=1} f{if(!/^#/)exit; sub(/^# ?/,""); print}' "$0"
+      # Pure bash on purpose: --help has to work under the most restricted
+      # PATH of any caller (the same design rule probe_pids documents), and
+      # this was the script's only awk dependency.
+      while IFS= read -r hline; do
+        case "$hline" in
+          '# '*) printf '%s\n' "${hline#'# '}" ;;
+          '#'*) printf '%s\n' "${hline#'#'}" ;;
+          *) break ;;
+        esac
+      done < "$0"
       exit 0 ;;
     *) break ;;
   esac
@@ -103,6 +123,17 @@ if [ "$#" -eq 0 ]; then
   echo "kx-build-slot: no command given (use -- COMMAND ARGS)" >&2
   exit 2
 fi
+
+# Validate BEFORE any waiting starts. `[ "$waited" -ge "$timeout_s" ]` with a
+# non-numeric operand exits 2, which reads as FALSE in an `if` -- so a garbage
+# timeout would not error, it would disable fail-open 3 and wait forever. The
+# script's own header says a build that never runs is a broken machine; a
+# typo'd flag must not be able to produce one.
+case "$timeout_s" in
+  '' | *[!0-9]*)
+    echo "kx-build-slot: --timeout wants whole seconds, got '${timeout_s}'" >&2
+    exit 2 ;;
+esac
 
 SEM_DIR="${KX_BUILD_SEM_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/kx-build-sem}"
 LOG_DIR="$HOME/.local/state/cgroup-pressure"
@@ -270,7 +301,10 @@ start_keeper() {
         if kill -0 "$p" 2>/dev/null; then alive=1; break; fi
       done
       [ "$alive" = 1 ] || break
-      sleep 5
+      # Injectable so the test suite can poll at 0.2s instead of padding
+      # every keeper-death assertion with multi-second sleeps. Production
+      # never sets it.
+      sleep "${KX_KEEPER_POLL:-5}"
     done
     rm -f "$marker" 2>/dev/null || true
     # Falling off the end closes the fd, which releases the slot. Nothing else

@@ -375,7 +375,7 @@ WORKER_MIN_MB="${CGGOV_WORKER_MIN_MB:-128}"
 # Called ONLY when state != NORMAL, so there is no scan cost or cgroup churn
 # while the machine is healthy.
 sweep_transient() {
-  local sl child target p c cl rss_mb moved=0 base parts
+  local sl child target p c cl rss_mb moved=0 failed=0 base parts
   shopt -s nullglob
   for sl in "$POOL"/worktrees-*.slice; do
     target="$sl/transient"
@@ -417,12 +417,20 @@ sweep_transient() {
           grep -qw memory "$sl/cgroup.subtree_control" 2>/dev/null || \
             printf '+memory' > "$sl/cgroup.subtree_control" 2>/dev/null || true
         fi
-        printf '%s\n' "$p" > "$target/cgroup.procs" 2>/dev/null && moved=$((moved + 1))
+        if printf '%s\n' "$p" > "$target/cgroup.procs" 2>/dev/null; then
+          moved=$((moved + 1))
+        else
+          failed=$((failed + 1))
+        fi
       done < "$child/cgroup.procs"
     done
   done
   shopt -u nullglob
+  # An all-failures sweep must not be silent: with moved=0 it would log nothing
+  # at all, which is indistinguishable from "no worker matched the regex" -- and
+  # duty B/C then freeze nothing useful with no visible reason.
   [ "$moved" -gt 0 ] && log "SWEEP|migrated ${moved} heavy worker(s) into transient cgroup(s)"
+  [ "$failed" -gt 0 ] && log "SWEEP|FAILED to migrate ${failed} worker(s) (no delegation on the slice?)"
   return 0
 }
 
@@ -520,6 +528,11 @@ freeze_scope() {
     frozen_since["$sc"]=$EPOCHSECONDS
     read -r m < "$sc/memory.current" 2>/dev/null || m=0
     log "FREEZE|$(pretty "$name") mem=$(( ${m:-0} / 1048576 ))M ($why)"
+  else
+    # Never fail silently: a freeze that did not land looks EXACTLY like "cap
+    # not exceeded" in the log, which is the dead-actuator shape (duties B/C
+    # were invisible no-ops for three days in July on the strength of it).
+    log "FREEZE|FAILED $(pretty "$name") - write to cgroup.freeze refused ($why)"
   fi
 }
 
@@ -529,13 +542,22 @@ thaw_scope() {
     unset 'frozen_since[$sc]' 2>/dev/null || true
     return 0
   fi
-  # Thaw even if the dir vanished from our map -- writing 0 to a gone cgroup is
-  # a harmless no-op, and never thawing is the only failure mode that matters.
-  if [ -e "$sc/cgroup.freeze" ]; then
-    printf '0' > "$sc/cgroup.freeze" 2>/dev/null && \
-      log "THAW|$(pretty "${sc##*/}")${why:+ ($why)}"
+  # A vanished cgroup needs no thaw -- drop it from the map and move on.
+  if [ ! -e "$sc/cgroup.freeze" ]; then
+    unset 'frozen_since[$sc]' 2>/dev/null || true
+    return 0
   fi
-  unset 'frozen_since[$sc]' 2>/dev/null || true
+  # Never fail silently, and never FORGET a failure: the old code dropped the
+  # frozen_since entry unconditionally, so a refused write (delegation lost,
+  # EACCES) left the scope frozen with nothing left to retry it -- the deadline
+  # enforcer iterates frozen_since. Keep the entry on failure so the next tick
+  # tries again, and say so in the log.
+  if printf '0' > "$sc/cgroup.freeze" 2>/dev/null; then
+    log "THAW|$(pretty "${sc##*/}")${why:+ ($why)}"
+    unset 'frozen_since[$sc]' 2>/dev/null || true
+  else
+    log "THAW|FAILED $(pretty "${sc##*/}") - scope stays frozen, retrying next tick${why:+ ($why)}"
+  fi
 }
 
 # Thaw everything we hold, plus (belt and braces) every mj-* scope in the pool --

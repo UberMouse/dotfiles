@@ -31,7 +31,7 @@ while [ "$DIR" != "/" ]; do
   DIR="$(dirname "$DIR")"
 done
 
-if [ -z "$RUSH_ROOT" ]; then
+if [ -z "${RUSH_ROOT:-}" ]; then
   echo "Error: Could not find rush.json in any parent directory"
   exit 1
 fi

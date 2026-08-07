@@ -152,7 +152,7 @@ in
         pkgs.tmux
         pkgs.coreutils
       ];
-      bashOptions = [ ];
+      bashOptions = [ "nounset" ];
     })
     (sh {
       name = "scratch-terminal";
@@ -205,10 +205,11 @@ in
     # failing on a busy slot, which is the normal path, not an error.
     (sh {
       name = "kx-build-slot";
+      # No gawk: --help extraction is pure bash now, in line with the script's
+      # own depend-on-nothing rule (probe_pids' grep story).
       runtimeInputs = [
         pkgs.util-linux
         pkgs.coreutils
-        pkgs.gawk
       ];
       bashOptions = [ "nounset" ];
     })

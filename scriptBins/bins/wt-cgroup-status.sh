@@ -24,6 +24,15 @@
 U=$(id -u)
 POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
 SAMPLE="${WT_CG_SAMPLE:-1}"
+# Whole positive seconds only. The usage line says "secs" and `sleep` would
+# happily take 0.5 -- but the CPU%/delta arithmetic below divides by $SAMPLE
+# in bash integer math, where 0.5 is a syntax error and 0 is a division by
+# zero. Reject both up front instead of crashing mid-report.
+case "$SAMPLE" in
+  '' | *[!0-9]* | 0)
+    echo "wt-cgroup-status: WT_CG_SAMPLE wants whole seconds >= 1, got '${SAMPLE}'" >&2
+    exit 2 ;;
+esac
 
 # Both have a fallback because getconf lives in glibc.bin, which is on PATH by
 # inheritance rather than by being a declared runtime input.
