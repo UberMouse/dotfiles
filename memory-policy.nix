@@ -20,13 +20,19 @@ let
   desktopMinG = 8;
   poolHighG = 18;
   poolMaxG = 20;
+  # The margin is not decorative: the 2026-07-17..21 measurements showed a
+  # ceiling that leaves <~2G under MemTotal never fires (run-out wins the
+  # race), so a bare `<` assertion would admit exactly the configuration the
+  # evidence condemned. 3G is what the current 18G ceiling holds on this box
+  # (run-out ~21.2G); shrink it only with new memory.events data.
+  marginG = 3;
   # MemTotal as the box actually reports it (29.19 GiB → floor to be safe).
   # If the VM's RAM allocation changes, update this and re-check the margin.
   memTotalG = 29;
 in
 assert
-  poolHighG + desktopMinG < memTotalG
-  || throw "memory-policy: pool MemoryHigh + desktop MemoryMin must leave margin under MemTotal";
+  poolHighG + desktopMinG + marginG <= memTotalG
+  || throw "memory-policy: pool MemoryHigh + desktop MemoryMin + margin must fit under MemTotal";
 assert
   poolMaxG > poolHighG
   || throw "memory-policy: MemoryMax must exceed MemoryHigh or there is no throttle band";

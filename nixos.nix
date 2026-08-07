@@ -5,14 +5,14 @@ let
   # Desktop/pool memory partition — the numbers and their invariant live in
   # one file shared with cgroups.nix (the pool side).
   memory = import ./memory-policy.nix;
+  # Hardware facts (boot disk, core count) — declared once in host-facts.nix.
+  facts = import ./host-facts.nix;
 in
 {
-  # Bootloader.
-  boot.loader.grub.enable = true;
-  boot.loader.grub.device = "/dev/sda";
-  boot.loader.grub.useOSProber = true;
+  # Bootloader identity (device, hostname) lives in work-vm.nix with the rest
+  # of the hardware config -- this module stays host-generic, as the flake
+  # promises.
 
-  networking.hostName = "ubermouse";
   networking.extraHosts = ''
     127.0.0.1 my.dev.kx.gd
     127.0.0.1 wp.dev.kx.gd
@@ -88,7 +88,7 @@ in
   };
 
   # Setup Staff VPN
-  services.openvpn.servers.staffVPN.config = "config /root/nixos/openvpn/staff.conf ";
+  services.openvpn.servers.staffVPN.config = "config /root/nixos/openvpn/staff.conf";
 
   # Enable CUPS to print documents.
   services.printing.enable = true;
@@ -134,7 +134,12 @@ in
   };
 
   fonts.packages = with pkgs; [
-    nerd-fonts.meslo-lg
+    # The p10k-patched Meslo, family name "MesloLGS NF" -- the name alacritty,
+    # dunst and p10k.zsh all reference. NOT nerd-fonts.meslo-lg, which installs
+    # different family names ("MesloLG* Nerd Font") nothing here uses; having
+    # both installed (system + home) risked silent glyph drift between two
+    # derivations of the "same" font.
+    meslo-lgs-nf
   ];
 
   programs = {
@@ -171,8 +176,14 @@ in
 
   # Backstop: earlyoom. Free-memory based (no PSI), so it can only fire once
   # memory AND swap are both nearly gone. With nohang doing the early work this
-  # is now a pure last resort (e.g. if nohang itself ever dies). avoid/prefer
-  # mirror nohang (earlyoom matches process name / comm only, 15 chars).
+  # is now a pure last resort (e.g. if nohang itself ever dies).
+  #
+  # avoid/prefer is a PARTIAL mirror of nohang.conf, and cannot be a full one:
+  # earlyoom matches comm only (15 chars), while nohang matches full cmdlines --
+  # so nohang's build-tool prefer list (heft/eslint/vitest/esbuild/tsc) is
+  # unmirrorable here (they are all comm `node`), and its cmdline-matched
+  # protections collapse to the comm names below. When editing victim rules,
+  # edit BOTH this list and nohang.conf's @BADNESS_ADJ sections together.
   services.earlyoom = {
     enable = true;
     freeMemThreshold = 3;
@@ -180,7 +191,7 @@ in
     enableNotifications = true;
     extraArgs = [
       "--avoid"
-      "^(vivaldi-bin|slack|\\.claude-wrapped|zsh|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
+      "^(vivaldi-bin|slack|\\.claude-wrapped|zsh|bash|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
       "--prefer"
       "^(jest-worker|headless_shell|chrome)$"
     ];
@@ -193,7 +204,7 @@ in
   zramSwap = {
     enable = true;
     algorithm = "zstd";
-    memoryPercent = 50; # zram capacity = 50% of RAM (~13.5 GiB uncompressed)
+    memoryPercent = 50; # zram capacity = half of RAM, uncompressed
     priority = 100; # used before the disk swap fallback
   };
 
@@ -265,9 +276,11 @@ in
 
   environment.etc = {
     "1password/custom_allowed_browsers" = {
+      # Only browsers actually installed by this flake: every name here is a
+      # binary 1Password will trust, so a stale entry is standing attack
+      # surface (any process named it could talk to the agent).
       text = ''
         vivaldi-bin
-        wavebox
       '';
       mode = "0755";
     };
@@ -302,9 +315,10 @@ in
   # user-<uid>.slice. The pool (worktrees.slice) keeps memory.min=0, so it claims
   # none of the guarantee and stays the reclaim target; the session scope claims
   # it (below). Pairs with earlyoom (avoids Xorg/i3, prefers build workers) as the
-  # last resort.
+  # last resort. The floor value itself lives in memory-policy.nix; the history
+  # below explains the 2026-07-17 6G->8G raise.
   #
-  # 8G (raised from 6G): the first desktop-gated pressure event (2026-07-17 14:31)
+  # Raised from 6G: the first desktop-gated pressure event (2026-07-17 14:31)
   # showed the pool bloating to 15G/16G-high let global reclaim brush the desktop's
   # pages ABOVE its 6G floor -- desktop mem PSI touched 15.87% (mild; no disk swap,
   # desktop stayed at 6.6G). The desktop resident set is ~6.6G, so a 6G floor left
@@ -348,8 +362,9 @@ in
         [ "$u" = "${user}" ] || continue
         case "$t" in x11|wayland) ;; *) continue ;; esac
         # MemoryMin: desktop RAM is never reclaimed (whole ancestor chain).
-        # 8G (was 6G): keeps the full ~6.6G desktop working set under the
-        # untouchable band so global reclaim from a 15G pool can't brush it.
+        # The policy floor (memory-policy.nix; 6G->8G 2026-07-17) keeps the
+        # whole desktop working set under the untouchable band so global
+        # reclaim from a bloated pool can't brush it.
         [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=${memory.desktopMin} 2>/dev/null || true
         systemctl set-property --runtime "session-$s.scope" MemoryMin=${memory.desktopMin} 2>/dev/null || true
         # io.latency: Xorg's disk I/O jumps the queue -- when the session's I/O
@@ -357,9 +372,12 @@ in
         # parallel-build storm (mq-deadline shares one queue) can't stall the
         # desktop. systemd 260 has NO runtime IOLatencyTargetSec property
         # ("Unknown assignment"), so write the cgroup file directly (we are root;
-        # the io controller is enabled on the session scope). 8:0=sda, 50000us=50ms.
+        # the io controller is enabled on the session scope). The major:minor is
+        # read from sysfs at runtime -- it used to be a hand-copied "8:0" that a
+        # second host on NVMe would have silently no-opped. 50000us=50ms.
+        rootdev="$(cat /sys/class/block/${facts.rootDiskName}/dev 2>/dev/null)" || rootdev=""
         scope="/sys/fs/cgroup/user.slice/user-$uid.slice/session-$s.scope"
-        [ -w "$scope/io.latency" ] && echo "8:0 target=50000" > "$scope/io.latency" 2>/dev/null || true
+        [ -n "$rootdev" ] && [ -w "$scope/io.latency" ] && echo "$rootdev target=50000" > "$scope/io.latency" 2>/dev/null || true
       done
     '';
   };

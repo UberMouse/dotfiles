@@ -12,6 +12,22 @@
 }:
 let
   memory = import ./memory-policy.nix;
+  # Hardware facts (root disk, core count): one declaration site, see the
+  # file's header for why these must never be restated inline.
+  facts = import ./host-facts.nix;
+
+  # Append-forever logs in the forensic state dir get size-capped at service
+  # start (Restart=always means this runs on every reboot/deploy): 10 MiB,
+  # then one rotated generation, which the tmpfiles age rule below eventually
+  # reaps. Rotation-at-start is deliberately crude -- these grow ~10 MB/month,
+  # and the state dir's whole value is being readable during an incident,
+  # which a multi-year log defeats.
+  rotateLog =
+    name:
+    "${pkgs.bash}/bin/bash -c '"
+    + "f=%h/.local/state/cgroup-pressure/${name}; "
+    + "[ -f \"$f\" ] && [ \"$(${pkgs.coreutils}/bin/stat -c%%s \"$f\")\" -gt 10485760 ] "
+    + "&& ${pkgs.coreutils}/bin/mv -f \"$f\" \"$f.1\" || true'";
 in
 {
   # Claude Code worktree build-daemon resource pool (monorepo-jobs).
@@ -28,20 +44,21 @@ in
   #     worktree gets it all; several busy split it evenly; idle ones cost
   #     nothing), and a worktree's daemon + ad-hoc runs share its single share.
   #
-  # Machine-specific policy for this 16-core / 27 GiB host. To re-budget, change
-  # ONLY the two numbers below. The committed hook hardcodes no numbers of its
-  # own and no-ops entirely if this slice is absent.
+  # Machine-specific policy (core count from host-facts.nix, memory numbers
+  # from memory-policy.nix). To re-budget, change those files. The committed
+  # hook hardcodes no numbers of its own and no-ops entirely if this slice is
+  # absent.
   systemd.user.slices.worktrees = {
     Unit = {
       Description = "Claude Code worktree build-daemon resource pool (monorepo-jobs)";
       Documentation = "file:.claude/hooks/worktree-setup.sh";
     };
     Slice = {
-      # Hard CPU ceiling on the whole subtree: 12 of 16 cores. Leaves 4 cores
-      # for the OS, editor, and browser no matter how many worktrees are
-      # building at once.
+      # Hard CPU ceiling on the whole subtree: all but 4 cores, derived from
+      # host-facts.nix. Leaves the OS, editor, and browser their cores no
+      # matter how many worktrees are building at once.
       CPUAccounting = true;
-      CPUQuota = "1200%";
+      CPUQuota = "${toString ((facts.cpuCores - 4) * 100)}%";
 
       # Soft memory throttle. This 27 GiB host is memory-OVERSUBSCRIBED when a
       # browser + N parallel worktree builds run (fleet working set ~14 GiB), so
@@ -120,10 +137,11 @@ in
       # live that this throttles BUFFERED writes too (ext4 cgroup-writeback),
       # which is what builds do -- unlike io.weight. 200 MB/s leaves virtual-disk
       # queue headroom; io.latency=50ms on the graphical session scope (nixos.nix)
-      # gives Xorg's I/O priority on top. sda is SSD-backed on the host (the VM
-      # misreports rotational=1). Tune from cgroup-pressure-monitor snapshots.
+      # gives Xorg's I/O priority on top. The root disk (host-facts.nix) is
+      # SSD-backed on the host (the VM misreports rotational=1). Tune from
+      # cgroup-pressure-monitor snapshots.
       IOAccounting = true;
-      IOWriteBandwidthMax = "/dev/sda 200M";
+      IOWriteBandwidthMax = "${facts.rootDisk} 200M";
     };
   };
 
@@ -248,10 +266,17 @@ in
         # travel separately.
         "CGLIB=${./scripts/cgroup-lib.sh}"
       ];
+      ExecStartPre = rotateLog "events.log";
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";
       Restart = "always";
       RestartSec = 10;
       Nice = 10;
+      # Self-bound: a leak in a watchdog service would compete with the very
+      # desktop it protects, and Restart=always only covers exits. 2G, not
+      # 256M like its two siblings, because CGPM_INVESTIGATE spawns a whole
+      # `claude -p` diagnosis under this unit.
+      MemoryAccounting = true;
+      MemoryHigh = "2G";
     };
   };
 
@@ -316,9 +341,9 @@ in
   # about a system that does not exist any more. Re-measure before acting on it.
   #
   # Set CGGOV_DRYRUN=1 to log every decision while touching nothing.
-  # Log lines are tagged CGGOV:
-  #   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN)' \
-  #     ~/.local/state/cgroup-pressure/governor.log
+  # Log lines are tagged CGGOV| -- the verb roster lives in the script's own
+  # header (this comment used to restate it, drifted, and was missing LAG,
+  # the one the script calls "the one to watch first").
   systemd.user.services.cgroup-governor = {
     Unit.Description = "cgroup v2 memory governor (proactive reclaim + build concurrency cap + stall brake)";
     Install.WantedBy = [ "default.target" ];
@@ -341,6 +366,7 @@ in
         # at startup and log MEMTOTAL-DRIFT loudly if the VM's RAM moved.
         "KX_POLICY_MEMTOTAL_G=${toString memory.memTotalG}"
       ];
+      ExecStartPre = rotateLog "governor.log";
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-governor.sh}";
       # The governor guarantees thaw three ways internally (per-freeze deadline,
       # EXIT trap, startup sweep) but none survive SIGKILL. ExecStopPost is the
@@ -354,6 +380,10 @@ in
       # write files). 0 is as good as it gets: this user's RLIMIT_NICE is 0, so a
       # NEGATIVE nice is refused outright and would fail the unit at startup.
       Nice = 0;
+      # Self-bound (see the monitor's note); the governor is a bash loop that
+      # should never hold more than a few MB.
+      MemoryAccounting = true;
+      MemoryHigh = "256M";
     };
   };
 
@@ -386,9 +416,9 @@ in
   # ~10% of the time when independent worktrees burst together. Defaults are
   # tuned to that shape and all overridable by env; see the script header.
   #
-  # Log lines are tagged BUILDSEM:
-  #   grep -E 'BUILDSEM\|(START|STOP|TIGHTEN|LOOSEN|SETTLE|ACQUIRED|TIMEOUT)' \
-  #     ~/.local/state/cgroup-pressure/build-semaphore.log
+  # Log lines are tagged BUILDSEM| -- the verb roster lives in the
+  # controller's own header/Reason enum (a restated list here would drift,
+  # exactly as the CGGOV one above did).
   systemd.user.services.build-semaphore-controller = {
     Unit.Description = "Build admission semaphore controller (pressure-adaptive slot count)";
     Install.WantedBy = [ "default.target" ];
@@ -407,12 +437,16 @@ in
       Environment = [
         "KX_SEM_CEIL=${toString ((memory.poolHighG - 3) * 2 / 3)}"
       ];
+      ExecStartPre = rotateLog "build-semaphore.log";
       ExecStart = "${pkgs.python313}/bin/python3 ${./scripts/build-semaphore-controller.py}";
       Restart = "always";
       RestartSec = 10;
       # Same reasoning as the governor: it has to keep making decisions during
       # the pressure it exists to relieve.
       Nice = 0;
+      # Self-bound (see the monitor's note); a long-lived Python loop.
+      MemoryAccounting = true;
+      MemoryHigh = "256M";
       # No ExecStopPost cleanup is needed, and that is a property of the design
       # rather than an omission: the controller restricts capacity by HOLDING
       # flocks, and the kernel drops every flock when the process dies. However
@@ -421,4 +455,12 @@ in
       # throttled", which is the correct direction for a build system to fail in.
     };
   };
+
+  # Reap aged forensic state: snapshots/analyses accumulate forever otherwise
+  # (129 snapshots in the monitor's first 11 days), and the rotated .1 log
+  # generations from rotateLog above need an eventual grave. 'e' cleans by
+  # mtime age, so the live append-target logs (fresh mtime) are never touched.
+  systemd.user.tmpfiles.rules = [
+    "e %h/.local/state/cgroup-pressure - - - 30d"
+  ];
 }

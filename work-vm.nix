@@ -1,6 +1,15 @@
 { lib, ... }:
 
 {
+  # Host identity + bootloader target live here with the rest of the hardware
+  # config (moved from nixos.nix 2026-08-07): a second host differs in exactly
+  # these values, and the bootloader config was previously split across two
+  # files (device/useOSProber generic-side, enableCryptodisk below).
+  networking.hostName = "ubermouse";
+  boot.loader.grub.enable = true;
+  boot.loader.grub.device = (import ./host-facts.nix).rootDisk;
+  boot.loader.grub.useOSProber = true;
+
   virtualisation.vmware.guest.enable = true;
   boot.initrd.availableKernelModules = [
     "ata_piix"
