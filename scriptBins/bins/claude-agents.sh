@@ -21,7 +21,9 @@
 # via runtimeInputs) to its store path rather than passing a bare name.
 claude="$(command -v claude)"
 
-if [ "$(systemctl --user show worktrees.slice -p LoadState --value 2>/dev/null)" = "loaded" ] \
+# kx-pool-loaded: the shared unit-loaded guard (never a -d on the cgroup
+# dir, which vanishes while the pool is idle -- see that bin's header).
+if kx-pool-loaded \
    && command -v claude-agents-reattach >/dev/null 2>&1; then
   # Detached: wait (bounded, ~60s) for the cc-daemon to come up -- whether this
   # UI spawns it or attaches to one already running -- then pull it into the

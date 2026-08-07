@@ -34,7 +34,7 @@
 
 uid="$(id -u)"
 
-if [ "$(systemctl --user show worktrees.slice -p LoadState --value 2>/dev/null)" != "loaded" ]; then
+if ! kx-pool-loaded; then
   echo "worktrees.slice is not loaded on this host; nothing to reattach into." >&2
   exit 0
 fi

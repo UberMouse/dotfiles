@@ -1,4 +1,9 @@
 #!/usr/bin/env @python3@
+# NOTE: the log()/runtime_dir/sock_path/pid_path block below is kept in sync
+# BY HAND with op-cached-daemon.py. The nix `py` wrapper produces single
+# self-contained files, so there is no import path between them -- if either
+# side's paths or wire format change, change both (the wire format itself is
+# additionally pinned by the READ2 line here and its parser in the daemon).
 import socket
 import os
 import sys
@@ -79,8 +84,13 @@ def start_daemon():
     if LOG:
         errlog = open(os.path.join(runtime_dir, "op-cached-daemon.log"), "a")
         log(f"daemon stderr -> {errlog.name}")
+    # Absolute store path substituted at build, NOT a bare PATH lookup. The
+    # daemon's own 22-line WRAPPER_OP comment records what a coin-flip PATH
+    # resolution did to `op`; spawning the daemon itself by bare name was the
+    # same gamble one level up (and pinned whichever generation of the daemon
+    # the ambient PATH happened to hold, across rebuilds).
     subprocess.Popen(
-        ["op-cached-daemon"],
+        ["@opCachedDaemon@"],
         env=env,
         start_new_session=True,
         stdin=subprocess.DEVNULL,

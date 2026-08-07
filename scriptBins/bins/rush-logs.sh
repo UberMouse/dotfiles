@@ -36,7 +36,10 @@ if [ -z "${RUSH_ROOT:-}" ]; then
   exit 1
 fi
 
-# Find the project folder from rush.json (strip JSONC comments and \r)
+# Find the project folder from rush.json (strip JSONC comments and \r).
+# KNOWN LIMIT: the perl strip is textual, so a literal "//" inside a JSON
+# string value would be mangled. jq alone can't parse JSONC, and rush.json's
+# strings are package names/paths in practice, so this is accepted.
 PROJECT_FOLDER=$(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$RUSH_ROOT/rush.json" | jq -r --arg pkg "$PACKAGE" '.projects[] | select(.packageName == $pkg) | .projectFolder')
 
 if [ -z "$PROJECT_FOLDER" ]; then

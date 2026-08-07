@@ -1,4 +1,6 @@
 #!/usr/bin/env @python3@
+# NOTE: the log()/runtime_dir/sock_path/pid_path block below is kept in sync
+# BY HAND with op-cached.py -- see the matching note there.
 import socket
 import os
 import subprocess

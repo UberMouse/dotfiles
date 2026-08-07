@@ -1,5 +1,7 @@
+# shellcheck shell=bash
 # cgroup-lib -- the helpers cgroup-governor.sh and cgroup-pressure-monitor.sh
-# used to carry as byte-identical copies. SOURCED, never executed.
+# used to carry as byte-identical copies. SOURCED, never executed (hence no
+# shebang; the directive above tells shellcheck the dialect).
 #
 # The consumers are systemd units whose ExecStart interpolates a SINGLE FILE
 # into the store (`${pkgs.bash}/bin/bash ${./scripts/x.sh}`), so `dirname

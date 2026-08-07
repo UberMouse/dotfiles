@@ -60,6 +60,7 @@ fetch() {
   # Refresh $CACHE from the endpoint. 0 on success, 1 on failure.
   if [ ! -f "$CREDS" ]; then
     echo "claude-usage: no credentials file at $CREDS" >&2
+    echo "  (a keyring-backed claude login stores no file there; this tool only supports file-based credentials)" >&2
     return 1
   fi
   local token ver ua tmp http
@@ -69,7 +70,13 @@ fetch() {
     return 1
   fi
   ver=$(claude --version 2>/dev/null | grep -oE -m1 '[0-9]+\.[0-9]+\.[0-9]+')
-  [ -z "$ver" ] && ver="latest"
+  if [ -z "$ver" ]; then
+    # A wrong UA is exactly the punitive-rate-limit trap the header warns
+    # about, so falling back must not be silent: say so, every time, or the
+    # first symptom is unexplained persistent 429s.
+    echo "claude-usage: could not parse 'claude --version'; sending UA claude-code/latest (risks the punitive rate-limit bucket)" >&2
+    ver="latest"
+  fi
   ua="claude-code/$ver"
   mkdir -p "$(dirname "$CACHE")"
   tmp="$CACHE.tmp.$$"

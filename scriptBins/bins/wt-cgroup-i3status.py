@@ -29,6 +29,9 @@
 # Env: WT_BAR_ACTIVE_CORES=<cores> -- below this the ⚙ block reads "idle"
 #      (default 0.15, i.e. 15% of one core).
 #      KX_BUILD_SEM_DIR -- semaphore directory (default $XDG_RUNTIME_DIR/kx-build-sem).
+#
+# SIBLING FILE: wt-cgroup-status.sh reads the same cgroup fields in bash for
+# the interactive report. A cgroup-v2 layout change needs both.
 import functools
 import sys
 import os
