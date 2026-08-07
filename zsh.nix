@@ -35,7 +35,9 @@
       fbuildT = "rush fast-build -T .";
       fbuildt = "rush fast-build -t .";
       fbuildo = "rush fast-build -o";
-      gcc = "gnome-control-center network";
+      # NOT `gcc`: that alias shadowed the real gcc compiler installed in
+      # home.packages, so `gcc` in a shell opened GNOME settings instead.
+      netcfg = "gnome-control-center network";
       tail-rimu-logs = "tail -f ~/.config/Koordinates/logs/*.log";
       get-latest-rimu-log = "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
@@ -50,8 +52,10 @@
     };
 
     oh-my-zsh = {
+      # No `custom` dir: the prompt comes entirely from powerlevel10k below.
+      # The old zsh-customizations/ theme dir was pre-p10k residue, deleted
+      # 2026-08-07 (it also hardcoded the checkout path, $HOME/dotfiles).
       enable = true;
-      custom = "$HOME/dotfiles/zsh-customizations";
       plugins = [
         "git"
         "command-not-found"

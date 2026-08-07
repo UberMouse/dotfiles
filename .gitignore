@@ -1,6 +1,11 @@
 local*
 keyring.deb
 .nvimlog
+# nix build output symlinks. `nix build .#<pkg>` (the documented bump check)
+# drops these at the repo root; committed once by accident (073080c) where it
+# invalidated the lint check's cache on every package build.
+result
+result-*
 # `python3 -m py_compile scripts/*.py` (the syntax check before a rebuild) drops
 # these next to the source; nix would otherwise see them as untracked noise.
 __pycache__/
