@@ -282,8 +282,13 @@ class Config:
     # ~1.5G per heft, and the measurement agreed: the box reached 100% of
     # memory.high and psi10=48% at SEVEN concurrent, four short of the nominal
     # ceiling. A cap the machine cannot reach without stalling is not a cap, it
-    # is decoration. If the pool's memory.high moves materially (18G since
-    # 2026-08-06), re-derive this.
+    # is decoration.
+    #
+    # IN PRODUCTION THIS IS DERIVED, NOT THIS DEFAULT: cgroups.nix computes
+    # KX_SEM_CEIL from memory-policy.nix's poolHighG with the formula above,
+    # so a pool re-size moves the ceiling automatically (the hand-set 8 was
+    # still sized for 16G two days after the pool moved to 18G). This default
+    # only covers runs outside the systemd unit.
     ceil: int = 8
     # Never admit fewer than this. 1, not 0 -- see FLOOR note above.
     floor: int = 1

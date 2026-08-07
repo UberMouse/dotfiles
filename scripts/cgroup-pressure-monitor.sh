@@ -51,12 +51,15 @@ INV_COOLDOWN="${CGPM_INVESTIGATE_COOLDOWN:-1800}"
 mkdir -p "$OUTDIR" || { echo "cgroup-pressure-monitor: cannot create output dir '$OUTDIR'" >&2; exit 1; }
 LOG="$OUTDIR/events.log"
 
-U=$(id -u)
-UNAME=$(id -un)
-POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
-USERAT="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service"
-USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
-DESKTOP=""     # graphical session scope; resolved lazily, cached, re-resolved if it vanishes
+# Shared helpers (PSI parser, desktop resolution, cgroup paths incl. the
+# KX_POOL override). CGLIB is set by the systemd unit (single-file store
+# paths have no siblings); the BASH_SOURCE fallback serves local runs and
+# the test suites' sourcing seam.
+# shellcheck disable=SC1090  # path is env-supplied (CGLIB) in production
+. "${CGLIB:-$(dirname "${BASH_SOURCE[0]}")/cgroup-lib.sh}" || {
+  echo "cgroup-pressure-monitor: cannot source cgroup-lib.sh" >&2; exit 1;
+}
+kx_cgroup_paths
 last_snap=0
 last_investigate=0
 
@@ -66,36 +69,8 @@ last_investigate=0
 # CGPM_THRESH must be an integer percent.
 THRESH_CENTI=$(( THRESH * 100 ))
 
-# Reads "full ... avg10=NN.NN ..." from a PSI file into two globals:
-#   PSI_TEXT  -- the value exactly as the kernel printed it, for event lines
-#   PSI_CENTI -- the same number in integer hundredths, for comparisons
-# Ported verbatim from cgroup-governor.sh, whose FORK BUDGET header carries the
-# full argument: sets globals rather than echoing because `x=$(fn)` forks a
-# subshell even for a builtin, and this runs twice per tick on the detection
-# path. The old `full_avg10` here was one awk fork per call, forever.
-PSI_TEXT=0
-PSI_CENTI=0
-psi_full_avg10() {
-  local line tok i f
-  PSI_TEXT=0; PSI_CENTI=0
-  while read -r line; do
-    case "$line" in full\ *) ;; *) continue ;; esac
-    for tok in $line; do
-      case "$tok" in
-        avg10=*)
-          PSI_TEXT="${tok#avg10=}"
-          i="${PSI_TEXT%%.*}"; [ -n "$i" ] || i=0
-          f="${PSI_TEXT#*.}"; [ "$f" = "$PSI_TEXT" ] && f=00
-          f="${f}00"; f="${f:0:2}"
-          # 10# forces base 10: PSI prints "08" and "09", which are invalid octal.
-          PSI_CENTI=$(( 10#$i * 100 + 10#$f ))
-          return 0
-          ;;
-      esac
-    done
-  done < "$1" 2>/dev/null
-  return 0
-}
+# psi_full_avg10 comes from cgroup-lib.sh (sourced above), which carries the
+# FORK BUDGET argument for why it sets globals instead of echoing.
 human() {
   # cgroup memory files can hold the literal "max"; pass non-numbers through.
   case "${1:-}" in
@@ -104,39 +79,9 @@ human() {
   esac
 }
 
-# Resolve the DESKTOP graphical session scope (x11/wayland) for this user. The
-# desktop lives OUTSIDE the pool; its OWN PSI is the "is the user stalling"
-# signal. Cached in $DESKTOP; re-resolves if the cached scope disappears (the
-# session can change across logout/login).
-#
-# Called every tick, but the cached fast path on the first line is two builtin
-# tests -- fork-free -- so it costs the per-tick budget nothing. The forking
-# loginctl/awk walk below runs only while the cache is cold (startup,
-# logout/login), which is why it keeps its plain style.
-resolve_desktop() {
-  [ -n "$DESKTOP" ] && [ -r "$DESKTOP/io.pressure" ] && return 0
-  DESKTOP=""
-  local sid ty sc
-  if command -v loginctl >/dev/null 2>&1; then
-    while read -r sid; do
-      [ -n "$sid" ] || continue
-      ty=$(loginctl show-session "$sid" -p Type --value 2>/dev/null)
-      case "$ty" in x11|wayland) ;; *) continue ;; esac
-      sc="$USERSLICE/session-$sid.scope"
-      [ -r "$sc/io.pressure" ] && { DESKTOP="$sc"; return 0; }
-    done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$UNAME" '$3==u{print $1}')
-  fi
-  # Fallback (no loginctl): the session-*.scope with the most PIDs is the
-  # graphical one (browser + tabs dwarf a headless login shell).
-  local d n best="" bestn=0
-  for d in "$USERSLICE"/session-*.scope; do
-    [ -r "$d/cgroup.procs" ] || continue
-    n=$(wc -l < "$d/cgroup.procs" 2>/dev/null); n=${n:-0}
-    if [ "$n" -gt "$bestn" ] 2>/dev/null; then bestn=$n; best="$d"; fi
-  done
-  [ -n "$best" ] && { DESKTOP="$best"; return 0; }
-  return 1
-}
+# resolve_desktop comes from cgroup-lib.sh; the monitor probes io.pressure
+# (the file it reads for the desktop's stall signal), the governor
+# memory.pressure.
 
 # Spawn a headless, tool-less claude to diagnose the just-captured snapshot.
 # Detached + nice'd + timeout'd + best-effort: any failure only costs the
@@ -308,7 +253,7 @@ echo "$(date -Iseconds)  cgroup-pressure-monitor started (DESKTOP-scoped, thresh
 # COOLDOWN-limited and by the time they run, detection has already fired.
 while :; do
   now=$EPOCHSECONDS
-  if resolve_desktop; then
+  if resolve_desktop io.pressure; then
     psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"
     psi_full_avg10 "$DESKTOP/io.pressure";     di="$PSI_TEXT"; di_c="$PSI_CENTI"
     if [ "$dm_c" -ge "$THRESH_CENTI" ] || [ "$di_c" -ge "$THRESH_CENTI" ]; then

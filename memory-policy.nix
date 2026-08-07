@@ -34,4 +34,15 @@ assert
   desktopMin = "${toString desktopMinG}G";
   poolHigh = "${toString poolHighG}G";
   poolMax = "${toString poolMaxG}G";
+  # Raw integers, for consumers that DERIVE from the policy instead of
+  # restating it: cgroups.nix computes the semaphore's KX_SEM_CEIL from
+  # poolHighG, and hands memTotalG to the governor to cross-check against
+  # the machine's real /proc/meminfo at startup (the one number here that
+  # is a hand-copied machine fact, so it gets a runtime verifier).
+  inherit
+    desktopMinG
+    poolHighG
+    poolMaxG
+    memTotalG
+    ;
 }

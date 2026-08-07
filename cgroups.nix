@@ -243,6 +243,10 @@ in
         "CGPM_CLAUDE=${unstable-pkgs.claude-code}/bin/claude"
         "CGPM_MODEL=opus"
         "CGPM_INVESTIGATE_COOLDOWN=1800"
+        # Shared shell helpers. ExecStart interpolates the script as a single
+        # store file, so `dirname $0` has no siblings -- the lib's path must
+        # travel separately.
+        "CGLIB=${./scripts/cgroup-lib.sh}"
       ];
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";
       Restart = "always";
@@ -330,6 +334,12 @@ in
             pkgs.findutils
           ]
         }"
+        # Shared shell helpers (see the monitor's CGLIB note).
+        "CGLIB=${./scripts/cgroup-lib.sh}"
+        # The one hand-copied machine fact in memory-policy.nix, handed over
+        # so the governor can cross-check it against the real /proc/meminfo
+        # at startup and log MEMTOTAL-DRIFT loudly if the VM's RAM moved.
+        "KX_POLICY_MEMTOTAL_G=${toString memory.memTotalG}"
       ];
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-governor.sh}";
       # The governor guarantees thaw three ways internally (per-freeze deadline,
@@ -383,6 +393,20 @@ in
     Unit.Description = "Build admission semaphore controller (pressure-adaptive slot count)";
     Install.WantedBy = [ "default.target" ];
     Service = {
+      # THE CEILING FOLLOWS THE POLICY. The controller's in-file default was
+      # sized by hand against a 16G pool and silently stayed 8 when the pool
+      # moved to 18G -- the exact hand-copied-machine-fact rot CLAUDE.md
+      # bans. Derive it here from the single source of truth instead:
+      #
+      #   ceil = (poolHigh - untracked tenants) / job_bytes
+      #        = (poolHighG - 3G of slot-less fleet/MCP) / 1.5G per heft
+      #
+      # (the *2/3 below IS /1.5 in integer arithmetic). The 3G and 1.5G are
+      # the controller's own sizing constants (see its ceil/job_bytes
+      # comments); if either is re-measured, update this derivation with it.
+      Environment = [
+        "KX_SEM_CEIL=${toString ((memory.poolHighG - 3) * 2 / 3)}"
+      ];
       ExecStart = "${pkgs.python313}/bin/python3 ${./scripts/build-semaphore-controller.py}";
       Restart = "always";
       RestartSec = 10;

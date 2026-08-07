@@ -156,13 +156,15 @@ LAG_WARN="${CGGOV_LAG_WARN:-$(( INTERVAL * 3 ))}"
 mkdir -p "$OUTDIR" || { echo "cgroup-governor: cannot create output dir '$OUTDIR'" >&2; exit 1; }
 LOG="$OUTDIR/governor.log"
 
-U=$(id -u)
-UNAME=$(id -un)
-USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
-USERAT="$USERSLICE/user@$U.service"
-# KX_POOL overrides for tests (same convention repo-wide); default identical
-# at every site — the flake lint check trips if a copy drifts.
-POOL="${KX_POOL:-$USERAT/worktrees.slice}"
+# Shared helpers (PSI parser, desktop resolution, cgroup paths incl. the
+# KX_POOL override). CGLIB is set by the systemd unit (single-file store
+# paths have no siblings); the BASH_SOURCE fallback serves local runs and
+# the test suites' sourcing seam.
+# shellcheck disable=SC1090  # path is env-supplied (CGLIB) in production
+. "${CGLIB:-$(dirname "${BASH_SOURCE[0]}")/cgroup-lib.sh}" || {
+  echo "cgroup-governor: cannot source cgroup-lib.sh" >&2; exit 1;
+}
+kx_cgroup_paths
 # Reclaim target is the agents SLICE, deliberately -- not the `fleet` LEAF the
 # processes actually sit in. memory.reclaim on a parent reclaims across its whole
 # subtree, so the slice covers the fleet either way, and only the slice is
@@ -174,7 +176,6 @@ POOL="${KX_POOL:-$USERAT/worktrees.slice}"
 # the leaf would have made this whole duty a silent no-op after every rebuild.
 # The slice's files are guaranteed by MemoryAccounting=true in cgroups.nix.
 FLEET="$POOL/worktrees-agents.slice"
-DESKTOP=""
 
 declare -A frozen_since=()   # scope path -> epoch seconds it was frozen
 last_reclaim=0
@@ -237,60 +238,9 @@ log() {
 # cgroup dir names escape '-' as '\x2d'; undo that for readable log lines.
 pretty() { printf '%s' "${1//\\x2d/-}"; }
 
-# Reads "full ... avg10=NN.NN ..." from a PSI file into two globals:
-#   PSI_TEXT  -- the value exactly as the kernel printed it, for log lines
-#   PSI_CENTI -- the same number in integer hundredths, for comparisons
-# Sets globals rather than echoing precisely because `x=$(fn)` forks; this is
-# called two or three times per tick on the detection path.
-PSI_TEXT=0
-PSI_CENTI=0
-psi_full_avg10() {
-  local line tok i f
-  PSI_TEXT=0; PSI_CENTI=0
-  while read -r line; do
-    case "$line" in full\ *) ;; *) continue ;; esac
-    for tok in $line; do
-      case "$tok" in
-        avg10=*)
-          PSI_TEXT="${tok#avg10=}"
-          i="${PSI_TEXT%%.*}"; [ -n "$i" ] || i=0
-          f="${PSI_TEXT#*.}"; [ "$f" = "$PSI_TEXT" ] && f=00
-          f="${f}00"; f="${f:0:2}"
-          # 10# forces base 10: PSI prints "08" and "09", which are invalid octal.
-          PSI_CENTI=$(( 10#$i * 100 + 10#$f ))
-          return 0
-          ;;
-      esac
-    done
-  done < "$1" 2>/dev/null
-  return 0
-}
-
-# Resolve the graphical session scope -- the desktop lives OUTSIDE the pool and
-# its OWN PSI is the "is the user stalling" signal. Same resolution the monitor
-# uses; cached, and re-resolved if the session goes away (logout/login).
-resolve_desktop() {
-  [ -n "$DESKTOP" ] && [ -r "$DESKTOP/memory.pressure" ] && return 0
-  DESKTOP=""
-  local sid ty sc
-  if command -v loginctl >/dev/null 2>&1; then
-    while read -r sid; do
-      [ -n "$sid" ] || continue
-      ty=$(loginctl show-session "$sid" -p Type --value 2>/dev/null)
-      case "$ty" in x11|wayland) ;; *) continue ;; esac
-      sc="$USERSLICE/session-$sid.scope"
-      [ -r "$sc/memory.pressure" ] && { DESKTOP="$sc"; return 0; }
-    done < <(loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$UNAME" '$3==u{print $1}')
-  fi
-  local d n best="" bestn=0
-  for d in "$USERSLICE"/session-*.scope; do
-    [ -r "$d/cgroup.procs" ] || continue
-    n=$(wc -l < "$d/cgroup.procs" 2>/dev/null); n=${n:-0}
-    if [ "$n" -gt "$bestn" ] 2>/dev/null; then bestn=$n; best="$d"; fi
-  done
-  [ -n "$best" ] && { DESKTOP="$best"; return 0; }
-  return 1
-}
+# psi_full_avg10 and resolve_desktop come from cgroup-lib.sh (sourced above).
+# The governor probes the desktop's memory.pressure -- the file it goes on to
+# read -- where the monitor probes io.pressure.
 
 # MemFREE, deliberately -- NOT MemAvailable. Measured across every memory stall
 # in ~/.local/state/cgroup-pressure, MemFree is pinned at 365-390 MiB almost
@@ -682,6 +632,26 @@ trap on_exit EXIT
 trap on_signal INT TERM
 
 log "START|governor started (thresh=${STALL_THRESH}% pool_thresh=${POOL_THRESH}% low_free=${LOW_FREE_MB}M maxconc=${MAXCONC} heavy=${HEAVY_MB}M reclaim=${RECLAIM_MB}M/${RECLAIM_COOL}s sweep_cool=${SWEEP_COOL}s freeze=${FREEZE_SECS}s max_freeze=${MAX_FREEZE_SECS}s rotate=${ROTATE_SECS}s lag_warn=${LAG_WARN}s dryrun=${DRYRUN:-off})"
+
+# Machine-fact cross-check. memory-policy.nix hardcodes memTotalG -- the one
+# hand-copied machine fact the policy allows itself -- and every margin
+# calculation (pool ceiling vs desktop floor) reasons from it. If the VM's
+# RAM allocation changes and that number is not updated, the whole partition
+# is silently mis-sized; this is the runtime verifier the eval-time assert
+# cannot be (eval is pure, /proc is not). Once at startup, ±1 GiB tolerance
+# for kernel/firmware reservations.
+if [ -n "${KX_POLICY_MEMTOTAL_G:-}" ]; then
+  while read -r k v _; do
+    [ "$k" = "MemTotal:" ] || continue
+    mt_g=$(( (v + 524288) / 1048576 ))
+    if [ "$mt_g" -lt $(( KX_POLICY_MEMTOTAL_G - 1 )) ] \
+       || [ "$mt_g" -gt $(( KX_POLICY_MEMTOTAL_G + 1 )) ]; then
+      log "MEMTOTAL-DRIFT|/proc/meminfo says ~${mt_g}G but memory-policy.nix says ${KX_POLICY_MEMTOTAL_G}G - the desktop-floor/pool-ceiling margins are computed from a machine that no longer exists; update memTotalG"
+    fi
+    break
+  done < /proc/meminfo
+fi
+
 thaw_all "startup sweep"
 
 while :; do
@@ -723,7 +693,7 @@ while :; do
   # --- 0b. Keep the agents subtree accounted. Cheap, fork-free, every tick. ---
   ensure_delegation
 
-  resolve_desktop || { sleep "$INTERVAL"; continue; }
+  resolve_desktop memory.pressure || { sleep "$INTERVAL"; continue; }
   # Three fork-free reads. Previously three awk processes, every five seconds,
   # forever -- and unaffordable at exactly the moment they mattered.
   psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"
