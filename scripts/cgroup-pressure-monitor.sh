@@ -54,7 +54,13 @@ last_snap=0
 last_investigate=0
 
 full_avg10() { awk '/^full/{for(i=1;i<=NF;i++){n=split($i,a,"=");if(a[1]=="avg10")print a[2]}}' "$1" 2>/dev/null; }
-human() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || echo "${1}B"; }
+human() {
+  # cgroup memory files can hold the literal "max"; pass non-numbers through.
+  case "${1:-}" in
+    '' | *[!0-9]*) echo "${1:-?}" ;;
+    *) numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B" ;;
+  esac
+}
 
 # Resolve the DESKTOP graphical session scope (x11/wayland) for this user. The
 # desktop lives OUTSIDE the pool; its OWN PSI is the "is the user stalling"
@@ -105,9 +111,25 @@ run_investigation() {
   analysis="$OUTDIR/analysis-$stamp.md"
   snap=$(cat "$snapfile" 2>/dev/null)
 
+  # MACHINE FACTS ARE READ LIVE, never hand-copied into the prose. A previous
+  # version of this prompt hardcoded "MemoryHigh 16G / MemoryMax 18G" and
+  # "memory.min=6G"; both numbers were retuned in home.nix/nixos.nix and every
+  # diagnosis from then on reasoned about a machine that no longer existed --
+  # the exact staleness failure home.nix's 07-28..07-31 note documents for the
+  # governor's dead window. Forks are fine here: this is the (rare, cooled-down)
+  # investigate path, not the detection loop the fork budget protects.
+  local ncpu mem_gib pool_high pool_max desk_min cpu_cores
+  ncpu=$(nproc 2>/dev/null || echo '?')
+  mem_gib=$(awk '/^MemTotal/{printf "%.1f", $2 / 1048576}' /proc/meminfo 2>/dev/null || echo '?')
+  pool_high=$(human "$(cat "$POOL/memory.high" 2>/dev/null)")
+  pool_max=$(human "$(cat "$POOL/memory.max" 2>/dev/null)")
+  desk_min=$(human "$(cat "$DESKTOP/memory.min" 2>/dev/null)")
+  cpu_cores=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {printf "%.0f", $1 / $2}' "$POOL/cpu.max" 2>/dev/null)
+  [ -n "$cpu_cores" ] || cpu_cores="unlimited"
+
   prompt="You are diagnosing a Linux DESKTOP that just STALLED. Below is a forensic snapshot captured at the moment of the stall by a cgroup-v2 PSI monitor. Reason ONLY from the snapshot.
 
-Machine: 16-core / 27 GiB NixOS host (ubermouse). Parallel git-worktree build work + an adopted Claude 'agents' fleet run inside a cgroup-v2 pool 'worktrees.slice' (subtree agents-adopted), capped: CPUQuota 1200% (12 cores), MemoryHigh 16G / MemoryMax 18G, and io.max wbps=200M on the build disk (8:0). IMPORTANT: io.weight is a NO-OP on this host (the mq-deadline scheduler ignores it) -> io.max is the ONLY thing bounding pool I/O; do NOT recommend raising/lowering io.weight. The DESKTOP (Xorg/browser) runs in a session-<N>.scope OUTSIDE the pool, protected by memory.min=6G (guaranteed via the user.slice ancestor chain so the POOL, not Xorg, is the reclaim target) and io.latency target=50ms (its I/O jumps the disk queue ahead of the pool).
+Machine: ${ncpu}-core / ${mem_gib} GiB NixOS host (ubermouse). Parallel git-worktree build work + an adopted Claude 'agents' fleet run inside a cgroup-v2 pool 'worktrees.slice' (subtree agents-adopted), capped: ${cpu_cores} cores CPU quota, MemoryHigh ${pool_high} / MemoryMax ${pool_max}, and io.max on the build disk (value in the snapshot). IMPORTANT: io.weight is a NO-OP on this host (the mq-deadline scheduler ignores it) -> io.max is the ONLY thing bounding pool I/O; do NOT recommend raising/lowering io.weight. The DESKTOP (Xorg/browser) runs in a session-<N>.scope OUTSIDE the pool, protected by memory.min=${desk_min} (guaranteed via the user.slice ancestor chain so the POOL, not Xorg, is the reclaim target) and io.latency target=50ms (its I/O jumps the disk queue ahead of the pool).
 
 CRUCIAL: this monitor triggers on the DESKTOP session scope's OWN PSI (the 'desktop' section of the snapshot), NOT system-wide. The pool's io.max deliberately CONCENTRATES build stall inside the pool, so 'pool io.pressure' running HIGHER than 'system io PSI' is EXPECTED and means the cap is WORKING — that alone is NOT the problem and needs no fix. The problem is ONLY whatever pushed the DESKTOP scope's own io/memory pressure over ~15%. If desktop pressure is low despite high pool/system pressure, the protections HELD and you should say so plainly.
 
