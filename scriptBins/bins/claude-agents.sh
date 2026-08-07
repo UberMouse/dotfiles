@@ -28,6 +28,19 @@ if kx-pool-loaded \
   # Detached: wait (bounded, ~60s) for the cc-daemon to come up -- whether this
   # UI spawns it or attaches to one already running -- then pull it into the
   # pool. Runs out-of-pool itself; it only writes cgroup files.
+  #
+  # Both terminal outcomes go to the state log (same location + line format as
+  # build-semaphore.log; see kx-build-slot.sh's slotlog). They used to be
+  # silent: the 60s wait expiring looked identical to success, and the
+  # reattach's entire output -- including its "warn: could not migrate pid"
+  # lines -- went to /dev/null. stdout stays untouched so the interactive TUI
+  # launch is not polluted; the log is the only witness.
+  log_dir="$HOME/.local/state/cgroup-pressure"
+  agentlog() {
+    mkdir -p "$log_dir" 2>/dev/null || true
+    printf '%s  CLAUDE-AGENTS|%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" \
+      >> "$log_dir/claude-agents.log" 2>/dev/null || true
+  }
   (
     n=0
     while [ "$n" -lt 120 ]; do
@@ -35,12 +48,24 @@ if kx-pool-loaded \
       # process, so it matches its own invocation and any shell holding the
       # string (see CLAUDE.md and kx-proc-find's header).
       if [ -n "$(kx-proc-find daemon run --origin 2>/dev/null)" ]; then
-        claude-agents-reattach >/dev/null 2>&1 || true
-        break
+        out="$(claude-agents-reattach 2>&1)"; rc=$?
+        agentlog "REATTACH rc=$rc after $((n / 2))s daemon-wait"
+        while IFS= read -r line; do
+          [ -n "$line" ] && agentlog "  $line"
+        done <<< "$out"
+        exit 0
       fi
       sleep 0.5
       n=$((n + 1))
     done
+    # The wait expired with no daemon in sight. Either the UI genuinely never
+    # spawned one, or claude-code renamed its daemon argv and the kx-proc-find
+    # signature above now matches nothing -- which would make this whole
+    # mechanism a silent no-op forever. Log the installed version so a drift
+    # is attributable to the release that shipped it.
+    ver="$("$claude" --version 2>/dev/null)" || ver=""
+    ver="${ver%% *}"
+    agentlog "DAEMON-WAIT expired: no 'daemon run --origin' argv seen in 60s (claude-code ${ver:-unknown}); the daemon argv signature may have drifted -- see claude-agents-reattach.sh"
   ) &
 fi
 

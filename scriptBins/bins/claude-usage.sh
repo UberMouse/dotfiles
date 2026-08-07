@@ -80,11 +80,17 @@ fetch() {
   ua="claude-code/$ver"
   mkdir -p "$(dirname "$CACHE")"
   tmp="$CACHE.tmp.$$"
-  http=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Authorization: Bearer $token" \
-    -H "anthropic-beta: oauth-2025-04-20" \
-    -H "User-Agent: $ua" \
-    "$ENDPOINT" 2>/dev/null)
+  # The bearer token must NEVER be an argv element: /proc/<pid>/cmdline is
+  # world-readable for the whole life of the curl process, so a plain
+  # -H "Authorization: Bearer ..." leaks a live OAuth token to any `ps` on the
+  # box. `--header @-` (curl >= 7.55) reads extra headers from stdin instead;
+  # only the secret header goes that way, the boring ones stay on argv.
+  http=$(printf 'Authorization: Bearer %s\n' "$token" \
+    | curl -sS -o "$tmp" -w '%{http_code}' \
+      --header @- \
+      -H "anthropic-beta: oauth-2025-04-20" \
+      -H "User-Agent: $ua" \
+      "$ENDPOINT" 2>/dev/null)
   if [ "$http" = "200" ] && jq -e . "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$CACHE"
     return 0

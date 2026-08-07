@@ -52,10 +52,17 @@ fi
 # Make sure memory/pids are delegated to leaves so the fleet is actually
 # accounted against the slice cap. systemd already enables these whenever the
 # slice holds a child scope (MemoryAccounting=true), but belt-and-suspenders for
-# a freshly-activated, child-less slice.
-if ! grep -qw memory "$base/cgroup.subtree_control" 2>/dev/null; then
-  echo "+memory +pids" > "$base/cgroup.subtree_control" 2>/dev/null || true
-fi
+# a freshly-activated, child-less slice. Check EACH controller, one write per
+# controller: the old guard checked only memory before writing "+memory +pids",
+# so a slice with memory delegated but pids not kept pids off forever
+# (pids.current read "?" in the summary below) -- and a joint write is
+# all-or-nothing in cgroup v2, so one unavailable controller would veto the
+# other.
+for ctl in memory pids; do
+  if ! grep -qw "$ctl" "$base/cgroup.subtree_control" 2>/dev/null; then
+    echo "+$ctl" > "$base/cgroup.subtree_control" 2>/dev/null || true
+  fi
+done
 
 # cgroup v2 forbids processes in an inner node that has child cgroups, and the
 # slice already holds the TUI's run-*.scope, so the fleet must live in its own
@@ -75,6 +82,20 @@ while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(kx-proc-find daemon r
 while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(kx-proc-find '*monorepo-jobs*' --daemon-run 2>/dev/null)
 
 if [ "${#roots[@]}" -eq 0 ]; then
+  # Zero matches is ambiguous: genuinely nothing running, OR claude-code
+  # renamed its daemon argv and the two signatures above now match nothing --
+  # which turns every future repair into a silent no-op while the fleet
+  # escapes the budget. Leave a breadcrumb in the state log (same location +
+  # format as build-semaphore.log) either way, with the claude-code version
+  # when one is on ambient PATH (this script deliberately does not declare
+  # claude-code as a runtime input) so a drift is attributable to a release.
+  ver="$(claude --version 2>/dev/null)" || ver=""
+  ver="${ver%% *}"
+  log_dir="$HOME/.local/state/cgroup-pressure"
+  mkdir -p "$log_dir" 2>/dev/null || true
+  printf '%s  CLAUDE-AGENTS|%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" \
+    "REATTACH-EMPTY zero pids matched 'daemon run --origin' / '*monorepo-jobs* --daemon-run' (claude-code ${ver:-unknown}); if agents are visibly running, the daemon argv signature has drifted" \
+    >> "$log_dir/claude-agents.log" 2>/dev/null || true
   echo "No cc-daemon or build daemon running; nothing to reattach."
   exit 0
 fi
