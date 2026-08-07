@@ -41,7 +41,14 @@ stdenvNoCC.mkDerivation (finalAttrs: {
       --set DISABLE_INSTALLATION_CHECKS 1 \
       --set USE_BUILTIN_RIPGREP 0 \
       --unset DEV \
-      --prefix PATH : ${lib.makeBinPath [ procps ripgrep bubblewrap socat ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          procps
+          ripgrep
+          bubblewrap
+          socat
+        ]
+      }
 
     runHook postInstall
   '';

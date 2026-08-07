@@ -7,15 +7,25 @@ let
 
   src = pkgs.fetchurl {
     name = "kart.tar.gz";
-    url =
-      "https://github.com/koordinates/kart/releases/download/v${version}/${file}.tar.gz";
+    url = "https://github.com/koordinates/kart/releases/download/v${version}/${file}.tar.gz";
     hash = "sha256-oUoeD1fLyCI1x9UhxnT5/3iya+myA0M6AB+yDCM6V+o=";
   };
-in pkgs.stdenv.mkDerivation {
-  inherit pname version src system file;
+in
+pkgs.stdenv.mkDerivation {
+  inherit
+    pname
+    version
+    src
+    system
+    file
+    ;
 
   # Required for compilation
-  nativeBuildInputs = [ pkgs.autoPatchelfHook pkgs.gnutar pkgs.makeWrapper ];
+  nativeBuildInputs = [
+    pkgs.autoPatchelfHook
+    pkgs.gnutar
+    pkgs.makeWrapper
+  ];
 
   # Required for runtime
   buildInputs = [

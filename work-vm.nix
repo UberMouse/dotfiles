@@ -2,8 +2,15 @@
 
 {
   virtualisation.vmware.guest.enable = true;
-  boot.initrd.availableKernelModules =
-    [ "ata_piix" "mptspi" "uhci_hcd" "ehci_pci" "ahci" "sd_mod" "sr_mod" ];
+  boot.initrd.availableKernelModules = [
+    "ata_piix"
+    "mptspi"
+    "uhci_hcd"
+    "ehci_pci"
+    "ahci"
+    "sd_mod"
+    "sr_mod"
+  ];
   boot.kernelModules = [ "kvm-amd" ];
 
   fileSystems."/" = {
@@ -21,11 +28,12 @@
       keyFile = "/boot/crypto_keyfile.bin";
     };
   };
-  boot.initrd.secrets = { "/boot/crypto_keyfile.bin" = null; };
+  boot.initrd.secrets = {
+    "/boot/crypto_keyfile.bin" = null;
+  };
   boot.loader.grub.enableCryptodisk = true;
 
-  swapDevices =
-    [{ device = "/dev/disk/by-uuid/8911731a-9365-486d-9f77-e7b633ebd56e"; }];
+  swapDevices = [ { device = "/dev/disk/by-uuid/8911731a-9365-486d-9f77-e7b633ebd56e"; } ];
 
   networking.useDHCP = lib.mkDefault true;
   nixpkgs.hostPlatform = lib.mkDefault "x86_64-linux";

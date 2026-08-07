@@ -1,4 +1,10 @@
-{ pkgs, unstable-pkgs, lib, config, ... }:
+{
+  pkgs,
+  unstable-pkgs,
+  lib,
+  config,
+  ...
+}:
 
 {
   programs.zsh = {
@@ -6,9 +12,13 @@
     autocd = true;
     dotDir = config.home.homeDirectory;
 
-    dirHashes = { kawaka = "$HOME/code/kawaka"; };
+    dirHashes = {
+      kawaka = "$HOME/code/kawaka";
+    };
 
-    syntaxHighlighting = { enable = true; };
+    syntaxHighlighting = {
+      enable = true;
+    };
 
     shellAliases = {
       l = "ls -ahG";
@@ -27,11 +37,9 @@
       fbuildo = "rush fast-build -o";
       gcc = "gnome-control-center network";
       tail-rimu-logs = "tail -f ~/.config/Koordinates/logs/*.log";
-      get-latest-rimu-log =
-        "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
+      get-latest-rimu-log = "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
-      hms =
-        "sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10";
+      hms = "sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10";
       show-trace = "npx playwright@${unstable-pkgs.playwright-test.version} show-trace";
       heft = "node_modules/.bin/heft";
       xclip = "xclip -selection clipboard";
@@ -44,14 +52,14 @@
     oh-my-zsh = {
       enable = true;
       custom = "$HOME/dotfiles/zsh-customizations";
-      plugins = [ 
+      plugins = [
         "git"
         "command-not-found"
         "git-flow"
         "direnv"
       ];
     };
-    
+
     plugins = [
       {
         name = "powerlevel10k-config";
@@ -64,7 +72,7 @@
         file = "powerlevel10k.zsh-theme";
       }
     ];
-    
+
     initContent = lib.mkMerge [
       (lib.mkBefore ''
         # Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
@@ -85,9 +93,7 @@
       '')
       (lib.mkAfter ''
         _rush_completion() {
-          compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${
-            "$"
-          }{BUFFER}" 2>>/dev/null)
+          compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${"$"}{BUFFER}" 2>>/dev/null)
         }
         compdef _rush_completion rush
 

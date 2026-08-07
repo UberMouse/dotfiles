@@ -26,26 +26,43 @@
     };
   };
 
-  outputs = { nixpkgs, home-manager, playwright, self, nixpkgs-unstable, nixpkgs-unstable-small, kolide-launcher, ... }:
+  outputs =
+    {
+      nixpkgs,
+      home-manager,
+      playwright,
+      self,
+      nixpkgs-unstable,
+      nixpkgs-unstable-small,
+      kolide-launcher,
+      ...
+    }:
     let
       system = "x86_64-linux";
       overlay = final: _prev: {
         inherit (playwright.packages.${system})
-          playwright-driver playwright-test;
-        claude-code = final.callPackage ./packages/claude-code/package.nix {};
-        playwright-cli = final.callPackage ./packages/playwright-cli/package.nix {};
-        plannotator = final.callPackage ./packages/plannotator/package.nix {};
-        ccstatusline = final.callPackage ./packages/ccstatusline/package.nix {};
-        rush = final.callPackage ./packages/rush/package.nix {};
-        sentry = final.callPackage ./packages/sentry/package.nix {};
+          playwright-driver
+          playwright-test
+          ;
+        claude-code = final.callPackage ./packages/claude-code/package.nix { };
+        playwright-cli = final.callPackage ./packages/playwright-cli/package.nix { };
+        plannotator = final.callPackage ./packages/plannotator/package.nix { };
+        ccstatusline = final.callPackage ./packages/ccstatusline/package.nix { };
+        rush = final.callPackage ./packages/rush/package.nix { };
+        sentry = final.callPackage ./packages/sentry/package.nix { };
       };
       unstable-pkgs = import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
         overlays = [ overlay ];
       };
-      unstable-small-pkgs = import nixpkgs-unstable-small { inherit system; config.allowUnfree = true; overlays = [ overlay ]; };
-    in {
+      unstable-small-pkgs = import nixpkgs-unstable-small {
+        inherit system;
+        config.allowUnfree = true;
+        overlays = [ overlay ];
+      };
+    in
+    {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;
         specialArgs = { inherit unstable-pkgs unstable-small-pkgs self; };
@@ -67,7 +84,8 @@
         ];
       };
 
-      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
+      # treefmt wrapping nixfmt-rfc-style: `nix fmt` formats the whole tree.
+      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-tree;
 
       # The custom packages, buildable in isolation: `nix build .#claude-code`
       # verifies a version/hash bump in seconds instead of a full system switch.

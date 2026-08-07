@@ -12,7 +12,10 @@
     127.0.0.1 wp.dev.kx.gd
   '';
 
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
+  nix.settings.experimental-features = [
+    "nix-command"
+    "flakes"
+  ];
   nix.settings.download-buffer-size = 134217728; # 128 MB (default is 64 MB)
 
   # Record the flake rev the system was built from (readable via
@@ -48,21 +51,23 @@
         i3lock
       ];
     };
-    
+
     # Start authentication agent for i3
     displayManager.sessionCommands = ''
       ${pkgs.polkit_gnome}/libexec/polkit-gnome-authentication-agent-1 &
     '';
   };
 
-  services.displayManager = { defaultSession = "none+i3"; };
-  
+  services.displayManager = {
+    defaultSession = "none+i3";
+  };
+
   # Screen locker
   programs.xss-lock = {
     enable = true;
     lockerCommand = "${pkgs.i3lock}/bin/i3lock -c 000000";
   };
-  
+
   # Fixes #!/bin/bash -> #!/usr/bin/env bash
   services.envfs.enable = true;
 
@@ -77,7 +82,7 @@
   };
 
   # Setup Staff VPN
-  services.openvpn.servers.staffVPN.config = '' config /root/nixos/openvpn/staff.conf '';
+  services.openvpn.servers.staffVPN.config = "config /root/nixos/openvpn/staff.conf ";
 
   # Enable CUPS to print documents.
   services.printing.enable = true;
@@ -95,7 +100,7 @@
   # Enable gnome keyring for secure storage (needed by 1Password and other apps)
   services.gnome.gnome-keyring.enable = true;
   security.pam.services.gdm.enableGnomeKeyring = true;
-  
+
   # Enable polkit for authentication dialogs
   security.polkit.enable = true;
 
@@ -113,7 +118,10 @@
   users.users.taylorl = {
     isNormalUser = true;
     description = "Taylor Lodge";
-    extraGroups = [ "networkmanager" "wheel" ];
+    extraGroups = [
+      "networkmanager"
+      "wheel"
+    ];
     shell = pkgs.zsh;
     # home-manager manages zsh so this check doesn't work
     ignoreShellProgramCheck = true;
@@ -125,7 +133,7 @@
 
   programs = {
     nix-ld.enable = true;
-    
+
     _1password.enable = true;
     _1password-gui = {
       enable = true;
@@ -136,7 +144,7 @@
   # Enable automatic login for the user.
   services.displayManager.autoLogin.enable = true;
   services.displayManager.autoLogin.user = "taylorl";
-  
+
   services.tailscale.enable = true;
   services.kolide-launcher.enable = true;
 
@@ -165,8 +173,10 @@
     freeSwapThreshold = 3;
     enableNotifications = true;
     extraArgs = [
-      "--avoid" "^(vivaldi-bin|slack|\\.claude-wrapped|zsh|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
-      "--prefer" "^(jest-worker|headless_shell|chrome)$"
+      "--avoid"
+      "^(vivaldi-bin|slack|\\.claude-wrapped|zsh|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
+      "--prefer"
+      "^(jest-worker|headless_shell|chrome)$"
     ];
   };
 
@@ -313,7 +323,10 @@
   systemd.services.desktop-memory-protect = {
     description = "Guarantee the graphical session's RAM (memory.min) + disk I/O priority (io.latency) vs heavy background load";
     serviceConfig.Type = "oneshot";
-    path = [ pkgs.systemd pkgs.gawk ];
+    path = [
+      pkgs.systemd
+      pkgs.gawk
+    ];
     script = ''
       set -u
       # memory.min only bites if the WHOLE ancestor chain grants it. user.slice

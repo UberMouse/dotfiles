@@ -1,7 +1,19 @@
-{ config, pkgs, lib, unstable-pkgs, unstable-small-pkgs, ... }:
+{
+  config,
+  pkgs,
+  lib,
+  unstable-pkgs,
+  unstable-small-pkgs,
+  ...
+}:
 
 {
-  imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins ];
+  imports = [
+    ./i3.nix
+    ./neovim.nix
+    ./zsh.nix
+    ./scriptBins
+  ];
   # Home Manager needs a bit of information about you and the
   # paths it should manage.
   home.username = "taylorl";
@@ -26,7 +38,8 @@
     TERMINAL = "alacritty";
   };
 
-  home.packages = with pkgs;
+  home.packages =
+    with pkgs;
     [
       # System
       htop
@@ -91,7 +104,8 @@
       google-chrome
       qdirstat
       libreoffice
-    ] ++ [
+    ]
+    ++ [
       unstable-pkgs.gh
       unstable-pkgs.playwright-test
       unstable-pkgs.playwright-cli
@@ -104,7 +118,9 @@
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
 
-  fonts.fontconfig = { enable = true; };
+  fonts.fontconfig = {
+    enable = true;
+  };
 
   xdg = {
     enable = true;
@@ -138,8 +154,7 @@
     settings = {
       user.name = "Taylor Lodge";
       user.email = "taylor.lodge@koordinates.com";
-      user.signingKey =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
+      user.signingKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIwOTjGNXctN6zgV6LazHoOcsd+cT2qFy+H8UOOWm7rm";
       pull.rebase = "true";
       merge.conflictstyle = "zdiff3";
       rebase.autosquash = "true";
@@ -148,8 +163,7 @@
       diff.algorithm = "histogram";
       init.defaultBranch = "main";
       gpg.format = "ssh";
-      "gpg \"ssh\"".program =
-        "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
+      "gpg \"ssh\"".program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
       commit.gpgsign = true;
     };
   };
@@ -188,7 +202,9 @@
     '';
   };
 
-  programs.bash = { enable = true; };
+  programs.bash = {
+    enable = true;
+  };
 
   programs.direnv = {
     enable = true;
@@ -489,11 +505,19 @@
       # User services get a bare PATH; give the script the tools it shells out to
       # (incl. claude + git for the auto-diagnosis).
       Environment = [
-        "PATH=${lib.makeBinPath [
-          pkgs.coreutils pkgs.procps pkgs.gawk pkgs.gnused
-          pkgs.util-linux pkgs.findutils pkgs.libnotify
-          pkgs.git unstable-small-pkgs.claude-code
-        ]}"
+        "PATH=${
+          lib.makeBinPath [
+            pkgs.coreutils
+            pkgs.procps
+            pkgs.gawk
+            pkgs.gnused
+            pkgs.util-linux
+            pkgs.findutils
+            pkgs.libnotify
+            pkgs.git
+            unstable-small-pkgs.claude-code
+          ]
+        }"
         "CGPM_INVESTIGATE=1"
         "CGPM_CLAUDE=${unstable-small-pkgs.claude-code}/bin/claude"
         "CGPM_MODEL=opus"
@@ -575,10 +599,16 @@
     Install.WantedBy = [ "default.target" ];
     Service = {
       Environment = [
-        "PATH=${lib.makeBinPath [
-          pkgs.coreutils pkgs.procps pkgs.gawk pkgs.gnused
-          pkgs.util-linux pkgs.findutils
-        ]}"
+        "PATH=${
+          lib.makeBinPath [
+            pkgs.coreutils
+            pkgs.procps
+            pkgs.gawk
+            pkgs.gnused
+            pkgs.util-linux
+            pkgs.findutils
+          ]
+        }"
       ];
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-governor.sh}";
       # The governor guarantees thaw three ways internally (per-freeze deadline,

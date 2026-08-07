@@ -1,4 +1,9 @@
-{ pkgs, unstable-pkgs, unstable-small-pkgs, ... }:
+{
+  pkgs,
+  unstable-pkgs,
+  unstable-small-pkgs,
+  ...
+}:
 
 let
   # Mirror of i3status's compiled-in default config (the same modules the bar
@@ -72,9 +77,20 @@ let
   # change their behaviour. inheritPath (default true) keeps the ambient profile
   # PATH appended, so sibling-script calls (bk -> op-cached, rush-pnpm -> node)
   # keep resolving exactly as before.
-  sh = { name, runtimeInputs ? [ ], bashOptions, excludeShellChecks ? [ ] }:
+  sh =
+    {
+      name,
+      runtimeInputs ? [ ],
+      bashOptions,
+      excludeShellChecks ? [ ],
+    }:
     pkgs.writeShellApplication {
-      inherit name runtimeInputs bashOptions excludeShellChecks;
+      inherit
+        name
+        runtimeInputs
+        bashOptions
+        excludeShellChecks
+        ;
       text = builtins.readFile (./bins + "/${name}.sh");
     };
 
@@ -92,58 +108,131 @@ let
   # These are deliberately NOT on PATH: op-cached-daemon invokes them by
   # absolute store path via @opShimPaths@, and that substituted text is also
   # what keeps them in the daemon's runtime closure.
-  opShimCallers = [ "bk" "sentry" "unknown" ];
-  opShims = pkgs.lib.genAttrs opShimCallers
-    (caller: pkgs.writeCBin "op-1p-${caller}" (builtins.readFile ./bins/op-1p-shim.c));
-  opShimPaths = builtins.toJSON
-    (pkgs.lib.mapAttrs (caller: drv: "${drv}/bin/op-1p-${caller}") opShims);
+  opShimCallers = [
+    "bk"
+    "sentry"
+    "unknown"
+  ];
+  opShims = pkgs.lib.genAttrs opShimCallers (
+    caller: pkgs.writeCBin "op-1p-${caller}" (builtins.readFile ./bins/op-1p-shim.c)
+  );
+  opShimPaths = builtins.toJSON (
+    pkgs.lib.mapAttrs (caller: drv: "${drv}/bin/op-1p-${caller}") opShims
+  );
 
   # Python scripts can't use writeShellApplication, so read the real file and
   # substitute @tokens@ for the store paths they need (interpreter + tools).
-  py = name: subs:
+  py =
+    name: subs:
     pkgs.writeScriptBin name (
-      builtins.replaceStrings
-        (map (n: "@${n}@") (builtins.attrNames subs))
-        (builtins.attrValues subs)
-        (builtins.readFile (./bins + "/${name}.py"))
+      builtins.replaceStrings (map (n: "@${n}@") (builtins.attrNames subs)) (builtins.attrValues subs) (
+        builtins.readFile (./bins + "/${name}.py")
+      )
     );
 in
 {
   home.packages = [
-    (sh { name = "koordinates-dev-protocol"; runtimeInputs = [ pkgs.curl ]; bashOptions = [ ]; })
-    (sh { name = "dev-terminal"; runtimeInputs = [ pkgs.tmux pkgs.coreutils ]; bashOptions = [ ]; })
-    (sh { name = "scratch-terminal"; runtimeInputs = [ pkgs.tmux ]; bashOptions = [ "errexit" ]; })
     (sh {
-      name = "rush-logs";
-      runtimeInputs = [ pkgs.jq pkgs.perl pkgs.bat pkgs.coreutils pkgs.gnugrep pkgs.gawk pkgs.fzf ];
+      name = "koordinates-dev-protocol";
+      runtimeInputs = [ pkgs.curl ];
+      bashOptions = [ ];
+    })
+    (sh {
+      name = "dev-terminal";
+      runtimeInputs = [
+        pkgs.tmux
+        pkgs.coreutils
+      ];
+      bashOptions = [ ];
+    })
+    (sh {
+      name = "scratch-terminal";
+      runtimeInputs = [ pkgs.tmux ];
       bashOptions = [ "errexit" ];
     })
-    (sh { name = "rush-pnpm"; runtimeInputs = [ pkgs.coreutils ]; bashOptions = [ "errexit" ]; })
-    (sh { name = "bk"; runtimeInputs = [ pkgs.buildkite-cli ]; bashOptions = [ "errexit" ]; })
-    (sh { name = "sentry"; runtimeInputs = [ unstable-pkgs.sentry ]; bashOptions = [ "errexit" ]; })
-    (sh { name = "autosquash-branch"; runtimeInputs = [ pkgs.git ]; bashOptions = [ "errexit" ]; })
-    (sh { name = "wt-cgroup-status"; runtimeInputs = [ pkgs.gawk pkgs.coreutils ]; bashOptions = [ "nounset" ]; })
+    (sh {
+      name = "rush-logs";
+      runtimeInputs = [
+        pkgs.jq
+        pkgs.perl
+        pkgs.bat
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gawk
+        pkgs.fzf
+      ];
+      bashOptions = [ "errexit" ];
+    })
+    (sh {
+      name = "rush-pnpm";
+      runtimeInputs = [ pkgs.coreutils ];
+      bashOptions = [ "errexit" ];
+    })
+    (sh {
+      name = "bk";
+      runtimeInputs = [ pkgs.buildkite-cli ];
+      bashOptions = [ "errexit" ];
+    })
+    (sh {
+      name = "sentry";
+      runtimeInputs = [ unstable-pkgs.sentry ];
+      bashOptions = [ "errexit" ];
+    })
+    (sh {
+      name = "autosquash-branch";
+      runtimeInputs = [ pkgs.git ];
+      bashOptions = [ "errexit" ];
+    })
+    (sh {
+      name = "wt-cgroup-status";
+      runtimeInputs = [
+        pkgs.gawk
+        pkgs.coreutils
+      ];
+      bashOptions = [ "nounset" ];
+    })
     # Client half of the build admission semaphore (controller lives in
     # home.nix). Deliberately NOT errexit: the slot scan relies on `flock -n`
     # failing on a busy slot, which is the normal path, not an error.
     (sh {
       name = "kx-build-slot";
-      runtimeInputs = [ pkgs.util-linux pkgs.coreutils pkgs.gawk ];
+      runtimeInputs = [
+        pkgs.util-linux
+        pkgs.coreutils
+        pkgs.gawk
+      ];
       bashOptions = [ "nounset" ];
     })
     (sh {
       name = "claude-agents";
-      runtimeInputs = [ pkgs.systemd pkgs.procps pkgs.coreutils unstable-small-pkgs.claude-code ];
+      runtimeInputs = [
+        pkgs.systemd
+        pkgs.procps
+        pkgs.coreutils
+        unstable-small-pkgs.claude-code
+      ];
       bashOptions = [ "nounset" ];
     })
     (sh {
       name = "claude-usage";
-      runtimeInputs = [ pkgs.curl pkgs.jq pkgs.gnugrep pkgs.gawk pkgs.coreutils unstable-small-pkgs.claude-code ];
+      runtimeInputs = [
+        pkgs.curl
+        pkgs.jq
+        pkgs.gnugrep
+        pkgs.gawk
+        pkgs.coreutils
+        unstable-small-pkgs.claude-code
+      ];
       bashOptions = [ "nounset" ];
     })
     (sh {
       name = "claude-agents-reattach";
-      runtimeInputs = [ pkgs.systemd pkgs.procps pkgs.gnugrep pkgs.coreutils ];
+      runtimeInputs = [
+        pkgs.systemd
+        pkgs.procps
+        pkgs.gnugrep
+        pkgs.coreutils
+      ];
       bashOptions = [ "nounset" ];
     })
 
