@@ -86,17 +86,38 @@ for p in scripts_and_bins():
 #    living on in the docs long after the package was deleted. Covers the
 #    skills too — they instruct future runs, and a skill pointing at a moved
 #    file fails exactly like stale CLAUDE.md prose.
-doc_files = [Path("CLAUDE.md")]
+doc_files = [Path("CLAUDE.md"), Path("README.md")]
 doc_files += sorted(Path("docs").rglob("*.md"))
 doc_files += sorted(Path(".claude/skills").rglob("SKILL.md"))
 for doc in doc_files:
     for tok in re.findall(r"[\w~./-]+", doc.read_text()):
         if tok.startswith(("~", "/")) or "/" not in tok:
             continue
-        if not re.search(r"\.(nix|sh|py|md|json|conf|zsh)$", tok):
+        if re.search(r"\.(nix|sh|py|md|json|conf|zsh)$", tok):
+            if not os.path.exists(tok):
+                failures.append(f"{doc} names a missing path: {tok}")
             continue
-        if not os.path.exists(tok):
-            failures.append(f"{doc} names a missing path: {tok}")
+        # Bare directory references ("zsh-customizations/") used to slip
+        # through the extension filter above — a deleted dir lived on in the
+        # repo-audit skill for a full release cycle. Trailing-slash tokens are
+        # unambiguous dir refs. Skipped: domain-shaped first segments
+        # (github.com/...) and anything with an uppercase char (env-var path
+        # fragments like $XDG_RUNTIME_DIR/kx-build-sem/, which the tokenizer
+        # strips the $ from). Prose often names a subdir bare ("playwright/"
+        # for packages/playwright/), so a dir counts as live if it exists at
+        # the root OR one or two levels down.
+        if (
+            tok.endswith("/")
+            and "." not in tok.split("/", 1)[0]
+            and tok == tok.lower()
+        ):
+            rel = tok.rstrip("/")
+            if not (
+                os.path.isdir(rel)
+                or list(Path(".").glob(f"*/{rel}"))
+                or list(Path(".").glob(f"*/*/{rel}"))
+            ):
+                failures.append(f"{doc} names a missing directory: {tok}")
 
 # 5. Guards phrased against TOTAL occupancy die the moment a browser holds a
 #    slot: `occupied == 0` can never be true again while a session is open,
@@ -166,6 +187,53 @@ for p in Path("scriptBins/bins").glob("*.sh"):
                 failures.append(
                     f"{p}:{i}: --as {name} has no opShimCallers entry (falls through to 'unknown')"
                 )
+
+# 9. kernfs size-test ban. cgroup.procs (and every kernfs seq_file) stats as
+#    size 0, so `[ -s .../cgroup.procs ]` is unconditionally false — this shape
+#    silently disabled the governor's freeze duties for three days (2026-07-28..
+#    31, the dead-actuator incident). Read a pid from the file instead. The
+#    check used to live inside the governor's own test suite, covering exactly
+#    one file; here it covers every script.
+for p in scripts_and_bins():
+    for i, line in enumerate(p.read_text().splitlines(), 1):
+        if re.search(r"-s\s+\S*cgroup\.(procs|threads)", code_of(line)):
+            failures.append(
+                f"{p}:{i}: [ -s ] on a kernfs file is always false; read a pid instead"
+            )
+
+# 10. Residency pairing. A job that gates with --resident-probe leaves
+#     something living behind, so it must also pass --resident, or it waits on
+#     a free slot instead of the load test and finds the self-feeding open
+#     door CLAUDE.md documents (twelve browsers onto a saturated pool,
+#     2026-08-07). Enforced here because the invariant otherwise lives only
+#     inside playwright-cli's package.nix.
+resident_files = [p for p in scripts_and_bins() if p.name != "kx-build-slot.sh"]
+resident_files += sorted(Path("packages").glob("*/package.nix"))
+for p in resident_files:
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if "--resident-probe" not in code_of(line):
+            continue
+        window = "\n".join(lines[max(0, i - 2) : i + 3])
+        if not re.search(r"--resident(?!-probe)\b", window):
+            failures.append(
+                f"{p}:{i + 1}: --resident-probe without --resident (resident job must gate on the load test)"
+            )
+
+# 11. Semaphore-dir override tripwire — same contract as the pool-path check
+#     above: every construction of the kx-build-sem runtime dir must sit
+#     within two lines of its KX_BUILD_SEM_DIR override, so tests can retarget
+#     every reader and a rename is a mechanical sweep.
+for p in scripts_and_bins():
+    lines = p.read_text().splitlines()
+    for i, line in enumerate(lines):
+        if "kx-build-sem" not in code_of(line):
+            continue
+        window = "\n".join(lines[max(0, i - 2) : i + 1])
+        if "KX_BUILD_SEM_DIR" not in window:
+            failures.append(
+                f"{p}:{i + 1}: kx-build-sem path hardcoded without a KX_BUILD_SEM_DIR override nearby"
+            )
 
 if failures:
     print("\n".join(failures))

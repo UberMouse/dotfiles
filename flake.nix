@@ -107,10 +107,12 @@
           toplevel = self.nixosConfigurations.ubermouse.config.system.build.toplevel;
 
           # Every deterministic suite, discovered by glob (a hardcoded list is
-          # how a new suite silently never runs). The one exclusion is the
-          # controller MACHINERY suite, which Popens a live controller and
-          # holds real flocks — that stays in scripts/run-tests.sh; its
-          # policy half (pure decide()) runs here.
+          # how a new suite silently never runs) — including the controller
+          # MACHINERY suite, which runs main() in a thread with a stepping
+          # sleep stub (flock and /proc/locks work in the sandbox). Its
+          # genuinely host-only checks (kernel signal delivery, flock drop on
+          # real process death) are opted into by run-tests.sh via
+          # KX_TEST_HOST_ONLY and SKIP loudly here.
           script-tests =
             checkPkgs.runCommand "script-tests"
               {
@@ -123,6 +125,9 @@
                   gawk
                   gnugrep
                   gnused
+                  # claude-usage.test.py runs the real script, which parses
+                  # its fixtures with jq.
+                  jq
                 ];
               }
               ''
@@ -132,7 +137,6 @@
                 chmod -R +w .
                 export PYTHONDONTWRITEBYTECODE=1
                 for t in scripts/*.test.py; do
-                  case "$t" in *build-semaphore-controller.test.py) continue ;; esac
                   echo "== $t"
                   python3 "$t"
                 done
@@ -168,6 +172,31 @@
                 # /home/taylorl literals, KX_POOL overrides, occupancy-guard
                 # shape, docs-liveness, spec/fetcher pairing, op-shim roster.
                 python3 ${./scripts/lint-tripwires.py}
+                touch $out
+              '';
+
+          # claude-agents.sh / claude-agents-reattach.sh find the cc-daemon by
+          # matching its argv signature (`daemon run --origin`) via
+          # kx-proc-find. If a claude-code release renames that argv, the
+          # reattach silently no-ops forever and the agent fleet escapes the
+          # pool -- forensics have already caught the escaped fleet as the
+          # single largest memory consumer during a stall. Assert the literal
+          # is still in the shipped bundle (as the JS array form it actually
+          # appears in), so the rebuild that bumps claude-code past a rename
+          # fails loudly instead. The second signature those scripts match
+          # (`*monorepo-jobs* --daemon-run`) belongs to the koordinates
+          # monorepo's own daemon and cannot be pinned from this repo; its
+          # runtime breadcrumb (REATTACH-EMPTY / DAEMON-WAIT log lines) is
+          # the only tripwire possible there.
+          claude-daemon-argv =
+            checkPkgs.runCommand "claude-daemon-argv" { nativeBuildInputs = [ checkPkgs.gnugrep ]; }
+              ''
+                grep -r -a -q -F '"daemon","run","--origin"' ${unstable-pkgs.claude-code}/bin/ || {
+                  echo 'claude-code no longer contains the daemon-spawn argv literal' >&2
+                  echo '"daemon","run","--origin" -- the kx-proc-find signature in' >&2
+                  echo 'claude-agents.sh / claude-agents-reattach.sh has drifted; fix both.' >&2
+                  exit 1
+                }
                 touch $out
               '';
 

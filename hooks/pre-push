@@ -7,14 +7,26 @@
 # machine-local -- the same gap that once let 144 MiB of agent transcripts
 # get committed).
 #
-# Deliberately NOT the toplevel check (full system build) -- this has to be
-# seconds, or it gets --no-verify'd out of habit. The heavy gate remains
-# `nix flake check` before a switch.
+# The check list is DERIVED from the flake's own checks output, minus the one
+# named exclusion -- a hardcoded list here is the exact "new suite silently
+# never runs" trap flake.nix documents, and this hook carried one until
+# 2026-08-07. `toplevel` (the full system build) stays excluded deliberately:
+# this has to be seconds, or it gets --no-verify'd out of habit. The heavy
+# gate remains `nix flake check` before a switch.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-echo "pre-push: lint + formatting + script-tests (nix flake checks)..."
-nix build --no-link \
-  .#checks.x86_64-linux.lint \
-  .#checks.x86_64-linux.formatting \
-  .#checks.x86_64-linux.script-tests
+mapfile -t checks < <(
+  nix eval .#checks.x86_64-linux --raw \
+    --apply 'c: builtins.concatStringsSep "\n" (builtins.filter (n: n != "toplevel") (builtins.attrNames c))'
+)
+if [ "${#checks[@]}" -eq 0 ]; then
+  echo "pre-push: could not enumerate flake checks" >&2
+  exit 1
+fi
+echo "pre-push: flake checks (all but toplevel): ${checks[*]} ..."
+args=()
+for c in "${checks[@]}"; do
+  args+=(".#checks.x86_64-linux.$c")
+done
+nix build --no-link "${args[@]}"
 echo "pre-push: checks passed"
