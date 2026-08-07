@@ -1,0 +1,4 @@
+# repeated_keys (W20) fires on the dotted-path style used throughout this repo
+# (`boot.loader.grub.enable = ...` at top level). That style is a deliberate
+# choice, not an accident — keep the lint quiet about it.
+disabled = ["repeated_keys"]

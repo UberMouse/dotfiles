@@ -196,7 +196,7 @@
 
     nix-direnv.enable = true;
 
-    config.whitelist.prefix = [ "/home/taylorl/code/kawaka" ];
+    config.whitelist.prefix = [ "${config.home.homeDirectory}/code/kawaka" ];
   };
 
   programs.alacritty = {

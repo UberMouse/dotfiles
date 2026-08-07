@@ -22,6 +22,9 @@ import time
 from pathlib import Path
 
 SLOT = Path(__file__).resolve().parent.parent / "scriptBins" / "bins" / "kx-build-slot.sh"
+# Resolve bash at runtime rather than via `#!/usr/bin/env bash`: the nix build
+# sandbox (where this runs as a flake check) has no /usr/bin/env.
+BASH = shutil.which("bash")
 BASE = Path(tempfile.mkdtemp(prefix="kx-slot-test."))
 SEM = BASE / "sem"
 HOME = BASE / "home"
@@ -37,7 +40,7 @@ passes = []
 MARK = "987654321"
 PROBE = BASE / "probe.sh"
 PROBE.write_text(
-    "#!/usr/bin/env bash\n"
+    f"#!{BASH}\n"
     "for c in /proc/[0-9]*/cmdline; do\n"
     '  a=$( { tr \'\\0\' \'\\n\' < "$c" | sed -n 2p; } 2>/dev/null ) || continue\n'
     f'  [ "$a" = "{MARK}" ] || continue\n'
@@ -50,7 +53,7 @@ PROBE.chmod(0o755)
 # forks a daemon that outlives it.
 SPAWN = BASE / "spawn.sh"
 SPAWN.write_text(
-    "#!/usr/bin/env bash\n"
+    f"#!{BASH}\n"
     f"setsid sleep {MARK} </dev/null >/dev/null 2>&1 &\n"
     "sleep 0.3\n"
     'exit "${1:-0}"\n'
@@ -175,7 +178,7 @@ check("no marker when nothing was spawned", markers(), [])
 #    probe that prints a diagnostic must not be able to fabricate one -- a
 #    fabricated pid never dies, and a keeper waiting on it holds a slot forever.
 junk = BASE / "junk.sh"
-junk.write_text("#!/usr/bin/env bash\necho 'error: cannot read /proc/1234/x'\n"
+junk.write_text(f"#!{BASH}\necho 'error: cannot read /proc/1234/x'\n"
                 "echo 'warning 999999'\n")
 junk.chmod(0o755)
 slots()

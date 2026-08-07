@@ -29,7 +29,7 @@
   outputs = { nixpkgs, home-manager, playwright, self, nixpkgs-unstable, nixpkgs-unstable-small, kolide-launcher, ... }:
     let
       system = "x86_64-linux";
-      overlay = final: prev: {
+      overlay = final: _prev: {
         inherit (playwright.packages.${system})
           playwright-driver playwright-test;
         claude-code = final.callPackage ./packages/claude-code/package.nix {};
@@ -63,5 +63,76 @@
           }
         ];
       };
+
+      formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-rfc-style;
+
+      # The custom packages, buildable in isolation: `nix build .#claude-code`
+      # verifies a version/hash bump in seconds instead of a full system switch.
+      packages.${system} = {
+        inherit (unstable-pkgs)
+          claude-code
+          playwright-cli
+          plannotator
+          ccstatusline
+          rush
+          sentry
+          ;
+      };
+
+      checks.${system} =
+        let
+          checkPkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          # Builds the full system closure without switching: "did I break my
+          # desktop?" as a command instead of a live experiment.
+          toplevel = self.nixosConfigurations.ubermouse.config.system.build.toplevel;
+
+          # The deterministic half of the semaphore tests (client side; no
+          # controller, no clock). The controller suite is wall-clock timed and
+          # stays out of the sandbox — run it via scripts/run-tests.sh.
+          kx-build-slot-test =
+            checkPkgs.runCommand "kx-build-slot-test"
+              {
+                nativeBuildInputs = with checkPkgs; [
+                  python313
+                  bashInteractive
+                  util-linux
+                  coreutils
+                  procps
+                  gawk
+                  gnugrep
+                  gnused
+                ];
+              }
+              ''
+                mkdir -p work/scriptBins && cd work
+                cp -r ${./scripts} scripts
+                cp -r ${./scriptBins/bins} scriptBins/bins
+                chmod -R +w .
+                python3 scripts/kx-build-slot.test.py
+                touch $out
+              '';
+
+          lint =
+            checkPkgs.runCommand "lint"
+              {
+                nativeBuildInputs = with checkPkgs; [
+                  statix
+                  deadnix
+                  shellcheck
+                  python313
+                ];
+              }
+              ''
+                cd ${self}
+                statix check .
+                deadnix --fail .
+                shellcheck scripts/*.sh
+                export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
+                python3 -m py_compile scripts/*.py scriptBins/bins/*.py
+                touch $out
+              '';
+        };
     };
 }
