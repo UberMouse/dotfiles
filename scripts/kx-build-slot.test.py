@@ -202,6 +202,43 @@ p, el = run("--label", "emptysem", "--", "echo", "ran")
 check("runs with an empty semaphore", p.stdout.strip(), "ran")
 check("empty semaphore does not stall", el < 3, True)
 
+# 7. THE STATE-FILE CONTRACT. Every test above wrote the `allowed` line BY
+#    HAND, which means a controller that changed the format could never fail
+#    this suite. Bind the two ends: the REAL producer (Semaphore.publish) must
+#    emit a line whose field positions match both this suite's writer and the
+#    client's positional read (`cut -d' ' -f8` for healthy). The FIELDS tuple
+#    in the controller is the contract; these assertions are its enforcement.
+import importlib.util
+
+spec = importlib.util.spec_from_file_location(
+    "bsc", Path(__file__).resolve().parent / "build-semaphore-controller.py"
+)
+bsc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bsc)
+
+F = bsc.Semaphore.FIELDS
+check("healthy is field 8 (client cut -f8)", F.index("healthy"), 7)
+check("allowed is field 1 (i3status fields[0])", F.index("allowed"), 0)
+check("effective is field 2 (i3status fields[1])", F.index("effective"), 1)
+check("resident is field 7 (i3status fields[6])", F.index("resident"), 6)
+
+pub_sem = bsc.Semaphore(SEM / "pub", 16)
+pub_sem.publish(4, 4, occupied=2, target=4, mark=3, resident=1, healthy=False)
+line = (SEM / "pub" / "allowed").read_text().split()
+check("publish emits one value per FIELDS entry", len(line), len(F))
+check("publish healthy=False emits the 0 the gate blocks on",
+      line[F.index("healthy")], "0")
+check("publish resident lands where readers look",
+      line[F.index("resident")], "1")
+
+# And end-to-end: the REAL publisher's unhealthy line must actually gate a
+# resident job (everything above it only checked bytes on disk).
+slots()
+pub_sem.dir = SEM
+pub_sem.publish(4, 4, occupied=0, target=4, mark=0, resident=0, healthy=False)
+_, el = run("--label", "contract", "--resident", "--", "true")
+check("real publish(healthy=False) blocks a resident job", el >= 5, True)
+
 reap()
 if fails:
     print("\nFAILURES:", fails)

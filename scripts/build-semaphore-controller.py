@@ -265,14 +265,16 @@ CFG = dict(
     # looks. Originally 12, to match the pool's CPUQuota=1200% -- but cores were
     # never the binding resource here. Sizing by the one that is:
     #
-    #     (16 GiB pool - ~3 GiB of tenants that take no slots) / ~1.5 GiB a heft
-    #       = ~8 concurrent
+    #     (pool memory.high - untracked tenants) / job_bytes
     #
-    # and the measurement agrees: on 2026-08-04 the box reached 100% of
-    # memory.high and psi10=48% at SEVEN concurrent jobs, four short of the
-    # nominal ceiling. A cap the machine cannot reach without stalling is not a
-    # cap, it is decoration -- every excursion above ~8 was recovered by the
-    # tighten path rather than prevented by the ceiling.
+    # (memory.high itself is read live each tick -- see read_pool_mem -- so the
+    # numbers here are the sizing rationale, not runtime inputs). Sized 8 on
+    # 2026-08-04 against the then-16G high with ~3G of slot-less tenants and
+    # ~1.5G per heft, and the measurement agreed: the box reached 100% of
+    # memory.high and psi10=48% at SEVEN concurrent, four short of the nominal
+    # ceiling. A cap the machine cannot reach without stalling is not a cap, it
+    # is decoration. If the pool's memory.high moves materially (18G since
+    # 2026-08-06), re-derive this.
     ceil=_int("KX_SEM_CEIL", 8),
     # Never admit fewer than this. 1, not 0 -- see FLOOR note above.
     floor=_int("KX_SEM_FLOOR", 1),
@@ -352,6 +354,20 @@ CFG = dict(
     # Minimum seconds between two HOLD log lines. The gate engages on most ticks
     # of a busy period and logging each one would bury the decisions.
     hold_log_every=_float("KX_SEM_HOLD_LOG_EVERY", 30.0),
+)
+
+# THE RESIDENT CAP: how many slots resident-browser keepers may hold before NEW
+# resident admissions are refused. Nothing else bounds residency -- each
+# admitted browser raises the floor by one, so without a cap 16 browsers make
+# every slot keeper-held, every build waits out its full timeout and then runs
+# UNGATED: the gate disabled by the very tenants it exists to account for, on a
+# box that looked healthy at each individual admission. The cap only gates NEW
+# admissions (via the published health bit that resident jobs wait on);
+# accounting for residents already past it stays honest, so the floor still
+# reflects reality. Defaults to what the build ceiling leaves over, so browsers
+# can never squeeze builds below their full ceiling.
+CFG["max_resident"] = _int(
+    "KX_SEM_MAX_RESIDENT", max(1, CFG["max_slots"] - CFG["ceil"])
 )
 
 
@@ -592,15 +608,25 @@ class Semaphore:
 
         return self.max_slots - len(self.held)
 
+    # THE PUBLISHED STATE FORMAT -- one space-separated line, fields in exactly
+    # this order. This tuple is the contract for every reader: kx-build-slot.sh
+    # reads "healthy" as field 8 (1-based cut), wt-cgroup-i3status.py reads
+    # allowed/effective/resident by 0-based index, and the fast test suite
+    # asserts its hand-written state lines against this tuple. New fields are
+    # APPENDED, never inserted, so an older reader keeps working across a
+    # partial deploy -- which is why `resident` sits at the end despite
+    # belonging next to `occupied`.
+    FIELDS = (
+        "allowed", "effective", "max_slots", "occupied",
+        "target", "mark", "resident", "healthy",
+    )
+
     def publish(
         self, allowed, effective, occupied=None, target=None, mark=None,
         resident=None, healthy=None,
     ):
-        # Field 0 stays `allowed` and field 2 stays `max_slots`: the i3status
-        # block reads field 0 positionally. New fields are appended, never
-        # inserted, so an older reader keeps working across a partial deploy --
-        # which is why `resident` goes on the END despite belonging next to
-        # `occupied`. Readers wanting BUILD occupancy want occupied - resident.
+        # See FIELDS above for the format contract. Readers wanting BUILD
+        # occupancy want occupied - resident.
         try:
             occ = "-" if occupied is None else str(occupied)
             tgt = "-" if target is None else str(target)
@@ -682,11 +708,13 @@ def main():
         f"dwell={CFG['dwell']}s interval={CFG['interval']}s "
         f"grow+{CFG['grow_step']} every>={CFG['grant_every']}s free<={CFG['burst']} "
         f"needs {CFG['grant_headroom_jobs']}x{CFG['job_bytes'] / 2**30:.1f}G free "
-        f"and psi10<={CFG['grant_psi']}% start={allowed}"
+        f"and psi10<={CFG['grant_psi']}% max_resident={CFG['max_resident']} "
+        f"start={allowed}"
     )
 
     prev_effective = None
     last_hold_log = 0.0
+    was_resident_full = False
     try:
         while not stop["now"]:
             psi10 = read_psi(POOL, "full", "avg10")
@@ -758,6 +786,19 @@ def main():
             mem_ok = headroom is None or headroom >= need
             psi_ok = psi10 is None or psi10 <= CFG["grant_psi"]
             healthy = mem_ok and psi_ok
+
+            # The RESIDENT CAP folds into the PUBLISHED health bit only: that
+            # field is read solely by jobs about to become resident (builds
+            # ignore it), so refusing it when residents are at cap gates
+            # exactly the admissions the cap is about -- while `healthy` keeps
+            # its own meaning for every decision this loop makes about builds.
+            resident_full = resident >= CFG["max_resident"]
+            if resident_full != was_resident_full:
+                log(
+                    f"RESIDENT-CAP {'engaged' if resident_full else 'released'} "
+                    f"resident={resident} cap={CFG['max_resident']}"
+                )
+                was_resident_full = resident_full
 
             # Move the mark. Upward only on evidence -- occupancy that was
             # actually reached while the load test passed -- and downward
@@ -921,7 +962,8 @@ def main():
             target = admit_target(allowed)
             effective = sem.reconcile(target)
             sem.publish(
-                allowed, effective, occupied, target, mark, resident, healthy
+                allowed, effective, occupied, target, mark, resident,
+                healthy and not resident_full,
             )
 
             if reason and allowed != before:
