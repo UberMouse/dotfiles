@@ -33,6 +33,9 @@ This is also aliased as `hms` in the shell.
   outcomes are polled via `testlib.wait_for`, never fixed sleeps.
 - `nix fmt` — formats the tree (nixfmt-rfc-style via treefmt). Whole-tree
   mechanical reformats get their SHA added to `.git-blame-ignore-revs`.
+- A `pre-push` hook (`hooks/pre-push`, wired via a gitdir-scoped includeIf
+  in home.nix) runs the lint/formatting/script-tests checks automatically —
+  the seconds-fast subset, not the full closure.
 
 ## Architecture
 
@@ -67,6 +70,21 @@ bump is one `curl` of the upstream manifest.json).
 `nixpkgs-unstable`. Passed via `specialArgs`/`extraSpecialArgs`. (A third,
 unstable-small, existed solely for fresher claude-code; the manifest override
 made channel freshness irrelevant and it was dropped.)
+
+## Docs Layout
+
+- `CLAUDE.md` — standing rules and traps an agent needs on every task.
+- `docs/plans/` — live implementation plans only; delete on ship (history
+  keeps them).
+- `docs/notes/` — dated investigation write-ups worth keeping. Subject to
+  the same no-hand-copied-machine-facts rule as everything else; a note
+  whose numbers have rotted gets deleted, not corrected.
+- `packages/*/UPDATE.md` — per-package update specs (see below).
+- `README.md` — bootstrap + day-to-day pointer; it deliberately defers to
+  this file so the two never drift.
+
+The lint's docs-liveness check walks CLAUDE.md, `docs/**/*.md`, and the
+skills, so a path named anywhere in them must exist.
 
 ## Conventions
 

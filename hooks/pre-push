@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# pre-push -- run the cheap flake checks before anything leaves the machine.
+#
+# Wired declaratively: home.nix adds an includeIf gitdir:~/dotfiles/ fragment
+# to the global git config pointing core.hooksPath at this directory, so the
+# hook survives a fresh clone with zero setup (unlike .git/hooks, which is
+# machine-local -- the same gap that once let 144 MiB of agent transcripts
+# get committed).
+#
+# Deliberately NOT the toplevel check (full system build) -- this has to be
+# seconds, or it gets --no-verify'd out of habit. The heavy gate remains
+# `nix flake check` before a switch.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+echo "pre-push: lint + formatting + script-tests (nix flake checks)..."
+nix build --no-link \
+  .#checks.x86_64-linux.lint \
+  .#checks.x86_64-linux.formatting \
+  .#checks.x86_64-linux.script-tests
+echo "pre-push: checks passed"

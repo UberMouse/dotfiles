@@ -1,11 +1,7 @@
-{ lib, pkgs, ... }:
+{ lib, ... }:
 
 let
   mod = "Mod4";
-  # The VMware HOST's LAN address (DHCP; rediscover with `ip route` on the
-  # host if it moves). 8004 = the host-side voice-assistant hotkey listener;
-  # the reciprocal VM-inbound port 8003 is opened in nixos.nix's firewall.
-  hostIp = "192.168.50.16";
 in
 {
   xsession.windowManager.i3 = {
@@ -67,12 +63,11 @@ in
       keybindings = lib.mkOptionDefault {
         "${mod}+t" = "scratchpad show";
         "${mod}+Shift+s" = "exec --no-startup-id maim -s | xclip -selection clipboard -t image/png";
-        # Fire the voice-assistant hotkey on the Windows host. VMware grabs
-        # the keyboard when the VM has focus, so the host's pynput listener
-        # never sees the press — this curl shim plumbs it back over HTTP.
-        # Matches the host-side chord (lshift+f3) for muscle-memory parity.
-        "Shift+F3" =
-          "exec --no-startup-id ${pkgs.curl}/bin/curl -fsS -m 2 -X POST -H 'Content-Type: application/json' -d '{\"kind\":\"short\"}' http://${hostIp}:8004/hotkey";
+        # Fire the voice-assistant hotkey on the Windows host. The script
+        # reads the host's LAN address from ~/.config/kx/host-ip
+        # (machine-local, deliberately untracked -- this repo is public);
+        # see scriptBins/bins/kx-host-hotkey.sh.
+        "Shift+F3" = "exec --no-startup-id kx-host-hotkey";
       };
 
       startup = [

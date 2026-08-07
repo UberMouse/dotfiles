@@ -163,6 +163,14 @@
       # Skip whole-tree mechanical reformat commits in blame (repo-relative
       # path: only takes effect in repos that ship the file, like dotfiles).
       blame.ignoreRevsFile = ".git-blame-ignore-revs";
+      # Repo-scoped hooks for the dotfiles checkout only: pre-push runs the
+      # cheap flake checks (see hooks/pre-push). Declared here rather than
+      # in .git/hooks so it survives a clone -- machine-local git state not
+      # surviving clones is how 144 MiB of transcripts once got committed.
+      "includeIf \"gitdir:~/dotfiles/\"".path = "${pkgs.writeText "dotfiles-hooks.gitconfig" ''
+        [core]
+        	hooksPath = ~/dotfiles/hooks
+      ''}";
       init.defaultBranch = "main";
       gpg.format = "ssh";
       "gpg \"ssh\"".program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";

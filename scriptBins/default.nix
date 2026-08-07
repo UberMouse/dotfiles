@@ -189,6 +189,17 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       runtimeInputs = [ pkgs.curl ];
       bashOptions = [ "nounset" ];
     })
+    # Voice-assistant chord relay to the VMware host; reads the host's LAN
+    # address from machine-local state (~/.config/kx/host-ip) so the public
+    # tree carries no addresses.
+    (sh {
+      name = "kx-host-hotkey";
+      runtimeInputs = [
+        pkgs.curl
+        pkgs.libnotify
+      ];
+      bashOptions = [ "nounset" ];
+    })
     (sh {
       name = "dev-terminal";
       runtimeInputs = [

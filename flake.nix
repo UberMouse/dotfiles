@@ -16,6 +16,7 @@
       # postPatch sed guards, missing bundle package-lock.json handling).
       # Switch back to pietdevries94 once it ships 1.62.
       url = "github:Pentusha/playwright-web-flake/74974b957d10ad871afb721a06688bd09eb0bbda";
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
       url = "github:nix-community/home-manager/release-26.05";

@@ -1,5 +1,18 @@
 {
   "worktree": {
     "bgIsolation": "none"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(nix-prefetch-url:*)",
+      "Bash(nix hash convert:*)",
+      "Bash(xargs nix hash convert:*)",
+      "Bash(prefetch-npm-deps:*)",
+      "Bash(nix run nixpkgs#nix-update:*)",
+      "Bash(nix run nixpkgs#prefetch-npm-deps:*)",
+      "Bash(nix build:*)",
+      "Bash(nix flake check:*)",
+      "Bash(gh api:*)"
+    ]
   }
 }

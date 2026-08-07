@@ -96,28 +96,45 @@
         }
       '')
       (lib.mkAfter ''
+        # Shared by every rush helper below: the walk-up-to-rush.json and the
+        # JSONC-strip-then-jq incantation used to be copy-pasted four times
+        # (and could drift independently). _rush_jsonc's perl strip is
+        # textual -- a literal "//" inside a JSON string would be mangled --
+        # accepted for the same reason rush-logs.sh accepts it.
+        _rush_root() {
+          local dir="$PWD"
+          while [[ "$dir" != "/" ]]; do
+            [[ -f "$dir/rush.json" ]] && { print -r -- "$dir"; return 0; }
+            dir="$(dirname "$dir")"
+          done
+          return 1
+        }
+        _rush_jsonc() {
+          perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$1"
+        }
+        _rush_packages() {
+          local root="$1"
+          _rush_jsonc "$root/rush.json" | jq -r '.projects[].packageName'
+        }
+
         _rush_completion() {
           compadd -- $(rush tab-complete --position ${"$"}{CURSOR} --word "${"$"}{BUFFER}" 2>>/dev/null)
         }
         compdef _rush_completion rush
 
         _rush_logs_completion() {
-          local dir="$PWD" rush_root=""
-          while [[ "$dir" != "/" ]]; do
-            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
-            dir="$(dirname "$dir")"
-          done
-          [[ -z "$rush_root" ]] && return
+          local rush_root
+          rush_root="$(_rush_root)" || return
 
           case $CURRENT in
             2)
               local -a packages
-              packages=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r '.projects[].packageName') )
+              packages=( $(_rush_packages "$rush_root") )
               compadd -- "${"$"}{packages[@]}"
               ;;
             3)
               local -a phases
-              phases=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/common/config/rush/command-line.json" | jq -r '.phases[].name | sub("^_phase:";"")') )
+              phases=( $(_rush_jsonc "$rush_root/common/config/rush/command-line.json" | jq -r '.phases[].name | sub("^_phase:";"")') )
               compadd -- "${"$"}{phases[@]}"
               ;;
           esac
@@ -130,19 +147,14 @@
             return 1
           fi
 
-          local dir="$PWD" rush_root=""
-          while [[ "$dir" != "/" ]]; do
-            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
-            dir="$(dirname "$dir")"
-          done
-
-          if [[ -z "$rush_root" ]]; then
+          local rush_root
+          if ! rush_root="$(_rush_root)"; then
             echo "Error: Could not find rush.json in any parent directory"
             return 1
           fi
 
           local project_folder
-          project_folder=$(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r --arg pkg "$1" '.projects[] | select(.packageName == $pkg) | .projectFolder')
+          project_folder=$(_rush_jsonc "$rush_root/rush.json" | jq -r --arg pkg "$1" '.projects[] | select(.packageName == $pkg) | .projectFolder')
 
           if [[ -z "$project_folder" ]]; then
             echo "Error: Package '$1' not found in rush.json"
@@ -153,15 +165,11 @@
         }
 
         _navigate_to_completion() {
-          local dir="$PWD" rush_root=""
-          while [[ "$dir" != "/" ]]; do
-            [[ -f "$dir/rush.json" ]] && { rush_root="$dir"; break; }
-            dir="$(dirname "$dir")"
-          done
-          [[ -z "$rush_root" ]] && return
+          local rush_root
+          rush_root="$(_rush_root)" || return
 
           local -a packages
-          packages=( $(perl -0777 -pe 's|/\*.*?\*/||gs; s|^\s*//[^\n]*||gm; s|\r||g' "$rush_root/rush.json" | jq -r '.projects[].packageName') )
+          packages=( $(_rush_packages "$rush_root") )
           compadd -- "${"$"}{packages[@]}"
         }
         compdef _navigate_to_completion navigate-to
