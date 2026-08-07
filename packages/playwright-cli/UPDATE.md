@@ -89,13 +89,15 @@ before continuing.
    ```
 
 4. Edit `packages/playwright-cli/package.nix`:
-   - `version` → new version
    - `src.hash` → SRI hash from step 1
    - `npmDepsHash` → hash from step 3
+   - (NOT `version` — it is derived from the vendored lock regenerated in
+     step 2, so version and lock cannot disagree by construction)
 
-5. Verify in isolation:
+5. Verify in isolation (the derivation runs the wrapper's `--version` as an
+   install check):
    ```bash
-   nix build .#playwright-cli
+   nix build --no-link .#playwright-cli
    ```
    The build ASSERTS that playwright-core still ships
    `lib/entry/cliDaemon.js` — the path the browser-residency probe matches. If

@@ -16,11 +16,17 @@ Each UPDATE.md has YAML frontmatter and markdown instructions:
 name: <package-name>           # Required: identifier for commit messages
 version_check: <command>       # Required: outputs latest version
 version_file: <path>           # Required: file containing current version
+mode: check-only               # Optional: spec only REPORTS, never bumps
 changelog_url: <url>           # Optional: URL to changelog file
 changelog_path: <path>         # Optional: path in extracted tarball
 changelog_github: <owner/repo> # Optional: GitHub repo for release notes
 ---
 ```
+
+`mode: check-only` marks specs that track a flake-input rev rather than a
+version string (playwright, kolide-launcher). For those, skip step 2a's
+version-file extraction entirely — there is no `version = "X.Y.Z"` to find —
+and just follow the body, which ends in a report to the user, never an edit.
 
 The body contains freeform update instructions with `${VERSION}` variable support.
 
@@ -40,10 +46,13 @@ Sort alphabetically by package name from frontmatter.
 For each UPDATE.md:
 
 **a. Check versions**
+- If the frontmatter says `mode: check-only`: follow the body directly (it
+  compares revs and reports); skip the version extraction below.
 - Run `version_check` command → latest version
 - Read `version_file` → extract current version (a `version = "X.Y.Z"`-style
   assignment, unless the spec's body says where the version lives — e.g. rush's
-  is the `@microsoft/rush` pin in its package.json)
+  is the `@microsoft/rush` pin in its package.json, and playwright-cli's is
+  the `version` field of its vendored package-lock.json)
 
 **b. If current == latest**: Log "package-name already at X.Y.Z" and skip to next spec.
 

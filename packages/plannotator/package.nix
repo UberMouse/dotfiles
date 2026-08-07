@@ -37,6 +37,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   meta = {
     description = "Code review and annotation tool for Claude Code";
     homepage = "https://github.com/backnotprop/plannotator";
+    changelog = "https://github.com/backnotprop/plannotator/releases";
     license = lib.licenses.asl20;
     sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
     platforms = [ "x86_64-linux" ];

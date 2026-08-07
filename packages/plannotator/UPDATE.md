@@ -7,21 +7,18 @@ changelog_github: backnotprop/plannotator
 
 # Update Process
 
-1. Get the binary hash (SRI, directly):
+1. Bump version + binary hash in one step:
    ```bash
-   nix store prefetch-file --json "https://github.com/backnotprop/plannotator/releases/download/v${VERSION}/plannotator-linux-x64" | jq -r .hash
+   nix run nixpkgs#nix-update -- --flake --version=${VERSION} plannotator
    ```
 
-2. Edit `packages/plannotator/package.nix`:
-   - `version` → new version (without `v` prefix)
-   - `src.hash` → hash from step 1
-
-3. Verify in isolation:
+2. Verify in isolation (the derivation runs `plannotator --version` as an
+   install check):
    ```bash
-   nix build .#plannotator
+   nix build --no-link .#plannotator
    ```
 
-4. Update the Claude Code plugin (not flake-managed; touches `~/.claude/plugins/`):
+3. Update the Claude Code plugin (not flake-managed; touches `~/.claude/plugins/`):
    ```bash
    claude plugin update plannotator@plannotator
    ```

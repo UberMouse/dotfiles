@@ -46,6 +46,9 @@ day-to-day work.
 
 - `git ls-tree -r -l HEAD | sort -k4 -n | tail` — any tracked blob over ~1 MB
   needs a reason; agent transcripts/session state never belong in git.
+- `git ls-files -s | awk '$1 == 120000'` — tracked symlinks. A symlink into
+  `/nix/store` is a committed `result` (56 bytes, invisible to the size check
+  above — exactly how one survived the 2026-08-07 audit).
 - `du -sh */ .*/ 2>/dev/null | sort -h | tail` — large untracked trees inside
   the repo (node_modules, agent state) should be ignored or relocated.
 - New agent-runtime directories (`.pi/`-shaped) must be in the tracked

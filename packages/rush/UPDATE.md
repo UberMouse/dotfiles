@@ -28,7 +28,8 @@ changelog_github: microsoft/rushstack
    ```
    Put the printed hash in `packages/rush/package.nix` → `npmDepsHash`.
 
-4. Verify in isolation:
+4. Verify in isolation (the derivation runs `rush --version` as an install
+   check):
    ```bash
-   nix build .#rushjs && ./result/bin/rush --help | head -1
+   nix build --no-link .#rushjs
    ```

@@ -3,6 +3,7 @@
   buildNpmPackage,
   nodejs,
   makeWrapper,
+  versionCheckHook,
 }:
 buildNpmPackage {
   pname = "rush";
@@ -31,6 +32,9 @@ buildNpmPackage {
     runHook preInstall
 
     mkdir -p $out/lib $out/bin
+    # Bypasses npmInstallHook, so no `npm prune --omit=dev` runs. Fine today:
+    # package.json has exactly one dependency and no devDependencies, so
+    # there is nothing to prune -- revisit if that ever changes.
     cp -r node_modules $out/lib/node_modules
 
     makeWrapper ${nodejs}/bin/node $out/bin/rush \
@@ -42,10 +46,20 @@ buildNpmPackage {
     runHook postInstall
   '';
 
+  # `rush --version` prints "Rush Multi-Project Build Tool <version>", which
+  # is enough for versionCheckHook and proves the node wrapper + module
+  # resolution actually work after a bump.
+  doInstallCheck = true;
+  nativeInstallCheckInputs = [ versionCheckHook ];
+  versionCheckProgramArg = "--version";
+
   meta = {
     description = "Microsoft Rush monorepo manager";
     homepage = "https://rushjs.io";
+    changelog = "https://github.com/microsoft/rushstack/blob/main/apps/rush/CHANGELOG.md";
     license = lib.licenses.mit;
+    # Prebuilt JS from the npm registry, not built from source here.
+    sourceProvenance = with lib.sourceTypes; [ binaryBytecode ];
     platforms = lib.platforms.all;
     mainProgram = "rush";
   };

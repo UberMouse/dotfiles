@@ -7,17 +7,14 @@ changelog_github: sirmalloc/ccstatusline
 
 # Update Process
 
-1. Get tarball hash:
+1. Bump version + src hash in one step (no URLs to keep in sync with
+   `package.nix` — nix-update reads them from the derivation):
    ```bash
-   nix-prefetch-url --unpack "https://registry.npmjs.org/ccstatusline/-/ccstatusline-${VERSION}.tgz"
-   nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
+   nix run nixpkgs#nix-update -- --flake --version=${VERSION} ccstatusline
    ```
 
-2. Edit `packages/ccstatusline/package.nix`:
-   - `version` → new version
-   - `src.hash` → SRI hash from step 1
-
-3. Verify in isolation:
+2. Verify in isolation (the derivation runs `ccstatusline --version` as an
+   install check, so a build IS the smoke test):
    ```bash
-   nix build .#ccstatusline && ./result/bin/ccstatusline --help >/dev/null
+   nix build --no-link .#ccstatusline
    ```

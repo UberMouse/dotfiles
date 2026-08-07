@@ -1,7 +1,12 @@
 ---
 name: playwright-input
+# check-only: there is no `version = "X.Y.Z"` to extract or bump; the pin is a
+# flake.lock rev and this spec only ever REPORTS. The weekly-update skill
+# skips version-file extraction for mode: check-only specs and follows the
+# body directly.
+mode: check-only
 version_check: nix eval --raw "github:pietdevries94/playwright-web-flake#playwright-driver.version"
-version_file: flake.nix
+version_file: flake.lock
 ---
 
 # Check Process (never auto-update)

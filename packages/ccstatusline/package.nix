@@ -38,7 +38,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
   meta = {
     description = "A customizable status line formatter for Claude Code CLI";
     homepage = "https://github.com/sirmalloc/ccstatusline";
+    changelog = "https://github.com/sirmalloc/ccstatusline/releases";
     license = lib.licenses.mit;
+    # Prebuilt dist/ JS from the npm registry, not built from source here.
+    sourceProvenance = with lib.sourceTypes; [ binaryBytecode ];
     platforms = lib.platforms.all;
     mainProgram = "ccstatusline";
   };

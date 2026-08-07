@@ -10,17 +10,16 @@ changelog_github: koordinates/kart
 Prebuilt linux-x86_64 tarball from GitHub Releases, patchelf'd against the
 runtime libs listed in `package.nix`.
 
-1. Get the tarball hash (SRI, directly):
+1. Bump version + tarball hash in one step:
    ```bash
-   nix store prefetch-file --json "https://github.com/koordinates/kart/releases/download/v${VERSION}/Kart-${VERSION}-linux-x86_64.tar.gz" | jq -r .hash
+   nix run nixpkgs#nix-update -- --flake --version=${VERSION} kart
    ```
 
-2. Edit `packages/kart/package.nix`:
-   - `version` → new version (without `v` prefix)
-   - `src.hash` → hash from step 1
-
-3. Verify in isolation:
+2. Verify in isolation (the derivation runs `kart --version` as an install
+   check — the banner exercises GDAL/PROJ/PDAL plugin loading, so a passing
+   build is a real smoke test):
    ```bash
-   nix build .#kart && ./result/bin/kart --version
+   nix build --no-link .#kart
    ```
-   If autoPatchelf fails on a new missing library, add it to `buildInputs`.
+   If autoPatchelf fails on a new missing library, add it to `buildInputs`
+   (the list is hand-maintained; the comment above it explains the pins).

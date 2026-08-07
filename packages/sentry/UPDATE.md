@@ -11,16 +11,13 @@ This is the new Sentry CLI (`getsentry/cli`, binary name `sentry`), not nixpkgs'
 older `sentry-cli`. Distributed as a bun-compiled linux-x64 binary from GitHub
 Releases.
 
-1. Get the source hash (SRI, directly):
+1. Bump version + binary hash in one step:
    ```bash
-   nix store prefetch-file --json "https://github.com/getsentry/cli/releases/download/${VERSION}/sentry-linux-x64" | jq -r .hash
+   nix run nixpkgs#nix-update -- --flake --version=${VERSION} sentry
    ```
 
-2. Edit `packages/sentry/package.nix`:
-   - `version` → new version
-   - `src.hash` → hash from step 1
-
-3. Verify in isolation:
+2. Verify in isolation (the derivation runs `sentry --version` as an install
+   check):
    ```bash
-   nix build .#sentry && ./result/bin/sentry --version
+   nix build --no-link .#sentry
    ```

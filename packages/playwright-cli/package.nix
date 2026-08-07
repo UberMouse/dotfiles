@@ -142,7 +142,14 @@ let
 in
 buildNpmPackage (finalAttrs: {
   pname = "playwright-cli";
-  version = "0.1.17";
+  # Derived from the vendored lock (rush's idiom), NOT written here by hand.
+  # When the two were independent, bumping `version` while forgetting to
+  # regenerate the lock built the NEW tarball against the OLD dependency
+  # tree -- `npm ci` does not hard-fail on a root-version mismatch and
+  # npmDepsHash stayed valid, so the wrong build was silent. Deriving from
+  # the lock means a stale lock now fetches the old tarball (consistent,
+  # just not-updated) instead of mixing the two.
+  version = (lib.importJSON ./package-lock.json).version;
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@playwright/cli/-/cli-${finalAttrs.version}.tgz";
@@ -157,7 +164,10 @@ buildNpmPackage (finalAttrs: {
 
   dontNpmBuild = true;
 
-  # Don't let npm fetch browsers or run any lifecycle scripts.
+  # npm-config-hook already passes --ignore-scripts to `npm ci`
+  # unconditionally; this flag additionally covers the `npm pack`/`npm prune`
+  # invocations in npm-install-hook, which is where a lifecycle script could
+  # otherwise still fire (and try to fetch browsers).
   npmFlags = [ "--ignore-scripts" ];
 
   postInstall = ''
@@ -193,12 +203,41 @@ buildNpmPackage (finalAttrs: {
     install -m755 ${wrapperScript} $out/bin/playwright-cli
     sed -i "s|@ENTRY@|$pkgdir/playwright-cli.js|" $out/bin/playwright-cli
     sed -i "s|@PROBE@|$out/libexec/kx-pw-daemons|" $out/bin/playwright-cli
+
+    # A sed whose pattern rotted substitutes NOTHING and exits 0; a wrapper
+    # shipped with a literal @ENTRY@ fails at first use instead of at build.
+    # Same argument as the cliDaemon.js assertion above: fail loudly here.
+    if grep -qE '@(ENTRY|PROBE)@' $out/bin/playwright-cli; then
+      echo "ERROR: wrapper token substitution failed (@ENTRY@/@PROBE@ survived)" >&2
+      exit 1
+    fi
+  '';
+
+  # The wrapper is 90 lines of hand-written argv parsing -- the code most
+  # likely to break in a rewrite and least likely to be caught. Executing it
+  # end to end also proves the @ENTRY@ path resolves against the symlinked
+  # playwright-core.
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    out_ver="$($out/bin/playwright-cli --version)"
+    echo "playwright-cli --version -> $out_ver"
+    if [ "''${out_ver#*${finalAttrs.version}}" = "$out_ver" ]; then
+      echo "ERROR: --version output does not contain ${finalAttrs.version}" >&2
+      exit 1
+    fi
+    runHook postInstallCheck
   '';
 
   meta = {
     description = "Official Playwright CLI (@playwright/cli)";
     homepage = "https://playwright.dev";
+    changelog = "https://github.com/microsoft/playwright-cli/releases";
     license = lib.licenses.asl20;
+    # Prebuilt JS from the npm registry; the browsers come prebuilt from the
+    # playwright-web-flake input, which only packages x86_64-linux here.
+    sourceProvenance = with lib.sourceTypes; [ binaryBytecode ];
+    platforms = [ "x86_64-linux" ];
     mainProgram = "playwright-cli";
   };
 })
