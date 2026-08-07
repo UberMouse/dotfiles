@@ -1,16 +1,12 @@
 { pkgs, self, ... }:
 
 {
-  imports = [ # Include the results of the hardware scan.
-    ./work-vm.nix
-  ];
-
   # Bootloader.
   boot.loader.grub.enable = true;
   boot.loader.grub.device = "/dev/sda";
   boot.loader.grub.useOSProber = true;
 
-  networking.hostName = "nixos";
+  networking.hostName = "ubermouse";
   networking.extraHosts = ''
     127.0.0.1 my.dev.kx.gd
     127.0.0.1 wp.dev.kx.gd

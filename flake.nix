@@ -51,6 +51,9 @@
         specialArgs = { inherit unstable-pkgs unstable-small-pkgs self; };
 
         modules = [
+          # Hardware first, generic policy second: nixos.nix stays reusable for
+          # a future second host whose nixosConfiguration differs only here.
+          ./work-vm.nix
           ./nixos.nix
           kolide-launcher.nixosModules.kolide-launcher
           home-manager.nixosModules.home-manager
