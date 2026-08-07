@@ -106,28 +106,12 @@
       unstable-pkgs.playwright-cli
       unstable-pkgs.plannotator
       unstable-pkgs.ccstatusline
-      unstable-pkgs.pi-coding-agent
       unstable-pkgs.rush
 
       unstable-small-pkgs.claude-code
     ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
-
-  home.file.".pi/agent/extensions".source = config.lib.file.mkOutOfStoreSymlink "${config.home.homeDirectory}/dotfiles/pi/extensions";
-  home.file.".pi/agent/skills".source = ./pi/skills;
-  home.file.".pi/agent/prompts".source = ./pi/prompts;
-  home.file.".pi/agent/themes".source = ./pi/themes;
-  home.file.".pi/agent/settings.json".text = builtins.toJSON {
-    defaultProvider = "openai-codex";
-    defaultModel = "gpt-5.5";
-    defaultThinkingLevel = "medium";
-    packages = [
-      "npm:pi-web-access@0.10.6"
-      "npm:@plannotator/pi-extension@0.25.1"
-      "npm:pi-mermaid@0.3.0"
-    ];
-  };
 
   fonts.fontconfig = { enable = true; };
 

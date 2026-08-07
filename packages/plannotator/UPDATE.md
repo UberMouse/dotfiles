@@ -17,10 +17,7 @@ changelog_github: backnotprop/plannotator
    - `version` → new version (without `v` prefix)
    - `src.hash` → SRI hash from step 1
 
-3. Edit `home.nix` line ~128:
-   - Update `npm:@plannotator/pi-extension@X.Y.Z` to match the new version
-
-4. Update the Claude Code plugin (not flake-managed; touches `~/.claude/plugins/`):
+3. Update the Claude Code plugin (not flake-managed; touches `~/.claude/plugins/`):
    ```bash
    claude plugin update plannotator@plannotator
    ```

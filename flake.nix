@@ -34,7 +34,6 @@
         playwright-cli = final.callPackage ./packages/playwright-cli/package.nix {};
         plannotator = final.callPackage ./packages/plannotator/package.nix {};
         ccstatusline = final.callPackage ./packages/ccstatusline/package.nix {};
-        pi-coding-agent = final.callPackage ./packages/pi-coding-agent/package.nix {};
         rush = final.callPackage ./packages/rush/package.nix {};
         sentry = final.callPackage ./packages/sentry/package.nix {};
       };

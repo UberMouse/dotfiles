@@ -31,7 +31,6 @@ The body contains freeform update instructions with `${VERSION}` variable suppor
 Find all spec files:
 ```bash
 find packages -maxdepth 2 -name "UPDATE.md" 2>/dev/null
-find autoupdate -name "*.md" 2>/dev/null
 ```
 
 Sort alphabetically by package name from frontmatter.
@@ -106,5 +105,4 @@ If no changelog source configured: note "No changelog configured for package-nam
 
 - If a spec's version is already current, skip silently — this is normal
 - The final `nixos-rebuild switch` serves as verification for all updates
-- Some packages (like pi-coding-agent) have complex update flows with build-fail-extract cycles — follow the spec instructions exactly
-- The `autoupdate/` directory is for packages without dedicated folders (e.g., version pins in home.nix)
+- Some packages have more involved update flows than a version+hash bump — follow the spec instructions exactly
