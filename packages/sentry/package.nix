@@ -4,6 +4,7 @@
   stdenvNoCC,
   fetchurl,
   autoPatchelfHook,
+  versionCheckHook,
 }:
 # The new Sentry CLI (getsentry/cli) — a bun-compiled single-file binary,
 # distinct from nixpkgs' `sentry-cli` (the older getsentry/sentry-cli, 2.x).
@@ -32,6 +33,12 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     runHook postInstall
   '';
+
+  # A hash bump is otherwise accepted with zero evidence the binary runs;
+  # `sentry --version` exercises the patchelf'd bun runtime end to end.
+  doInstallCheck = true;
+  nativeInstallCheckInputs = [ versionCheckHook ];
+  versionCheckProgramArg = "--version";
 
   meta = {
     description = "Sentry command-line interface (getsentry/cli)";

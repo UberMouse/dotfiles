@@ -4,6 +4,7 @@
   fetchzip,
   nodejs,
   makeWrapper,
+  versionCheckHook,
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "ccstatusline";
@@ -29,6 +30,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
 
     runHook postInstall
   '';
+
+  doInstallCheck = true;
+  nativeInstallCheckInputs = [ versionCheckHook ];
+  versionCheckProgramArg = "--version";
 
   meta = {
     description = "A customizable status line formatter for Claude Code CLI";
