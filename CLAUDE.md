@@ -34,8 +34,16 @@ This is also aliased as `hms` in the shell.
 - `nix fmt` — formats the tree (nixfmt-rfc-style via treefmt). Whole-tree
   mechanical reformats get their SHA added to `.git-blame-ignore-revs`.
 - A `pre-push` hook (`hooks/pre-push`, wired via a gitdir-scoped includeIf
-  in home.nix) runs the lint/formatting/script-tests checks automatically —
-  the seconds-fast subset, not the full closure.
+  in home.nix) runs every flake check except `toplevel` automatically — the
+  list is derived from the flake, never hardcoded. NOTE: a machine-local
+  `.git/config` `core.hooksPath` silently overrides this wiring (found dead
+  exactly that way 2026-08-07); `git config --show-scope --get-all
+  core.hooksPath` — a `local` row is the bug.
+- There is deliberately NO CI (a GitHub Actions workflow was added 2026-08-07
+  and removed next day — taylorl doesn't want to deal with it). Do not
+  re-suggest one in audits; the pre-push hook and `nix flake check` before a
+  switch are the only gates, so keeping the hook wiring alive (above) is
+  load-bearing.
 
 ## Architecture
 
