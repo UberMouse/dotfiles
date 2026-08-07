@@ -24,7 +24,9 @@
 # ~/.local/state/cgroup-pressure). Investigate later:  ls -t "$CGPM_OUTDIR"
 #
 # Tunables (env):
-#   CGPM_THRESH               DESKTOP full-avg10 %% that counts as a stall (default 15)
+#   CGPM_THRESH               DESKTOP full-avg10 %% that counts as a stall
+#                             (integer %, default 15 -- it is pre-scaled for an
+#                             integer compare, see THRESH_CENTI)
 #   CGPM_INTERVAL             poll seconds                          (default 5)
 #   CGPM_COOLDOWN             min seconds between snapshots         (default 120)
 #   CGPM_OUTDIR               output directory
@@ -41,7 +43,12 @@ COOLDOWN="${CGPM_COOLDOWN:-120}"
 CLAUDE_BIN="${CGPM_CLAUDE:-claude}"
 MODEL="${CGPM_MODEL:-opus}"
 INV_COOLDOWN="${CGPM_INVESTIGATE_COOLDOWN:-1800}"
-mkdir -p "$OUTDIR"
+# Fail LOUDLY if the output directory cannot exist. Unchecked (as this was
+# until 2026-08-07), a failed mkdir meant every event append and snapshot below
+# went nowhere, forever, silently -- a monitor whose whole job is to leave a
+# trace would leave none. Exiting lets systemd (Restart=always) retry and
+# surface the flapping unit instead.
+mkdir -p "$OUTDIR" || { echo "cgroup-pressure-monitor: cannot create output dir '$OUTDIR'" >&2; exit 1; }
 LOG="$OUTDIR/events.log"
 
 U=$(id -u)
@@ -53,7 +60,42 @@ DESKTOP=""     # graphical session scope; resolved lazily, cached, re-resolved i
 last_snap=0
 last_investigate=0
 
-full_avg10() { awk '/^full/{for(i=1;i<=NF;i++){n=split($i,a,"=");if(a[1]=="avg10")print a[2]}}' "$1" 2>/dev/null; }
+# Threshold pre-scaled to the integer hundredths psi_full_avg10 returns, so the
+# per-tick comparison is a shell integer test and not an awk invocation.
+# ("15.00" -> 1500 >= 1500 fires; "14.99" -> 1499 does not.) This is why
+# CGPM_THRESH must be an integer percent.
+THRESH_CENTI=$(( THRESH * 100 ))
+
+# Reads "full ... avg10=NN.NN ..." from a PSI file into two globals:
+#   PSI_TEXT  -- the value exactly as the kernel printed it, for event lines
+#   PSI_CENTI -- the same number in integer hundredths, for comparisons
+# Ported verbatim from cgroup-governor.sh, whose FORK BUDGET header carries the
+# full argument: sets globals rather than echoing because `x=$(fn)` forks a
+# subshell even for a builtin, and this runs twice per tick on the detection
+# path. The old `full_avg10` here was one awk fork per call, forever.
+PSI_TEXT=0
+PSI_CENTI=0
+psi_full_avg10() {
+  local line tok i f
+  PSI_TEXT=0; PSI_CENTI=0
+  while read -r line; do
+    case "$line" in full\ *) ;; *) continue ;; esac
+    for tok in $line; do
+      case "$tok" in
+        avg10=*)
+          PSI_TEXT="${tok#avg10=}"
+          i="${PSI_TEXT%%.*}"; [ -n "$i" ] || i=0
+          f="${PSI_TEXT#*.}"; [ "$f" = "$PSI_TEXT" ] && f=00
+          f="${f}00"; f="${f:0:2}"
+          # 10# forces base 10: PSI prints "08" and "09", which are invalid octal.
+          PSI_CENTI=$(( 10#$i * 100 + 10#$f ))
+          return 0
+          ;;
+      esac
+    done
+  done < "$1" 2>/dev/null
+  return 0
+}
 human() {
   # cgroup memory files can hold the literal "max"; pass non-numbers through.
   case "${1:-}" in
@@ -66,6 +108,11 @@ human() {
 # desktop lives OUTSIDE the pool; its OWN PSI is the "is the user stalling"
 # signal. Cached in $DESKTOP; re-resolves if the cached scope disappears (the
 # session can change across logout/login).
+#
+# Called every tick, but the cached fast path on the first line is two builtin
+# tests -- fork-free -- so it costs the per-tick budget nothing. The forking
+# loginctl/awk walk below runs only while the cache is cold (startup,
+# logout/login), which is why it keeps its plain style.
 resolve_desktop() {
   [ -n "$DESKTOP" ] && [ -r "$DESKTOP/io.pressure" ] && return 0
   DESKTOP=""
@@ -163,6 +210,9 @@ $analysis" 2>/dev/null || true
   fi
 }
 
+# Forks are fine in here: snapshot runs only on the (rare, COOLDOWN-limited)
+# stall path, where forensic completeness is worth any number of forks -- by
+# the time this fires, detection has already done its job.
 snapshot() {
   local reason="$1"
   local stamp file
@@ -234,14 +284,34 @@ snapshot: $file" 2>/dev/null || true
   investigate "$file"
 }
 
+# TEST SEAM. scripts/cgroup-governor.test.py sources this file to drive the
+# PSI parser above against fixtures. `return` succeeds only in a sourced
+# context, so a sourced load stops HERE -- definitions only, no startup line,
+# no loop. Executed normally (systemd), the subshell's `return` fails and the
+# monitor falls through to the loop below.
+if (return 0 2>/dev/null); then
+  return 0
+fi
+
 echo "$(date -Iseconds)  cgroup-pressure-monitor started (DESKTOP-scoped, thresh=${THRESH}% full-avg10, interval=${INTERVAL}s, cooldown=${COOLDOWN}s, investigate=${CGPM_INVESTIGATE:-off})" >> "$LOG"
 
+# THE DETECTION LOOP -- fork-free, under the same FORK BUDGET as
+# cgroup-governor.sh (its header carries the full 2026-07-29 story: under the
+# ~400 MiB-free conditions this loop exists to notice, every fork()+execve()
+# is itself an allocation that lands in direct reclaim, so a monitor that
+# forks per tick slows down in proportion to the thing it watches -- and its
+# silence reads as calm). This loop used to fork five times per 5 s tick,
+# forever: `date +%s`, two awk PSI parses, and an awk float compare, plus the
+# interval sleep. Only the `sleep` remains (bash has no sleep builtin; the
+# governor's loop carries the same one). The rare paths behind the trigger --
+# snapshot and investigate -- fork freely, as they should: they are
+# COOLDOWN-limited and by the time they run, detection has already fired.
 while :; do
-  now=$(date +%s)
+  now=$EPOCHSECONDS
   if resolve_desktop; then
-    dm=$(full_avg10 "$DESKTOP/memory.pressure"); dm=${dm:-0}
-    di=$(full_avg10 "$DESKTOP/io.pressure");     di=${di:-0}
-    if awk -v m="$dm" -v i="$di" -v t="$THRESH" 'BEGIN{exit !(m>=t || i>=t)}'; then
+    psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"
+    psi_full_avg10 "$DESKTOP/io.pressure";     di="$PSI_TEXT"; di_c="$PSI_CENTI"
+    if [ "$dm_c" -ge "$THRESH_CENTI" ] || [ "$di_c" -ge "$THRESH_CENTI" ]; then
       if [ $((now - last_snap)) -ge "$COOLDOWN" ]; then
         snapshot "DESKTOP stall (${DESKTOP##*/}): mem_full_avg10=${dm}%  io_full_avg10=${di}%  (>= ${THRESH}%)"
         last_snap=$now

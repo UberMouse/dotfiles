@@ -108,7 +108,7 @@
 #   CGGOV_WORKER_MIN_MB   min RSS for a worker to be migratable        (default 128)
 #   CGGOV_POOL_THRESH     pool mem full-avg10 %% that is TIGHT          (default 25)
 #   CGGOV_SWEEP_COOL      min seconds between transient sweeps         (default 30)
-#   CGGOV_LAG_WARN        log LAG if a tick overruns this many seconds (default 15)
+#   CGGOV_LAG_WARN        log LAG if a tick overruns this many seconds (default 3x interval)
 #   CGGOV_OUTDIR          log directory
 #   CGGOV_DRYRUN          non-empty = decide + log, never act
 set -u
@@ -136,10 +136,24 @@ DRYRUN="${CGGOV_DRYRUN:-}"
 POOL_THRESH="${CGGOV_POOL_THRESH:-25}"
 # How often sweep_transient may actually scan. See maybe_sweep.
 SWEEP_COOL="${CGGOV_SWEEP_COOL:-30}"
-# Warn when a tick overruns this many seconds -- the blind-spot alarm.
-LAG_WARN="${CGGOV_LAG_WARN:-15}"
+# Warn when a tick overruns this many seconds -- the blind-spot alarm. 3x the
+# interval, derived rather than fixed: the loop body no longer contains any
+# sleep (the stall brake is deadline state enforced at the top of the loop,
+# not an inline `sleep` -- see duty C), so a healthy tick takes INTERVAL
+# seconds and anything at triple that is genuine blindness. The old fixed 15
+# had to sit ABOVE the brake's in-loop sleeps (2 s re-measure + 3 s freeze
+# on top of the 5 s interval), which meant an entire brake cycle of
+# not-measuring passed beneath it unlogged -- during a stall, the exact moment
+# measuring matters most.
+LAG_WARN="${CGGOV_LAG_WARN:-$(( INTERVAL * 3 ))}"
 
-mkdir -p "$OUTDIR"
+# Fail LOUDLY if the log directory cannot exist. Unchecked (as this was until
+# 2026-08-07), a failed mkdir meant every `>> "$LOG"` below silently went
+# nowhere, forever -- and a governor with no log is indistinguishable from a
+# healthy quiet one, exactly the silence-reads-as-calm failure the LAG watchdog
+# exists to prevent. Exiting lets systemd (Restart=always) retry and surface
+# the flapping unit instead.
+mkdir -p "$OUTDIR" || { echo "cgroup-governor: cannot create output dir '$OUTDIR'" >&2; exit 1; }
 LOG="$OUTDIR/governor.log"
 
 U=$(id -u)
@@ -170,6 +184,16 @@ last_sweep=0                 # maybe_sweep rate limiter
 last_tick=0                  # loop-lag watchdog
 deleg_warned=0               # ensure_delegation: warn once, not every tick
 reclaim_pid=""               # in-flight backgrounded reclaim, if any
+# Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
+# the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
+# which stopped measurement for up to ~5 s at the single most memory-starved
+# moment the governor ever acts in, invisibly (the old LAG_WARN=15 sat above
+# it). Now the brake is STATE: freeze immediately, record the deadline here,
+# and let the top-of-loop enforcer thaw on schedule while ticks keep measuring.
+brake_scope=""               # scope currently frozen by the stall brake
+brake_until=0                # epoch second the deadline enforcer must thaw it
+brake_armed=0                # duty C reclaimed last tick; this tick re-measures
+brake_armed_dm=""            # the stalled reading that armed it, for the log
 # Thresholds pre-scaled to the integer hundredths psi_full_avg10 returns, so the
 # per-tick comparison is a shell integer test and not an awk invocation.
 STALL_CENTI=$(( STALL_THRESH * 100 ))
@@ -187,6 +211,9 @@ POOL_CENTI=$(( POOL_THRESH * 100 ))
 # bad decisions, it was making none, because measuring had become as expensive
 # as the problem being measured. A monitor that slows down in proportion to the
 # thing it watches is worse than no monitor, because its silence reads as calm.
+# (cgroup-pressure-monitor.sh's detection loop had the same disease -- a `date`
+# plus three `awk`s per tick -- and was ported to these rules on 2026-08-07, so
+# both halves of the pressure system now comply.)
 #
 # Rules, in order of importance:
 #   1. Nothing on the detection path may fork. That means no $(...) command
@@ -275,6 +302,8 @@ resolve_desktop() {
 # One fork-free pass sets both globals. MemFree and MemAvailable are the 2nd and
 # 3rd lines of /proc/meminfo, so this reads three lines and stops -- against two
 # `awk` processes, each of which read the whole file, on every single tick.
+# Takes an optional file argument so the test suite can feed fixtures; the
+# governor itself always reads the default /proc/meminfo.
 MEMFREE_MB=99999
 MEMAVAIL_MB=99999
 read_meminfo() {
@@ -285,7 +314,7 @@ read_meminfo() {
       MemFree:)      MEMFREE_MB=$(( v / 1024 )) ;;
       MemAvailable:) MEMAVAIL_MB=$(( v / 1024 )); break ;;
     esac
-  done < /proc/meminfo 2>/dev/null
+  done < "${1:-/proc/meminfo}" 2>/dev/null
   return 0
 }
 
@@ -409,12 +438,22 @@ maybe_sweep() {
   sweep_transient
 }
 
-# Every freezable scope, "<bytes>\t<path>", largest first: the monorepo-jobs
-# build daemons (mj-*.scope) AND the transient leaves holding agent-spawned test
-# and browser workers. The agents slice contributes its `transient` leaf but
-# never `fleet` -- live agents are reclaimed from, never paused.
+# Every freezable scope, into two parallel global arrays (BS_MEM[i] bytes,
+# BS_PATH[i] scope path, glob order -- callers that need the largest scan for
+# it): the monorepo-jobs build daemons (mj-*.scope) AND the transient leaves
+# holding agent-spawned test and browser workers. The agents slice contributes
+# its `transient` leaf but never `fleet` -- live agents are reclaimed from,
+# never paused.
+#
+# Fills globals instead of printing, for the same reason the PSI helpers set
+# globals: every caller used to consume this through a pipeline or process
+# substitution, and each of those forks -- on the TIGHT and STALL paths, i.e.
+# exactly when forks are unaffordable (see THE FORK BUDGET).
+BS_MEM=()
+BS_PATH=()
 list_build_scopes() {
-  local sl sc m p1
+  local sl sc m p1 p pgs
+  BS_MEM=(); BS_PATH=()
   shopt -s nullglob
   for sl in "$POOL"/worktrees-*.slice; do
     for sc in "$sl"/mj-*.scope "$sl"/transient; do
@@ -433,17 +472,30 @@ list_build_scopes() {
       read -r p1 < "$sc/cgroup.procs" 2>/dev/null || continue
       [ -n "$p1" ] || continue
       read -r m < "$sc/memory.current" 2>/dev/null || m=""
-      # A leaf without +memory delegated reports nothing; fall back to summed RSS
-      # so it can still be ranked rather than silently sorting as zero.
+      # A leaf without +memory delegated reports nothing; fall back to summed
+      # RSS so it can still be ranked rather than silently sorting as zero.
+      # Fork-free: statm field 2 is resident pages, readable with the `read`
+      # builtin (the sweep_transient technique). The old fallback ran one awk
+      # per pid inside nested process substitution -- the exact "three forks
+      # PER PID" pattern THE FORK BUDGET condemns -- and it fires precisely
+      # when a nixos-rebuild switch has cleared subtree_control (see
+      # ensure_delegation), i.e. right after every rebuild.
       if [ -z "$m" ]; then
-        m=$(awk '{s+=$1} END{printf "%d", s*1024}' < <(
-          while read -r p; do awk '/^VmRSS/{print $2}' "/proc/$p/status" 2>/dev/null; done < "$sc/cgroup.procs"
-        ) 2>/dev/null)
+        m=0
+        while read -r p; do
+          [ -n "$p" ] || continue
+          read -r _ pgs _ < "/proc/$p/statm" 2>/dev/null || continue
+          case "$pgs" in '' | *[!0-9]*) continue ;; esac
+          m=$(( m + pgs * 4096 ))
+        done < "$sc/cgroup.procs"
       fi
-      [ -n "$m" ] && printf '%s\t%s\n' "$m" "$sc"
+      case "$m" in '' | *[!0-9]*) continue ;; esac
+      BS_MEM+=("$m")
+      BS_PATH+=("$sc")
     done
   done
   shopt -u nullglob
+  return 0
 }
 
 # Fork-free: `read` builtin, not $(cat). Called once per candidate scope per
@@ -488,12 +540,17 @@ thaw_scope() {
 # this is what recovers a build left frozen by a previous run that was killed
 # mid-freeze, so it also runs once at startup.
 thaw_all() {
-  local why="${1:-}" sc m
+  local why="${1:-}" sc k
   for sc in "${!frozen_since[@]}"; do thaw_scope "$sc" "$why"; done
-  while IFS=$'\t' read -r m sc; do
-    [ -n "${sc:-}" ] || continue
+  # Orphan sweep over the arrays list_build_scopes fills -- the old process
+  # substitution here forked, and thaw_all runs from the NORMAL branch of the
+  # detection loop.
+  list_build_scopes
+  for (( k = 0; k < ${#BS_PATH[@]}; k++ )); do
+    sc="${BS_PATH[$k]}"
     is_frozen "$sc" && thaw_scope "$sc" "${why:-orphan sweep}"
-  done < <(list_build_scopes)
+  done
+  return 0
 }
 
 # Push the cgroup's COLDEST pages into zram. Errors are expected and ignored:
@@ -580,6 +637,16 @@ ensure_delegation() {
   fi
 }
 
+# TEST SEAM. scripts/cgroup-governor.test.py exercises the functions above
+# against a synthetic pool: it sources this file, overrides $POOL, and calls
+# them directly. `return` succeeds only in a sourced context, so a sourced
+# load stops HERE -- definitions only, no traps, no START log, no loop.
+# Executed normally (systemd), the subshell's `return` fails and the service
+# falls through to the loop below.
+if (return 0 2>/dev/null); then
+  return 0
+fi
+
 # A bash trap handler does NOT terminate the shell by itself, so the signal
 # handler must exit explicitly -- otherwise SIGTERM thaws everything and then
 # the loop merrily carries on, `systemctl --user stop` blocks until its timeout,
@@ -612,13 +679,22 @@ while :; do
   last_tick=$now
 
   # --- 0. Deadline enforcement. Runs FIRST and unconditionally, so a wedged
-  # pressure reading can never hold a build frozen indefinitely. ---
+  # pressure reading can never hold a build frozen indefinitely. The stall
+  # brake's short deadline is enforced here too: duty C freezes WITHOUT
+  # sleeping (the loop must never stop measuring) and records brake_until;
+  # this is where that promise is kept. With FREEZE_SECS below INTERVAL the
+  # actual hold rounds up to one tick, which is the price of staying awake. ---
   for sc in "${!frozen_since[@]}"; do
     held=$(( now - ${frozen_since[$sc]} ))
     if [ "$held" -ge "$MAX_FREEZE_SECS" ]; then
       thaw_scope "$sc" "deadline ${held}s >= ${MAX_FREEZE_SECS}s"
     fi
   done
+  if [ -n "$brake_scope" ] && [ "$now" -ge "$brake_until" ]; then
+    thaw_scope "$brake_scope" "brake released after $(( now - brake_until + FREEZE_SECS ))s (deadline ${FREEZE_SECS}s)"
+    brake_scope=""
+    brake_until=0
+  fi
 
   # --- 0b. Keep the agents subtree accounted. Cheap, fork-free, every tick. ---
   ensure_delegation
@@ -650,12 +726,27 @@ while :; do
     log "STATE|$last_state -> $state (desktop_mem_full_avg10=${dm}% pool_mem_full_avg10=${pm}% free=${free_mb}M avail=${avail}M)"
   last_state="$state"
 
+  # Deferred STALL re-measure. Last tick's STALL reclaimed and armed the brake;
+  # this tick's fresh PSI read IS the re-measure -- one INTERVAL later instead
+  # of the old inline `sleep 2`, a deliberate trade of a slightly staler
+  # reading for a loop that never stops measuring. Back under the stall line
+  # means the reclaim worked and the brake stands down. (Still stalled? The
+  # STALL branch below consumes the armed flag and brakes.)
+  if [ "$brake_armed" = 1 ] && [ "$dm_c" -lt "$STALL_CENTI" ]; then
+    brake_armed=0
+    log "STALL|recovered after reclaim (${brake_armed_dm}% -> ${dm}%), no freeze needed"
+  fi
+
   case "$state" in
     NORMAL)
       # Pressure gone: release every held build immediately. The cap is a storm
-      # response, not a standing policy -- nothing stays frozen at rest.
+      # response, not a standing policy -- nothing stays frozen at rest. Any
+      # active brake victim is thawed with the rest (only possible when
+      # FREEZE_SECS is tuned above INTERVAL), so its state resets with it.
       [ "${#frozen_since[@]}" -gt 0 ] && thaw_all "pressure cleared"
       rot=0
+      brake_scope=""
+      brake_until=0
       ;;
 
     TIGHT)
@@ -673,8 +764,14 @@ while :; do
 
       # Duty B: hold all but $MAXCONC heavy build scopes, rotating victims so
       # none is starved. Light scopes are left alone -- they are not the problem
-      # and freezing them buys nothing.
-      mapfile -t heavy < <(list_build_scopes | awk -v h="$((HEAVY_MB * 1024 * 1024))" -F'\t' '$1>=h{print $2}')
+      # and freezing them buys nothing. Filtered in bash over the arrays
+      # list_build_scopes fills: the old `mapfile -t < <(... | awk ...)` forked
+      # a subshell plus an awk on every TIGHT tick.
+      list_build_scopes
+      heavy=()
+      for (( k = 0; k < ${#BS_PATH[@]}; k++ )); do
+        [ "${BS_MEM[$k]}" -ge $(( HEAVY_MB * 1024 * 1024 )) ] && heavy+=("${BS_PATH[$k]}")
+      done
       n=${#heavy[@]}
       if [ "$n" -gt "$MAXCONC" ]; then
         [ $(( now - last_rotate )) -ge "$ROTATE_SECS" ] && { rot=$(( rot + 1 )); last_rotate=$now; }
@@ -694,37 +791,71 @@ while :; do
       ;;
 
     STALL)
-      # Duty C: the desktop is stalling NOW. Reclaim first (no pause), give the
-      # kernel a beat, then re-measure -- only escalate if that did not fix it.
+      # Duty C: the desktop is stalling NOW. Reclaim first (no pause), then
+      # re-measure on the NEXT tick -- only escalate if that did not fix it.
+      #
+      # NO SLEEP ANYWHERE IN THIS BRANCH, and that is the point of its shape.
+      # The old form slept inline (`sleep 2` before the re-measure, then
+      # freeze + `sleep $FREEZE_SECS` + thaw), which stopped measurement for
+      # up to ~5 s during a stall -- and invisibly, because LAG_WARN sat above
+      # it. Now: reclaim arms the brake (brake_armed) and the re-measure is
+      # the next tick's own PSI read; the freeze records brake_until and the
+      # top-of-loop deadline enforcer does the thaw. Every guarantee is
+      # unchanged -- only mj-*.scope / transient leaves are ever frozen
+      # (list_build_scopes yields nothing else), victims rotate via duty B,
+      # and a brake victim is still covered by the EXIT trap, the startup
+      # sweep, ExecStopPost, and the MAX_FREEZE_SECS ceiling.
       log "STALL|desktop mem_full_avg10=${dm}% pool=${pm}% free=${free_mb}M avail=${avail}M"
       # `force`: during an actual stall the scan IS the urgent step, so it skips
       # the rate limiter that keeps it cheap during ordinary TIGHT ticks.
       maybe_sweep force
-      if [ $(( now - last_reclaim )) -ge "$RECLAIM_COOL" ]; then
+      do_brake=0
+      if [ -n "$brake_scope" ]; then
+        # A brake is already applied; the deadline enforcer will release it.
+        # Keep measuring rather than stacking a second freeze on top.
+        :
+      elif [ "$brake_armed" = 1 ]; then
+        # Armed last tick, and this tick's reading still says STALL (or this
+        # branch would not be running): the reclaim was not enough. Escalate.
+        brake_armed=0
+        do_brake=1
+      elif [ $(( now - last_reclaim )) -ge "$RECLAIM_COOL" ]; then
         reclaim_from "$FLEET" "$(( RECLAIM_MB * 2 ))" "STALL mem_psi=${dm}%"
         last_reclaim=$now
-        sleep 2
-        psi_full_avg10 "$DESKTOP/memory.pressure"; dm2="$PSI_TEXT"
-        if [ "$PSI_CENTI" -lt "$STALL_CENTI" ]; then
-          log "STALL|recovered after reclaim (${dm}% -> ${dm2}%), no freeze needed"
-          sleep "$INTERVAL"; continue
-        fi
-        dm="$dm2"
+        brake_armed=1
+        brake_armed_dm="$dm"
+      else
+        # Reclaim is on cooldown -- it already ran for this storm and did not
+        # clear it -- so go straight to the brake, as the old shape did.
+        do_brake=1
       fi
 
-      # Still stalling: brake the single largest build scope, briefly.
-      biggest=$(list_build_scopes | sort -rn | head -1 | cut -f2)
-      if [ -n "${biggest:-}" ]; then
-        freeze_scope "$biggest" "stall brake mem_psi=${dm}%"
-        sleep "$FREEZE_SECS"
-        thaw_scope "$biggest" "brake released after ${FREEZE_SECS}s"
-      else
-        # Genuinely nothing freezable: no mj-*.scope and no populated transient
-        # leaf in the pool. Do NOT read this as "the builds are innocent" -- that
-        # was the old wording and it was actively misleading for three days while
-        # list_build_scopes was broken (see the note there). It means only that
-        # the governor has no lever, so the stall must be ridden out.
-        log "STALL|no freezable scope in pool (nothing to brake)"
+      if [ "$do_brake" = 1 ]; then
+        # Still stalling: brake the single largest build scope, briefly.
+        # Fork-free max scan over the arrays -- this replaces
+        # `list_build_scopes | sort -rn | head -1 | cut -f2`, three pipeline
+        # forks at the most memory-starved moment the governor ever acts in.
+        list_build_scopes
+        biggest=""
+        biggest_m=-1
+        for (( k = 0; k < ${#BS_PATH[@]}; k++ )); do
+          if [ "${BS_MEM[$k]}" -gt "$biggest_m" ]; then
+            biggest_m="${BS_MEM[$k]}"
+            biggest="${BS_PATH[$k]}"
+          fi
+        done
+        if [ -n "$biggest" ]; then
+          freeze_scope "$biggest" "stall brake mem_psi=${dm}%"
+          brake_scope="$biggest"
+          brake_until=$(( now + FREEZE_SECS ))
+        else
+          # Genuinely nothing freezable: no mj-*.scope and no populated transient
+          # leaf in the pool. Do NOT read this as "the builds are innocent" -- that
+          # was the old wording and it was actively misleading for three days while
+          # list_build_scopes was broken (see the note there). It means only that
+          # the governor has no lever, so the stall must be ridden out.
+          log "STALL|no freezable scope in pool (nothing to brake)"
+        fi
       fi
       ;;
   esac
