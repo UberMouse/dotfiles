@@ -18,6 +18,11 @@ cd "$(dirname "$0")/.." || exit 1
 # leaves a scripts/__pycache__/ behind (gitignored, but noise).
 export PYTHONDONTWRITEBYTECODE=1
 
+# Host-only sections (real-process SIGTERM delivery in the machinery suite)
+# are skipped in the nix sandbox and opted into here, where real subprocesses
+# and kernel signal delivery are available.
+export KX_TEST_HOST_ONLY=1
+
 rc=0
 for t in scripts/*.test.py; do
   echo "== ${t}"

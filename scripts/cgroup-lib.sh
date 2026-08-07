@@ -14,20 +14,48 @@
 # Everything here obeys the governor's FORK BUDGET (see its header): no
 # command substitution, no external tools on the detection path; helpers set
 # GLOBALS instead of echoing.
-# shellcheck disable=SC2034  # the globals are consumed by the sourcing scripts The duplication this file removes was real
-# risk, not tidiness -- the PSI parser encodes the 10# octal trap, and the
-# governor test suite used to run BOTH copies through the same fixtures
-# purely to detect a one-sided fix.
+#
+# The duplication this file removes was real risk, not tidiness -- the PSI
+# parser encodes the 10# octal trap, and the governor test suite used to run
+# BOTH copies through the same fixtures purely to detect a one-sided fix.
+# shellcheck disable=SC2034  # the globals are consumed by the sourcing scripts
 
 # Uid-derived cgroup paths, as globals. One construction site for the pool
-# path repo-wide (with its KX_POOL override on the same line, per the lint
-# tripwire); a slice rename is an edit here, not a hunt across two scripts.
+# path PER LANGUAGE, not repo-wide: wt-cgroup-status.sh, claude-agents-reattach.sh,
+# cgroup-thaw-all.sh and wt-cgroup-i3status.py each build the same default path
+# themselves, every one beside its own KX_POOL override -- which is what the
+# lint tripwire actually enforces. A slice rename is therefore a mechanical
+# sweep over the KX_POOL sites the tripwire pins, not an edit in this one file.
 kx_cgroup_paths() {
   U=$(id -u)
   UNAME=$(id -un)
   USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
   USERAT="$USERSLICE/user@$U.service"
   POOL="${KX_POOL:-$USERAT/worktrees.slice}"
+}
+
+# The freeze-target leaves of ONE worktrees-*.slice, into a global array.
+# Exactly two shapes, and only these two: the mj-<name>.scope build daemons,
+# and the `transient` leaf the governor migrates agent-spawned test/browser
+# workers into (sweep_transient). Never `fleet`, never claude-*.scope -- live
+# agents are reclaimed from, not paused.
+#
+# The governor (list_build_scopes) and cgroup-thaw-all (the ExecStopPost
+# sweep that survives SIGKILL) used to hand-duplicate this glob pair. That
+# duplication was a standing hazard, not tidiness: the moment the governor
+# grows a new freezable shape that thaw-all's copy lacks, a SIGKILLed
+# governor leaves that scope frozen FOREVER -- a hung build with no
+# self-correction, the one failure the whole freeze-safety design exists to
+# rule out. One definition, both consumers.
+#
+# Globs expand HERE, at call time, so callers that want empty matches elided
+# set nullglob first (both consumers do). "$1"/transient has no glob
+# character and always survives expansion; the callers' existing
+# `[ -e .../cgroup.freeze ]` guard drops a slice that has no such leaf.
+FREEZE_TARGETS=()
+kx_freeze_targets() {
+  FREEZE_TARGETS=( "$1"/mj-*.scope "$1"/transient )
+  return 0
 }
 
 # Reads "full ... avg10=NN.NN ..." from a PSI file into two globals:

@@ -16,9 +16,14 @@ list_build_scopes (including the 07-31 kernfs-st_size trap and the
 un-delegated-leaf fallback), the pure-bash PSI parser (including the
 leading-zero octal trap), and read_meminfo -- plus code-shape assertions for
 the bugs that cannot be reproduced on a real filesystem.
+
+Also covers THE TICK DECISION, extracted above the seam as pure functions
+(classify_state, brake_step and friends -- the governor's analogue of the
+controller's decide() split): classification boundaries, the brake's
+arm -> re-measure -> escalate-or-release cycle, deadline enforcement, the
+LAG watchdog, the duty-B cap window, and the wall-clock clamp.
 """
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -124,21 +129,14 @@ out, _ = sh(GOV, f'POOL="{POOL}"; '
 check("is_frozen reports the frozen scope frozen, the live one not",
       out.split(), ["frozen", "thawed"])
 
-# Code-shape assertions, for what a real filesystem cannot simulate. On kernfs
-# cgroup.procs stats as size 0 however many pids it holds, so any `[ -s ]`
-# guard on it is unconditionally false -- the exact 07-28..07-31 dead-actuator
-# bug. A tmpdir CANNOT make a non-empty file stat as 0 bytes, so the behaviour
-# tests above would keep passing if someone reintroduced it; pin the source
-# instead.
+# Code-shape assertion, for what a real filesystem cannot simulate: a tmpdir
+# cannot make the fork cost of a pipeline visible, so pin the source. (The
+# `[ -s ]`-on-cgroup.procs kernfs ban moved repo-wide into
+# scripts/lint-tripwires.py, alongside the pgrep -f and compgen bans.)
 gov_src = GOV.read_text()
-mon_src = MON.read_text()
-check("governor never tests -s on cgroup.procs (kernfs st_size is always 0)",
-      re.search(r"\[ -s [^]]*cgroup\.procs", gov_src) is None, True)
 check("STALL path max-scans in bash (no sort|head|cut pipeline)",
       any("sort -rn" in ln.split("#", 1)[0] for ln in gov_src.splitlines()),
       False)
-# (pgrep -f and compgen bans moved to scripts/lint-tripwires.py, which covers
-# every script and bin rather than just these two files.)
 
 # ---------------------------------------------------------------------------
 # 2. The pure-bash PSI parser -- both copies, governor and monitor, driven
@@ -263,5 +261,198 @@ out, rc = sh(GOV, f'POOL="{POOL}"; frozen_since["{POOL}/gone.scope"]=123; '
                   'printf "%s" "${#frozen_since[@]}"')
 check("vanished scope dropped from frozen_since without noise", out, "0")
 check("vanished scope logs no FAILED", "FAILED" in gov_log(), False)
+
+# ---------------------------------------------------------------------------
+# 4. THE TICK DECISION -- the pure functions the loop below the seam threads
+#    its state through (the governor's analogue of the controller's decide()).
+#    Thresholds are pinned inside each body so the machine's CGGOV_* env can
+#    never skew a boundary assertion.
+
+# classify_state: every boundary, both TIGHT clauses, and STALL's precedence.
+# Thresholds pinned: STALL_CENTI=1500, LOW_FREE_MB=1536, POOL_CENTI=2500.
+cls_cases = [
+    ((1500, 0, 99999), "STALL", "dm at the stall line is a STALL (>=)"),
+    ((1499, 0, 99999), "NORMAL", "dm one centi under the stall line is NORMAL"),
+    ((0, 0, 1535), "TIGHT", "free one MiB under the floor is TIGHT"),
+    ((0, 0, 1536), "NORMAL", "free at the floor is NORMAL (strict <)"),
+    ((0, 2500, 99999), "TIGHT", "pool psi at its line is TIGHT (the 07-29 clause)"),
+    ((0, 2499, 99999), "NORMAL", "pool psi one centi under its line is NORMAL"),
+    ((1499, 2500, 1535), "TIGHT", "either TIGHT clause suffices"),
+    ((1500, 2500, 100), "STALL", "STALL outranks TIGHT when both fire"),
+    ((0, 0, "junk"), "NORMAL", "non-numeric free fails open to the pool clause"),
+]
+for (dm_c, pm_c, free), want, why in cls_cases:
+    out, rc = sh(GOV, 'STALL_CENTI=1500; LOW_FREE_MB=1536; POOL_CENTI=2500; '
+                      f'classify_state "{dm_c}" "{pm_c}" "{free}"; '
+                      'printf "%s" "$CLASSIFY_STATE"')
+    check(f"classify_state: {why}", (out, rc), (want, 0))
+
+# elapsed_since: the wall-clock clamp itself. EPOCHSECONDS is wall time on a
+# VMware guest, so a backward jump must read as "no time passed", never as a
+# negative age.
+out, _ = sh(GOV, 'elapsed_since 10 25; printf "%s" "$ELAPSED"')
+check("elapsed_since: forward delta", out, "15")
+out, _ = sh(GOV, 'elapsed_since 5000 1000; printf "%s" "$ELAPSED"')
+check("elapsed_since: backward wall jump clamps to zero", out, "0")
+
+# brake_step: all four actions, from all four input shapes.
+brake_cases = [
+    (('""', 0, 1000, 0), "reclaim-arm 1",
+     "cold stall reclaims and arms the re-measure"),
+    (('""', 1, 1005, 1000), "escalate 0",
+     "armed and still stalling escalates (and consumes the flag)"),
+    (('"/x/mj-a.scope"', 0, 1000, 999), "hold 0",
+     "active brake holds -- never stacks a second freeze"),
+    (('""', 0, 1010, 1000), "brake 0",
+     "reclaim on cooldown goes straight to the brake"),
+    (('""', 0, 1000, 5000), "brake 0",
+     "backward wall jump reads as cooldown-not-elapsed (clamp)"),
+]
+for (scope, armed, now, last_rec), want, why in brake_cases:
+    out, rc = sh(GOV, 'RECLAIM_COOL=30; '
+                      f'brake_step {scope} {armed} {now} {last_rec}; '
+                      'printf "%s %s" "$BRAKE_ACTION" "$BRAKE_ARMED_NEXT"')
+    check(f"brake_step: {why}", (out, rc), (want, 0))
+
+# brake_recovered: the deferred re-measure's verdict.
+out, _ = sh(GOV, 'STALL_CENTI=1500; '
+                 'brake_recovered 1 1499 && printf recovered || printf stalled')
+check("brake_recovered: armed and back under the line releases", out, "recovered")
+out, _ = sh(GOV, 'STALL_CENTI=1500; '
+                 'brake_recovered 1 1500 && printf recovered || printf stalled')
+check("brake_recovered: armed but still at the line does not", out, "stalled")
+out, _ = sh(GOV, 'STALL_CENTI=1500; '
+                 'brake_recovered 0 0 && printf recovered || printf idle')
+check("brake_recovered: nothing armed, nothing to release", out, "idle")
+
+# The full cycle, state threaded tick to tick exactly as the loop does it.
+out, _ = sh(GOV, 'RECLAIM_COOL=30; STALL_CENTI=1500; '
+                 'brake_step "" 0 1000 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
+                 'brake_recovered "$armed" 1400 && r=released || r=stalled; '
+                 'printf "%s %s" "$a1" "$r"')
+check("brake cycle: arm -> next tick recovered -> release, no freeze",
+      out, "reclaim-arm released")
+out, _ = sh(GOV, 'RECLAIM_COOL=30; STALL_CENTI=1500; '
+                 'brake_step "" 0 1000 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
+                 'brake_recovered "$armed" 1600 || true; '
+                 'brake_step "" "$armed" 1005 1000; '
+                 'printf "%s %s %s" "$a1" "$BRAKE_ACTION" "$BRAKE_ARMED_NEXT"')
+check("brake cycle: arm -> still stalled next tick -> escalate",
+      out, "reclaim-arm escalate 0")
+
+# freeze_deadline_due: the MAX_FREEZE_SECS ceiling that no pressure reading
+# can override.
+out, _ = sh(GOV, 'MAX_FREEZE_SECS=60; '
+                 'freeze_deadline_due 1000 1060 && v=due || v=hold; '
+                 'printf "%s %s" "$v" "$DEADLINE_HELD"')
+check("freeze deadline: fires exactly at the ceiling", out, "due 60")
+out, _ = sh(GOV, 'MAX_FREEZE_SECS=60; '
+                 'freeze_deadline_due 1000 1059 && v=due || v=hold; '
+                 'printf "%s %s" "$v" "$DEADLINE_HELD"')
+check("freeze deadline: holds one second before it", out, "hold 59")
+out, _ = sh(GOV, 'MAX_FREEZE_SECS=60; '
+                 'freeze_deadline_due 2000 1000 && v=due || v=hold; '
+                 'printf "%s %s" "$v" "$DEADLINE_HELD"')
+check("freeze deadline: backward jump defers (held clamps to 0), never fires negative",
+      out, "hold 0")
+
+# brake_release_due: the short brake deadline the top of the loop enforces.
+out, _ = sh(GOV, 'brake_release_due "/x" 100 100 && printf due || printf hold')
+check("brake release: due exactly at the deadline", out, "due")
+out, _ = sh(GOV, 'brake_release_due "/x" 100 99 && printf due || printf hold')
+check("brake release: holds before the deadline", out, "hold")
+out, _ = sh(GOV, 'brake_release_due "" 100 5000 && printf due || printf idle')
+check("brake release: no active brake, nothing due", out, "idle")
+
+# lag_check: the blind-spot alarm.
+out, _ = sh(GOV, 'LAG_WARN=15; lag_check 0 1000 && v=warn || v=quiet; '
+                 'printf "%s %s" "$v" "$LAG"')
+check("lag: first tick never warns (no previous tick to overrun)", out, "quiet 0")
+out, _ = sh(GOV, 'LAG_WARN=15; lag_check 100 115 && v=warn || v=quiet; '
+                 'printf "%s %s" "$v" "$LAG"')
+check("lag: warns exactly at LAG_WARN", out, "warn 15")
+out, _ = sh(GOV, 'LAG_WARN=15; lag_check 100 114 && v=warn || v=quiet; '
+                 'printf "%s %s" "$v" "$LAG"')
+check("lag: quiet one second under", out, "quiet 14")
+out, _ = sh(GOV, 'LAG_WARN=15; lag_check 200 100 && v=warn || v=quiet; '
+                 'printf "%s %s" "$v" "$LAG"')
+check("lag: backward jump reads as no lag, not a huge negative", out, "quiet 0")
+
+# heavy_filter: the duty-B candidate cut at HEAVY_MB, boundary inclusive.
+out, _ = sh(GOV, 'HEAVY_MB=256; '
+                 'BS_MEM=(268435456 268435455 999999999); BS_PATH=(big small huge); '
+                 'heavy_filter; printf "%s" "${HEAVY[*]}"')
+check("heavy_filter: >= HEAVY_MB stays, one byte under is left alone",
+      out, "big huge")
+
+# cap_plan: the rotated victim window. n=5, maxconc=3 -> 2 victims.
+out, _ = sh(GOV, 'cap_plan 0 3 a b c d e; '
+                 'printf "%s|%s" "${CAP_FREEZE[*]}" "${CAP_RUN[*]}"')
+check("cap_plan: rot=0 freezes the head of the window", out, "a b|c d e")
+out, _ = sh(GOV, 'cap_plan 1 3 a b c d e; '
+                 'printf "%s|%s" "${CAP_FREEZE[*]}" "${CAP_RUN[*]}"')
+check("cap_plan: rot=1 rotates the window (yesterday's victim runs)",
+      out, "b c|d e a")
+out, _ = sh(GOV, 'cap_plan 7 3 a b c d e; '
+                 'printf "%s|%s" "${CAP_FREEZE[*]}" "${CAP_RUN[*]}"')
+check("cap_plan: rot wraps modulo n", out, "c d|e a b")
+out, _ = sh(GOV, 'cap_plan 0 3 a b c d; '
+                 'printf "%s|%s" "${CAP_FREEZE[*]}" "${CAP_RUN[*]}"')
+check("cap_plan: one over the cap freezes exactly one", out, "a|b c d")
+
+# biggest_scope: duty C's victim pick over the BS arrays.
+out, _ = sh(GOV, 'BS_MEM=(5 99 7); BS_PATH=(a b c); biggest_scope; '
+                 'printf "%s" "$BIGGEST"')
+check("biggest_scope: picks the max", out, "b")
+out, _ = sh(GOV, 'BS_MEM=(5 5); BS_PATH=(first second); biggest_scope; '
+                 'printf "%s" "$BIGGEST"')
+check("biggest_scope: ties keep glob order (stable victim across ticks)",
+      out, "first")
+out, _ = sh(GOV, 'BS_MEM=(); BS_PATH=(); biggest_scope; '
+                 'printf "[%s]" "$BIGGEST"')
+check("biggest_scope: empty pool yields no victim", out, "[]")
+
+# ---------------------------------------------------------------------------
+# 5. delegate_subtree -- the ONE subtree_control writer (the two hand-rolled
+#    sites had already drifted: +memory at one, +memory +pids at the other).
+DELEG = BASE / "deleg"
+
+out, _ = sh(GOV, f'mkdir -p "{DELEG}/ok" && printf "memory pids" > "{DELEG}/ok/cgroup.subtree_control"; '
+                 f'delegate_subtree "{DELEG}/ok"; rc=$?; '
+                 f'printf "%s %s" "$rc" "$(cat "{DELEG}/ok/cgroup.subtree_control")"')
+check("delegate_subtree: already delegated -> 0, file untouched",
+      out, "0 memory pids")
+
+out, _ = sh(GOV, f'mkdir -p "{DELEG}/empty" && : > "{DELEG}/empty/cgroup.subtree_control"; '
+                 f'delegate_subtree "{DELEG}/empty"; rc=$?; '
+                 f'printf "%s %s" "$rc" "$(cat "{DELEG}/empty/cgroup.subtree_control")"')
+check("delegate_subtree: EMPTY file (the post-rebuild state) is repaired -> 2",
+      out, "2 +memory +pids")
+
+ro = DELEG / "ro"
+ro.mkdir(parents=True)
+(ro / "cgroup.subtree_control").write_text("")
+(ro / "cgroup.subtree_control").chmod(0o444)
+out, _ = sh(GOV, f'delegate_subtree "{ro}"; printf "%s" "$?"')
+check("delegate_subtree: refused write -> 1 (no-internal-process rule)",
+      out, "1")
+(ro / "cgroup.subtree_control").chmod(0o644)
+
+out, _ = sh(GOV, f'delegate_subtree "{DELEG}/no-such-cgroup"; printf "%s" "$?"')
+check("delegate_subtree: missing subtree_control -> 1", out, "1")
+
+# ensure_delegation's logging contract on top of the shared writer: a repair
+# is logged, a refusal is logged ONCE (not every five seconds).
+reset_log()
+out, _ = sh(GOV, f'mkdir -p "{DELEG}/fleet" && : > "{DELEG}/fleet/cgroup.subtree_control"; '
+                 f'FLEET="{DELEG}/fleet"; ensure_delegation')
+check("ensure_delegation: repair is logged", "DELEGATE|re-enabled" in gov_log(), True)
+reset_log()
+(ro / "cgroup.subtree_control").chmod(0o444)
+out, _ = sh(GOV, f'FLEET="{ro}"; ensure_delegation; ensure_delegation; '
+                 'printf "%s" "$deleg_warned"')
+check("ensure_delegation: refusal warns once, then stays quiet",
+      (gov_log().count("DELEGATE|cannot"), out), (1, "1"))
+(ro / "cgroup.subtree_control").chmod(0o644)
 
 summary(cleanup_dir=BASE)

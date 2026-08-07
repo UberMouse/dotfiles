@@ -67,10 +67,18 @@ case "$top" in
   ''|*[!0-9]*) printf 'top count must be a whole number, got: %s\n' "$top" >&2; exit 2 ;;
 esac
 
-if [ ! -d "$POOL" ]; then
+pool_missing() {
   echo "worktrees.slice pool is not active yet."
   echo "It materializes on the first heavy command the hook wraps (or the first"
   echo "daemon started with CLAUDE_WORKTREE_CGROUP set). Nothing to show."
+}
+
+# One-shot mode: nothing to show is an exit. Watch mode presses on and lets
+# snapshot() re-check every refresh instead -- systemd REMOVES the slice's
+# cgroup whenever it goes empty and re-creates it on the next heavy command,
+# so a watch session legitimately straddles the pool vanishing and returning.
+if [ ! -d "$POOL" ] && [ "$watch" = 0 ]; then
+  pool_missing
   exit 1
 fi
 
@@ -179,7 +187,16 @@ print_top() {
 
 snapshot() {
   local quota period cap mhigh mhigh_h
-  read -r quota period < "$POOL/cpu.max"
+  # Re-checked EVERY snapshot, not only at startup: in watch mode the pool
+  # legitimately vanishes while idle (see the startup check's comment), and
+  # the bare `read < $POOL/cpu.max` below then failed its redirect, left
+  # `quota` unset, and nounset killed the whole watch loop (2026-08-07). The
+  # read keeps its own fallback for the window between this test and the open.
+  if [ ! -d "$POOL" ]; then
+    pool_missing
+    return 1
+  fi
+  read -r quota period 2>/dev/null < "$POOL/cpu.max" || { pool_missing; return 1; }
   if [ "$quota" = "max" ]; then cap="unlimited"; else cap="$(( quota * 100 / period ))%"; fi
   mhigh=$(cat "$POOL/memory.high" 2>/dev/null)
   if [ "$mhigh" = "max" ]; then mhigh_h="unlimited"; else mhigh_h=$(human "$mhigh"); fi

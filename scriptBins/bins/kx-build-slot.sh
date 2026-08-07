@@ -107,7 +107,21 @@ while [ "$#" -gt 0 ]; do
       # Pure bash on purpose: --help has to work under the most restricted
       # PATH of any caller (the same design rule probe_pids documents), and
       # this was the script's only awk dependency.
+      #
+      # ANCHORED on the header's own first line, the way the awk extractors
+      # elsewhere anchor (`/^# wt-cgroup-status /{f=1}`): the INSTALLED
+      # artifact is a writeShellApplication wrapper whose shebang,
+      # `set -o nounset` and PATH export sit ABOVE this header, so printing
+      # from line 1 dumped that preamble as mangled help (verified live
+      # 2026-08-07).
+      in_header=""
       while IFS= read -r hline; do
+        if [ -z "$in_header" ]; then
+          case "$hline" in
+            '# kx-build-slot'*) in_header=1 ;;
+            *) continue ;;
+          esac
+        fi
         case "$hline" in
           '# '*) printf '%s\n' "${hline#'# '}" ;;
           '#'*) printf '%s\n' "${hline#'#'}" ;;
@@ -188,7 +202,21 @@ sem_healthy() {
   # mid-deploy, a non-numeric field -- because the alternative is a browser that
   # never launches on a machine whose semaphore is merely misconfigured. Only an
   # explicit "0" blocks.
-  local f
+  #
+  # STALENESS (added 2026-08-07): the controller re-publishes this file every
+  # tick, changed or not, precisely so its mtime is a liveness signal (the
+  # heartbeat comment sits by the publish call in main()'s loop). A file older
+  # than KX_SEM_STALE_AFTER seconds -- default 15, three 5 s control intervals
+  # -- is a dead controller's last words, and waiting up to 600 s on a stale
+  # healthy=0 is waiting on nobody. Fail OPEN instead, like every other
+  # unexpected state here. The env override exists for the test suite, which
+  # ages the file with utime rather than sleeping through the threshold.
+  local f now mtime
+  mtime=$(stat -c %Y "$SEM_DIR/allowed" 2>/dev/null) || return 0
+  now=$(date +%s)
+  if [ $((now - mtime)) -gt "${KX_SEM_STALE_AFTER:-15}" ]; then
+    return 0
+  fi
   f=$(cut -d' ' -f8 "$SEM_DIR/allowed" 2>/dev/null) || return 0
   [ "$f" = "0" ] && return 1
   return 0

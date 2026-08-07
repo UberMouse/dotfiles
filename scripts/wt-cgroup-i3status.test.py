@@ -11,6 +11,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 SEM = Path(tempfile.mkdtemp(prefix="wt-i3s-test."))
@@ -66,5 +67,20 @@ publish("1 3 16 3 1 3 0 1\n")
 b = mod.sem_block()
 check("mid-tighten colour saturates", b["color"], mod.RED)
 check("mid-tighten text", b["full_text"], "◱ 3/3")
+
+# STALENESS: slot files and the last state line live in tmpfs and outlive the
+# controller, so a dead controller's leftovers must read as OFF, not as a
+# healthy idle -- the off/idle split exists precisely to expose the
+# silently-doing-nothing state. mtime is the heartbeat (the controller
+# re-publishes every tick); aged with utime, not by sleeping.
+mod.held_slots = lambda: {}
+publish("4 4 16 0 4 0 0 1\n")
+_old = time.time() - 1000
+os.utime(SEM / "allowed", (_old, _old))
+check("stale state file -> off", mod.sem_block()["full_text"], "◱ off")
+
+# A fresh rewrite brings it back: the AGE, not the content, is the signal.
+publish("4 4 16 0 4 0 0 1\n")
+check("fresh rewrite -> idle again", mod.sem_block()["full_text"], "◱ idle")
 
 summary(cleanup_dir=SEM)

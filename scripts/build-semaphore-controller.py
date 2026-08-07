@@ -526,6 +526,22 @@ class Semaphore:
         self.dir.mkdir(parents=True, exist_ok=True)
         for i in range(max_slots):
             self.dir.joinpath(f"slot.{i:02d}").touch(exist_ok=True)
+        # ORPHAN SWEEP (added 2026-08-07): a max_slots decrease leaves the
+        # previous run's higher-indexed slot files standing in tmpfs, and
+        # kx-build-slot scans ALL slot.* -- an orphan is lockable, uncounted
+        # (occupancy() iterates range(max_slots)), ungated capacity. Unlink
+        # them, INCLUDING one something is holding right now: flock lives on
+        # the open file description, so the holder keeps its lock until it
+        # exits, while the file vanishes from every future scan. That is
+        # graceful wind-down, not preemption -- the same take-them-as-they-
+        # return rule reconcile() applies to tightening.
+        for p in self.dir.glob("slot.*"):
+            idx = p.name.rpartition(".")[2]
+            if idx.isdigit() and int(idx) >= max_slots:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
     def _path(self, i):
         return self.dir / f"slot.{i:02d}"
@@ -1174,6 +1190,11 @@ def main(sleep=time.sleep):
             state = d.state
 
             effective = sem.reconcile(d.target)
+            # Published EVERY tick, changed or not: the file's mtime is the
+            # HEARTBEAT readers key liveness off (kx-build-slot fails open on
+            # a state file older than ~3 intervals, the i3 bar renders it as
+            # "off"). Making this conditional on change would make a healthy
+            # quiet controller indistinguishable from a dead one.
             sem.publish(
                 state.allowed, effective, occupied, d.target, state.mark,
                 resident, d.published_healthy,

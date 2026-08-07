@@ -119,6 +119,17 @@ SEM_DIR = os.environ.get(
     os.path.join(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}"), "kx-build-sem"),
 )
 
+# An `allowed` file older than this many seconds is a DEAD controller's
+# leftovers: the controller re-publishes every tick, changed or not, precisely
+# so the file's mtime is a heartbeat (see the publish call in its main loop).
+# 15 s is ~3 of its 5 s control intervals. Overridable so the test suite can
+# age the file with utime instead of sleeping; garbage degrades to the default
+# (this runs unattended in the bar, same rule as the controller's from_env).
+try:
+    SEM_STALE_AFTER = float(os.environ.get("KX_SEM_STALE_AFTER", "15"))
+except ValueError:
+    SEM_STALE_AFTER = 15.0
+
 
 def held_slots():
     """{slot_index: holder_pid} for every flock'd slot, read from /proc/locks.
@@ -215,12 +226,21 @@ def sem_block():
         return block("◱ off", DIM, name="buildsem")
 
     try:
+        # DEAD-CONTROLLER CHECK FIRST: slot files and the last-published state
+        # line live in tmpfs and outlive the controller, so a crashed (or
+        # failed-to-start-after-a-deploy) controller would otherwise render as
+        # a healthy "idle" forever -- exactly the silently-doing-nothing state
+        # the off/idle split in the header exists to expose. mtime is the
+        # heartbeat; a stale file means nobody is publishing.
+        allowed_path = os.path.join(SEM_DIR, "allowed")
+        if time.time() - os.stat(allowed_path).st_mtime > SEM_STALE_AFTER:
+            return block("◱ off", DIM, name="buildsem")
         # Field 0 is `allowed` (the cap the loop is aiming at), field 1 is
         # `effective` (what the controller is not holding back, i.e. what a job
         # could actually take right now). Field 1 is written by every publish,
         # including the two-field one on STOP, so this cannot IndexError against
         # a controller mid-shutdown.
-        with open(os.path.join(SEM_DIR, "allowed")) as f:
+        with open(allowed_path) as f:
             fields = f.read().split()
         allowed = int(fields[0])
         effective = int(fields[1])

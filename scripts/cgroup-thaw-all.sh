@@ -17,6 +17,25 @@
 # something else and silently undoing it would hide a real problem.
 set -u
 
+# The freeze-target shapes come from cgroup-lib.sh (kx_freeze_targets),
+# SHARED with the governor's list_build_scopes, so this sweep can never
+# drift from what the governor actually freezes -- a shape a hand-copied
+# glob pair here missed would stay frozen FOREVER after a SIGKILL, the one
+# failure this script exists to prevent. CGLIB is inherited from the
+# governor unit's Environment= (ExecStopPost runs with the same env as
+# ExecStart); the sibling-path fallback serves manual runs from a checkout.
+#
+# FAIL OPEN, deliberately: this is the thaw of last resort, so a missing or
+# unreadable lib must not stop the sweep. Warn loudly and fall back to the
+# last-known inline pair rather than dying with builds still frozen.
+have_lib=0
+# shellcheck disable=SC1090  # path is env-supplied (CGLIB) in production
+if . "${CGLIB:-$(dirname "$0")/cgroup-lib.sh}" 2>/dev/null; then
+  have_lib=1
+else
+  echo "cgroup-thaw-all: WARNING cannot source cgroup-lib.sh (CGLIB='${CGLIB:-}'); falling back to inline freeze-target globs" >&2
+fi
+
 uid="$(id -u)"
 # KX_POOL override exists for the test suite (scripts/cgroup-thaw-all.test.py),
 # same convention as the controller's KX_SEM_POOL.
@@ -31,8 +50,15 @@ for slice in "$pool"/worktrees-*.slice; do
   # Both freeze targets: the monorepo-jobs build daemons, and the `transient`
   # leaves the governor migrates agent-spawned test/browser workers into. The
   # agents slice contributes only its transient leaf -- `fleet` is never frozen,
-  # so it is deliberately not swept here either.
-  for scope in "$slice"/mj-*.scope "$slice"/transient; do
+  # so it is deliberately not swept here either. The shape pair itself lives in
+  # kx_freeze_targets (cgroup-lib.sh); the inline pair below is only the
+  # fail-open fallback for a run that could not source the lib.
+  if [ "$have_lib" = 1 ]; then
+    kx_freeze_targets "$slice"
+  else
+    FREEZE_TARGETS=( "$slice"/mj-*.scope "$slice"/transient )
+  fi
+  for scope in "${FREEZE_TARGETS[@]}"; do
     [ -e "$scope/cgroup.freeze" ] || continue
     checked=$((checked + 1))
     if [ "$(cat "$scope/cgroup.freeze" 2>/dev/null)" = "1" ]; then

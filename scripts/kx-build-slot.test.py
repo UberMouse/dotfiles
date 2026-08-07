@@ -18,6 +18,7 @@ Covers the client half: the resident gate, the keeper's lifetime, and the three
 fail-open paths. The controller half has its own suites (policy + machinery).
 """
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -29,6 +30,16 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from testlib import check, summary, wait_for  # noqa: E402
+
+# The controller module, loaded once for the sections that bind the two halves
+# of a contract together: the state-file format (section 7) and the resident
+# marker (section 2) both need the REAL producer or parser, not a hand-written
+# stand-in. The filename has dashes, so the import is spelled out.
+spec = importlib.util.spec_from_file_location(
+    "bsc", HERE / "build-semaphore-controller.py"
+)
+bsc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bsc)
 
 SLOT = HERE.parent / "scriptBins" / "bins" / "kx-build-slot.sh"
 # Resolve bash at runtime rather than via `#!/usr/bin/env bash`: the nix build
@@ -95,10 +106,12 @@ def log_text():
     return text
 
 
-def run(*args, timeout="2"):
+def run(*args, timeout="2", extra_env=None):
     env = dict(os.environ)
     env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME),
                KX_KEEPER_POLL="0.2")
+    if extra_env:
+        env.update(extra_env)
     env.pop("KX_BUILD_SLOT_HELD", None)
     t = time.time()
     # -o nounset matches the built writeShellApplication wrapper's bashOptions
@@ -183,6 +196,16 @@ check("wrapped command's rc propagates", p.returncode, 0)
 check("slot still held after exit", held(), True)
 check("marker written", len(markers()), 1)
 
+# THE MARKER CONTRACT, producer to parser. Every resident() test elsewhere
+# writes its marker BY HAND, so the real keeper and the real parser could
+# drift apart without failing any suite. Feed the marker the keeper just
+# wrote to the real Semaphore.resident(): it must count 1, and the marker
+# must SURVIVE -- resident() unlinks markers it cannot attribute to a live
+# pid, so a format drift would surface as a prune, not merely a zero.
+check("real resident() counts the keeper's marker",
+      bsc.Semaphore(SEM, 4).resident(), 1)
+check("real resident() left the live marker alone", len(markers()), 1)
+
 reap()
 check("slot released when daemon dies",
       bool(wait_for(lambda: not held(), timeout=10)), True)
@@ -247,14 +270,6 @@ check("empty semaphore does not stall (no wait was logged)",
 #    emit a line whose field positions match both this suite's writer and the
 #    client's positional read (`cut -d' ' -f8` for healthy). The FIELDS tuple
 #    in the controller is the contract; these assertions are its enforcement.
-import importlib.util  # noqa: E402  (deliberate: only this section needs it)
-
-spec = importlib.util.spec_from_file_location(
-    "bsc", HERE / "build-semaphore-controller.py"
-)
-bsc = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bsc)
-
 F = bsc.Semaphore.FIELDS
 check("healthy is field 8 (client cut -f8)", F.index("healthy"), 7)
 check("allowed is field 1 (i3status fields[0])", F.index("allowed"), 0)
@@ -279,6 +294,55 @@ log_text()
 run("--label", "contract", "--resident", "--", "true")
 check("real publish(healthy=False) blocks a resident job",
       "RESIDENT-WAIT" in log_text(), True)
+
+# 8. STALENESS. A controller that dies (or fails to start after a bad deploy)
+#    leaves its last line standing in tmpfs, and a stale healthy=0 would wedge
+#    every resident job for its full timeout -- waiting on nobody. The
+#    controller re-publishes every tick, so file AGE is the liveness signal
+#    and an aged file fails OPEN. Aged with utime rather than by sleeping; the
+#    KX_SEM_STALE_AFTER override (which exists for tests) is exercised in the
+#    other direction, by raising the threshold past the file's age and
+#    watching the same bytes block again.
+slots()
+pub_sem.publish(4, 4, occupied=0, target=4, mark=0, resident=0, healthy=False)
+_old = time.time() - 1000
+os.utime(SEM / "allowed", (_old, _old))
+log_text()
+p, _ = run("--label", "stale", "--resident", "--", "true")
+check("stale unhealthy line fails open (no wait)",
+      "RESIDENT-WAIT" in log_text(), False)
+check("stale-line resident job still ran", p.returncode, 0)
+
+os.utime(SEM / "allowed", (_old, _old))
+log_text()
+run("--label", "notstale", "--resident", "--", "true",
+    extra_env={"KX_SEM_STALE_AFTER": "100000"})
+check("raised threshold un-stales the same file (override honored)",
+      "RESIDENT-WAIT" in log_text(), True)
+
+# 9. --HELP THROUGH THE WRAPPER. The installed artifact is a
+#    writeShellApplication wrapper: shebang, set line and PATH export sit
+#    ABOVE the header comment, and the old from-line-1 extractor printed that
+#    preamble as mangled help (verified live 2026-08-07). Reproduce the
+#    wrapper shape and assert the anchor skips it.
+HDR = ("kx-build-slot -- take a slot from the machine-global build semaphore,"
+       " run a")
+wrapped = BASE / "wrapped-kx-build-slot.sh"
+wrapped.write_text(
+    f"#!{BASH}\n"
+    "set -o nounset\n"
+    'export PATH="/nix/store/0000000000000000-fake/bin:$PATH"\n'
+    + SLOT.read_text()
+)
+p = subprocess.run(["bash", "-o", "nounset", str(wrapped), "--help"],
+                   capture_output=True, text=True)
+check("wrapped --help starts at the real header",
+      p.stdout.splitlines()[:1], [HDR])
+check("wrapped --help drops the preamble", "set -o nounset" in p.stdout, False)
+p = subprocess.run(["bash", "-o", "nounset", str(SLOT), "--help"],
+                   capture_output=True, text=True)
+check("unwrapped --help anchors identically",
+      p.stdout.splitlines()[:1], [HDR])
 
 reap()
 summary(cleanup_dir=BASE)
