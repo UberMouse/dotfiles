@@ -120,6 +120,15 @@ let
     pkgs.lib.mapAttrs (caller: drv: "${drv}/bin/op-1p-${caller}") opShims
   );
 
+  # Field-exact process matcher (the sanctioned replacement for the banned
+  # `pgrep -f` — see its header). A named binding rather than an inline list
+  # entry so the scripts that depend on it can carry it in runtimeInputs.
+  kx-proc-find = sh {
+    name = "kx-proc-find";
+    runtimeInputs = [ ];
+    bashOptions = [ "nounset" ];
+  };
+
   # Python scripts can't use writeShellApplication, so read the real file and
   # substitute @tokens@ for the store paths they need (interpreter + tools).
   py =
@@ -203,12 +212,13 @@ in
       ];
       bashOptions = [ "nounset" ];
     })
+    kx-proc-find
     (sh {
       name = "claude-agents";
       runtimeInputs = [
         pkgs.systemd
-        pkgs.procps
         pkgs.coreutils
+        kx-proc-find
         unstable-small-pkgs.claude-code
       ];
       bashOptions = [ "nounset" ];
@@ -232,6 +242,7 @@ in
         pkgs.procps
         pkgs.gnugrep
         pkgs.coreutils
+        kx-proc-find
       ];
       bashOptions = [ "nounset" ];
     })

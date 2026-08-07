@@ -29,7 +29,10 @@ if [ "$(systemctl --user show worktrees.slice -p LoadState --value 2>/dev/null)"
   (
     n=0
     while [ "$n" -lt 120 ]; do
-      if pgrep -f 'daemon run --origin' >/dev/null 2>&1; then
+      # kx-proc-find, not `pgrep -f`: -f matches the joined cmdline of every
+      # process, so it matches its own invocation and any shell holding the
+      # string (see CLAUDE.md and kx-proc-find's header).
+      if [ -n "$(kx-proc-find daemon run --origin 2>/dev/null)" ]; then
         claude-agents-reattach >/dev/null 2>&1 || true
         break
       fi

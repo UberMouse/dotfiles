@@ -65,10 +65,14 @@ mkdir -p "$leaf"
 
 # Roots to sweep: the cc-daemon, plus stray monorepo-jobs build daemons (which
 # also inherit whatever cgroup they were forked in). Both are re-parented to PID
-# 1, so we cannot find them by walking down from the TUI -- match on cmdline.
+# 1, so we cannot find them by walking down from the TUI -- match argv fields
+# exactly via kx-proc-find, never `pgrep -f`: a false-positive root here drags
+# its WHOLE process subtree into the fleet cgroup, and -f matches any process
+# whose joined cmdline merely contains the string (including this script's own
+# probe -- see kx-proc-find's header).
 roots=()
-while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(pgrep -f 'daemon run --origin' 2>/dev/null)
-while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(pgrep -f 'monorepo-jobs.*--daemon-run' 2>/dev/null)
+while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(kx-proc-find daemon run --origin 2>/dev/null)
+while read -r p; do [ -n "$p" ] && roots+=("$p"); done < <(kx-proc-find '*monorepo-jobs*' --daemon-run 2>/dev/null)
 
 if [ "${#roots[@]}" -eq 0 ]; then
   echo "No cc-daemon or build daemon running; nothing to reattach."
