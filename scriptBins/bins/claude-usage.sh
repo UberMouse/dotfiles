@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
     --json)                 mode="json" ;;
     --gate)                 mode="gate"; thresh="${2:-}"; shift ;;
     -f|--force)             force=1 ;;
-    -h|--help)              awk 'NR==1{next} /^#/{f=1;sub(/^# ?/,"");print;next} f{exit}' "$0"; exit 0 ;;
+    -h|--help)              awk '/^# claude-usage /{f=1} f{if(!/^#/)exit; sub(/^# ?/,""); print}' "$0"; exit 0 ;;
     *) echo "claude-usage: unknown argument: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift

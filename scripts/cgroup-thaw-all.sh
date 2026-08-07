@@ -18,7 +18,9 @@
 set -u
 
 uid="$(id -u)"
-pool="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/worktrees.slice"
+# KX_POOL override exists for the test suite (scripts/cgroup-thaw-all.test.py),
+# same convention as the controller's KX_SEM_POOL.
+pool="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/worktrees.slice}"
 [ -d "$pool" ] || { echo "worktrees.slice pool not materialized; nothing to thaw."; exit 0; }
 
 shopt -s nullglob

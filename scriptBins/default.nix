@@ -144,7 +144,7 @@ in
     (sh {
       name = "koordinates-dev-protocol";
       runtimeInputs = [ pkgs.curl ];
-      bashOptions = [ ];
+      bashOptions = [ "nounset" ];
     })
     (sh {
       name = "dev-terminal";

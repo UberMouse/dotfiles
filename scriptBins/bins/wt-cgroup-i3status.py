@@ -29,6 +29,7 @@
 # Env: WT_BAR_ACTIVE_CORES=<cores> -- below this the ⚙ block reads "idle"
 #      (default 0.15, i.e. 15% of one core).
 #      KX_BUILD_SEM_DIR -- semaphore directory (default $XDG_RUNTIME_DIR/kx-build-sem).
+import functools
 import sys, os, json, time, subprocess, signal
 
 I3STATUS = "@i3status@"
@@ -173,7 +174,8 @@ def held_slots():
     return held
 
 
-def is_controller(pid, _cache={}):
+@functools.lru_cache(maxsize=64)
+def is_controller(pid):
     """True if pid is the semaphore controller rather than a gated job.
 
     Classifying by SLOT INDEX instead (index < allowed == a job) is wrong, and
@@ -181,18 +183,16 @@ def is_controller(pid, _cache={}):
     a tighten jobs legitimately keep slots ABOVE `allowed` until they drain.
     Observed live at 16:35 as allowed=1 with effective=3 -- three jobs running,
     which an index rule would have reported as one. The holder pid is exact.
+
+    lru_cache bounds the memo the same way the old hand-rolled dict did; pid
+    reuse can serve one stale answer per recycled pid, which the previous
+    cache also accepted -- a wrong colour for one tick is not worth a TTL.
     """
-    if pid in _cache:
-        return _cache[pid]
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            ctl = b"build-semaphore-controller" in f.read()
+            return b"build-semaphore-controller" in f.read()
     except OSError:
-        ctl = False
-    if len(_cache) > 64:
-        _cache.clear()
-    _cache[pid] = ctl
-    return ctl
+        return False
 
 
 def sem_block():
@@ -344,4 +344,8 @@ def main():
 
     term()
 
-main()
+
+# Guarded so the pure block-building functions (sem_block arithmetic above all)
+# are importable by scripts/wt-cgroup-i3status.test.py without spawning i3status.
+if __name__ == "__main__":
+    main()

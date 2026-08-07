@@ -39,7 +39,7 @@ while [ "$#" -gt 0 ]; do
       case "${2:-}" in ''|-*) ;; *) interval="$2"; shift ;; esac ;;
     -t|--top)  top="${2:-3}"; shift ;;
     -s|--sort) sortkey="${2:-mem}"; shift ;;
-    -h|--help) awk 'NR==1{next} /^#/{f=1;sub(/^# ?/,"");print;next} f{exit}' "$0"; exit 0 ;;
+    -h|--help) awk '/^# wt-cgroup-status /{f=1} f{if(!/^#/)exit; sub(/^# ?/,""); print}' "$0"; exit 0 ;;
     *) printf 'unknown option: %s (try --help)\n' "$1" >&2; exit 2 ;;
   esac
   shift

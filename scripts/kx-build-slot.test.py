@@ -81,8 +81,12 @@ def run(*args, timeout="6"):
     env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME))
     env.pop("KX_BUILD_SLOT_HELD", None)
     t = time.time()
+    # -o nounset matches the built writeShellApplication wrapper's bashOptions
+    # (scriptBins/default.nix) -- without it the test exercises the script
+    # under DIFFERENT shell options than production, and an unset-variable slip
+    # on a rarely-taken branch would only ever surface live.
     p = subprocess.run(
-        ["bash", str(SLOT), "--timeout", timeout, *args],
+        ["bash", "-o", "nounset", str(SLOT), "--timeout", timeout, *args],
         env=env, capture_output=True, text=True,
     )
     return p, time.time() - t
@@ -192,7 +196,7 @@ check("junk probe output fabricates no pid", held(), False)
 env = dict(os.environ)
 env.update(KX_BUILD_SEM_DIR=str(BASE / "nope"), HOME=str(HOME))
 env.pop("KX_BUILD_SLOT_HELD", None)
-p = subprocess.run(["bash", str(SLOT), "--", "echo", "ran"],
+p = subprocess.run(["bash", "-o", "nounset", str(SLOT), "--", "echo", "ran"],
                    env=env, capture_output=True, text=True)
 check("runs with no semaphore dir", p.stdout.strip(), "ran")
 

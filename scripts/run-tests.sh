@@ -11,5 +11,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 rc=0
 python3 scripts/kx-build-slot.test.py || rc=1
+python3 scripts/wt-cgroup-i3status.test.py || rc=1
+python3 scripts/cgroup-thaw-all.test.py || rc=1
 python3 scripts/build-semaphore-controller.test.py || rc=1
 exit "$rc"

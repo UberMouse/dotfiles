@@ -93,7 +93,7 @@ while [ "$#" -gt 0 ]; do
     --resident) resident_mode=1; shift ;;
     --) shift; break ;;
     -h|--help)
-      awk 'NR==1{next} /^#/{f=1;sub(/^# ?/,"");print;next} f{exit}' "$0"
+      awk '/^# kx-build-slot /{f=1} f{if(!/^#/)exit; sub(/^# ?/,""); print}' "$0"
       exit 0 ;;
     *) break ;;
   esac
