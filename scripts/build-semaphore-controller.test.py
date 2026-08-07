@@ -133,6 +133,37 @@ def hold():
     raise AssertionError(f"no free slot to take (state={(SEM / 'allowed').read_text()})")
 
 
+def hold_resident():
+    """Simulate a browser keeper: take a slot AND claim it as resident.
+
+    The marker names THIS process as the keeper, which is alive for the whole
+    run -- so the controller counts it until the test deliberately removes it.
+    """
+    name = hold()
+    (SEM / "resident").mkdir(exist_ok=True)
+    (SEM / "resident" / name).write_text(
+        f"keeper={os.getpid()} label=playwright-open daemons=1\n"
+    )
+    return name
+
+
+def release_residents():
+    """Drop the markers. A real keeper removes its own as it exits."""
+    for f in (SEM / "resident").glob("slot.*"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
+
+# A pid that is certainly dead, for the stale-marker test. Reaped, so the kernel
+# is not holding it as a zombie -- a zombie still has a /proc entry and would
+# read as a live keeper.
+_dead = subprocess.Popen([sys.executable, "-c", "pass"])
+_dead.wait()
+dead_pid = _dead.pid
+
+
 def release_all():
     while jobs:
         jobs.pop().close()
@@ -289,6 +320,91 @@ check("no loosen behind a closed gate", state()[0], before_gate)
 release_all()
 settle()
 check("floor admits one when empty", free_slots(), 1)
+
+# 14. RESIDENCY. A browser keeper holds a slot for the lifetime of the browser,
+#     which means slots can be occupied indefinitely by something that is not a
+#     build. The floor has to rise with them or the machine deadlocks: the pool
+#     here is still hostile from test 12, so the load test is shut and the ONLY
+#     thing that can open a slot is the floor.
+#
+#     This is the discriminating test for the guard in admit_target. Written the
+#     obvious way -- `if occupied == 0` -- the guard silently stops firing the
+#     moment a browser is open, because occupancy is then never zero. Builds
+#     would wait out the full timeout and run ungated, and nothing in the log
+#     would look wrong. Two residents, so a stuck guard cannot pass by luck.
+#     Note the settle BETWEEN the two: a browser is admitted like any other job,
+#     through the one slot the floor leaves open, and the floor only rises once
+#     the controller has seen its marker. Residents arrive one per tick, which
+#     is the point -- two browsers opening at once still queue.
+res_a = hold_resident()
+settle(4)
+res_b = hold_resident()
+settle(4)
+check("residents counted", state()[6], "2")
+check("resident floor still admits one", free_slots(), 1)
+
+# 15. That free slot is real: a build takes it, and only then is the box full.
+hold()
+settle()
+check("build takes the resident-floored slot", free_slots(), 0)
+check("occupancy counts residents and builds", state()[3], "3")
+
+# 16. A keeper killed outright (SIGKILL, OOM) cannot remove its own marker. The
+#     stale marker must not keep buying floor forever -- the lock is what
+#     reserves the slot, the marker only sizes the floor, so an orphan is pruned
+#     on sight rather than trusted.
+release_all()
+release_residents()
+(SEM / "resident").mkdir(exist_ok=True)
+(SEM / "resident" / "slot.00").write_text(f"keeper={dead_pid} label=orphan\n")
+settle(4)
+check("stale marker not counted", state()[6], "0")
+check("stale marker pruned", (SEM / "resident" / "slot.00").exists(), False)
+
+# 17. Capacity a browser bought does not outlive the browser. `allowed` only
+#     ever moves on a tighten or a loosen, so a ceiling raised by residents
+#     would keep sanctioning builds after the last browser closed.
+#
+#     This needs a RESTART on a low ceiling to be testable at all. The clamp
+#     only fires once `allowed` exceeds the bare ceiling, and at the 12 this
+#     run has been using that would mean ratcheting to 13 -- nine grant
+#     intervals and thirteen concurrent holds, to exercise one comparison. A
+#     ceiling of 2 puts the same state three admissions away. It is reachable in
+#     production (ceil 8, 16 slots, four browsers), which is why it is tested
+#     rather than reasoned about.
+release_all()
+release_residents()
+set_pool(0, 0, 1)
+proc.terminate()
+proc.wait(timeout=10)
+
+env["KX_SEM_CEIL"] = "2"
+env["KX_SEM_SOFT_FLOOR"] = "2"
+proc = subprocess.Popen(
+    [sys.executable, str(CTL)], env=env, stdout=log, stderr=subprocess.STDOUT
+)
+settle(3)
+check("restarted on a low ceiling", state()[0], "2")
+
+hold_resident()
+settle(4)
+hold_resident()
+settle(4)
+# Saturate, so the ratchet has demand to answer to and climbs to the raised
+# ceiling of ceil + resident.
+hold()
+settle(6)
+hold()
+settle(10)
+check("residents raise the ceiling", state()[0], "4")
+
+# Every browser closes. The ceiling falls back to 2 and `allowed` must follow it
+# down without waiting for a tighten that may never come on a calm box.
+release_all()
+release_residents()
+settle(4)
+check("cap reclaimed when residents leave", state()[0], "2")
+check("no residents left", state()[6], "0")
 
 proc.terminate()
 proc.wait(timeout=10)

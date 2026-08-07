@@ -8,6 +8,43 @@
   writeText,
 }:
 let
+  # Lists the pids of resident playwright CLI daemons, one per line. Handed to
+  # kx-build-slot as --resident-probe so the slot taken by `open` is held for
+  # as long as the browser that `open` leaves behind.
+  #
+  # A daemon is `node .../playwright-core/lib/entry/cliDaemon.js <session>`,
+  # detached and reparented to init, and it owns the chromium as a child -- so
+  # its lifetime IS the browser's and waiting on it needs no other bookkeeping.
+  #
+  # WHY /proc AND NOT `pgrep -f cliDaemon.js`. -f matches the pattern against
+  # the FULL command line of every process, so the pgrep matches itself, and so
+  # does any grep, editor or shell that happens to hold the string. Measured on
+  # 2026-08-07: six "daemons" reported against four real ones, the extras being
+  # the probe's own pipeline. Because a self-match gets a different pid on each
+  # run, it appears in the AFTER list and never the BEFORE one -- it always
+  # looks freshly spawned, so every single `open` would fork a keeper for a
+  # process that no longer exists and log a RESIDENT line that is simply false.
+  # Testing argv[1] for an exact suffix cannot match a pattern-shaped argument.
+  daemonProbe = writeText "kx-pw-daemons" ''
+    #!${runtimeShell}
+    for c in /proc/[0-9]*/cmdline; do
+      # argv is NUL-separated; field 2 is the script path node was invoked with.
+      #
+      # The redirection is inside the group so the GROUP's stderr swallows it.
+      # `tr ... 2>/dev/null` would not: a process that exits between the glob and
+      # the read makes the redirect itself fail, and that error is printed by the
+      # shell before tr is ever started. Harmless but noisy, and noise in a probe
+      # is how a probe stops being read.
+      a1=$( { tr '\0' '\n' < "$c" | sed -n 2p; } 2>/dev/null ) || continue
+      case "$a1" in
+        */entry/cliDaemon.js)
+          p=''${c#/proc/}
+          printf '%s\n' "''${p%/cmdline}"
+          ;;
+      esac
+    done
+  '';
+
   # Wrapper that sets the nix browser env and injects --browser=chromium ONLY
   # for the `open` subcommand. Upstream's `--browser` is an option of `open`
   # alone; injecting it globally (as the old `wrapProgram --add-flags` did)
@@ -39,8 +76,10 @@ let
       case "$a" in --browser | --browser=*) has_browser=1 ;; esac
     done
 
-    # Browser LAUNCH takes a slot from the machine-global build semaphore. It is
-    # the only subcommand gated here, and that is a deliberate line:
+    # Browser RESIDENCY takes a slot from the machine-global build semaphore --
+    # not merely the launch, but the whole lifetime of the browser the launch
+    # leaves behind. `open` is the only subcommand gated here, and that is a
+    # deliberate line:
     #
     #   * `open` forks a chromium, which is a large, spiky allocation and the
     #     one thing several agents can plausibly do at the same instant. Making
@@ -49,12 +88,31 @@ let
     #     that is ALREADY running. Gating them would queue cheap operations
     #     behind heft typechecks for no memory benefit, and would badly hurt
     #     agent latency.
-    #   * the launched browser OUTLIVES this process, so a slot held across
-    #     `open` could never represent its resident memory anyway. That memory is
-    #     accounted for the honest way instead: a resident browser shows up as
-    #     worktrees.slice memory pressure, and the controller is pressure-
-    #     adaptive, so it tightens for browsers automatically without anyone
-    #     having to model them. See scripts/build-semaphore-controller.py.
+    #
+    # THE SLOT IS HELD UNTIL THE BROWSER GOES AWAY, via --resident-probe. An
+    # earlier version of this file released it as soon as `open` returned, on
+    # the argument that a resident browser shows up as worktrees.slice pressure
+    # and the controller, being pressure-adaptive, would tighten for it without
+    # anyone having to model it. That is true but LAGGING: it tightens after the
+    # browser has already caused the stall. On 2026-08-07 four resident sessions
+    # (daemon + chromium + renderers, ~1.2 GB) sat entirely outside the
+    # semaphore's accounting while it reported 1/1 -- correct by its own books,
+    # and wrong about the machine. Holding the slot makes the tenant visible
+    # BEFORE it hurts, which is the whole point of admission control.
+    #
+    # --resident additionally makes the launch wait for the controller's LOAD
+    # TEST, not merely for a free slot. The floor keeps one slot free whenever no
+    # build is running, and a browser taking that slot raises the floor, freeing
+    # the next -- twelve got in that way on a pool at 15.5G of 16G with psi10=40%
+    # before this flag existed. Waiting on the load test is what makes a browser
+    # answer to memory the way a heft typecheck does.
+    #
+    # This is safe only because the controller raises its floor by the number of
+    # resident-held slots; without that, browsers would eat the admission pool
+    # and every build would sit out its timeout and then run UNGATED, which is
+    # strictly worse than not gating at all. See the RESIDENCY note in
+    # scriptBins/bins/kx-build-slot.sh and `resident_slots` in
+    # scripts/build-semaphore-controller.py -- the three have to agree.
     #
     # Re-invoking THIS wrapper under kx-build-slot (rather than wrapping $entry
     # directly) keeps the `exec -a "$0"` argv[0] fixup below intact -- prefixing
@@ -67,7 +125,8 @@ let
     # as it did before. The semaphore is a scheduling hint, never a requirement.
     if [ "$cmd" = open ] && [ -z "''${KX_BUILD_SLOT_HELD:-}" ] \
        && command -v kx-build-slot >/dev/null 2>&1; then
-      exec kx-build-slot --label playwright-open -- "$0" "$@"
+      exec kx-build-slot --label playwright-open --resident \
+        --resident-probe '@PROBE@' -- "$0" "$@"
     fi
 
     # --browser=chromium points the `open` command at the nix-provided bundled
@@ -113,9 +172,14 @@ buildNpmPackage (finalAttrs: {
 
     # Install our own wrapper (see wrapperScript above) in place of the npm bin
     # symlink, then bake in the absolute path to the CLI entry point.
+    # The resident-daemon probe. libexec, not bin: it is an implementation
+    # detail of the semaphore handoff, not a command anyone should be running.
+    install -Dm755 ${daemonProbe} $out/libexec/kx-pw-daemons
+
     rm -f $out/bin/playwright-cli
     install -m755 ${wrapperScript} $out/bin/playwright-cli
     sed -i "s|@ENTRY@|$pkgdir/playwright-cli.js|" $out/bin/playwright-cli
+    sed -i "s|@PROBE@|$out/libexec/kx-pw-daemons|" $out/bin/playwright-cli
   '';
 
   meta = {

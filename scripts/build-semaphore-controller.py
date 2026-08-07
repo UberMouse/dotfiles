@@ -493,6 +493,52 @@ class Semaphore:
                 n += 1
         return n
 
+    def resident(self):
+        """How many slots are held by resident-browser keepers, not by builds.
+
+        A slot held for a resident browser (see the RESIDENCY note in
+        kx-build-slot) is indistinguishable from a build's by looking at the
+        lock -- both are just an exclusive flock by something that is not this
+        controller. The keeper therefore drops a marker naming itself, and this
+        counts the ones whose keeper is still alive.
+
+        THE MARKER IS A HINT, NOT A LEASE. The flock is what actually reserves
+        the slot; this only decides how far the FLOOR rises. So every failure
+        mode here is a mis-sized floor and never a double-admitted job, which is
+        why a stale marker can be pruned inline without any locking protocol: a
+        keeper killed with SIGKILL cannot clean up after itself, and a marker
+        left behind would otherwise inflate the floor permanently.
+
+        Zero is the safe answer on error, and that direction is deliberate: it
+        under-states the floor, which throttles harder than intended. The
+        opposite mistake -- an over-stated floor built on markers for keepers
+        that are gone -- would grant capacity backed by nothing.
+        """
+        d = self.dir / "resident"
+        n = 0
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            return 0
+        for f in entries:
+            pid = None
+            try:
+                for tok in f.read_text().split():
+                    if tok.startswith("keeper="):
+                        pid = tok.split("=", 1)[1]
+            except OSError:
+                continue
+            if pid and pid.isdigit() and Path(f"/proc/{pid}").exists():
+                n += 1
+                continue
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        # A marker per slot is the invariant, so this can never exceed the pool
+        # even if something outside this system writes into the directory.
+        return min(n, self.max_slots)
+
     def reconcile(self, target):
         """Hold back slots until exactly `target` remain available, and report it.
 
@@ -546,17 +592,38 @@ class Semaphore:
 
         return self.max_slots - len(self.held)
 
-    def publish(self, allowed, effective, occupied=None, target=None, mark=None):
+    def publish(
+        self, allowed, effective, occupied=None, target=None, mark=None,
+        resident=None, healthy=None,
+    ):
         # Field 0 stays `allowed` and field 2 stays `max_slots`: the i3status
         # block reads field 0 positionally. New fields are appended, never
-        # inserted, so an older reader keeps working across a partial deploy.
+        # inserted, so an older reader keeps working across a partial deploy --
+        # which is why `resident` goes on the END despite belonging next to
+        # `occupied`. Readers wanting BUILD occupancy want occupied - resident.
         try:
             occ = "-" if occupied is None else str(occupied)
             tgt = "-" if target is None else str(target)
             mk = "-" if mark is None else str(mark)
+            res = "-" if resident is None else str(resident)
+            # THE LOAD TEST'S VERDICT, published so that jobs which will become
+            # RESIDENT can wait for it. A build takes a slot and gives it back;
+            # a resident browser takes one and never does, so the floor rises to
+            # accommodate it -- which means admitting one opens the door for the
+            # next. Measured 2026-08-07: twelve browsers admitted in a row onto a
+            # pool at 15.5G of 16G with psi10=40%, because the progress-floor
+            # slot is free by construction and nothing marked it build-only.
+            # `allowed` had correctly fallen to 1 the whole time; residents were
+            # simply not answering to it.
+            #
+            # Publishing the verdict rather than a resident cap keeps one policy
+            # in one place: browsers queue on exactly the memory and PSI evidence
+            # that gates builds, and there is no second number to keep in step.
+            hl = "-" if healthy is None else ("1" if healthy else "0")
             tmp = self.dir / "allowed.tmp"
             tmp.write_text(
-                f"{allowed} {effective} {self.max_slots} {occ} {tgt} {mk}\n"
+                f"{allowed} {effective} {self.max_slots} {occ} {tgt} {mk} "
+                f"{res} {hl}\n"
             )
             tmp.replace(self.dir / "allowed")
         except OSError:
@@ -580,7 +647,15 @@ def main():
     # allowed=12 and was pinned at 100% of memory.high seventy seconds later.
     # soft_floor is the same value the predictive signal is trusted to reach on
     # its own, which makes it the natural "no evidence either way" position.
-    allowed = max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"]))
+    # Residents are counted BEFORE the first tick because keepers outlive this
+    # process: they are independent shells holding flocks, so a `nixos-rebuild
+    # switch` restarts the controller straight into a machine that already has
+    # browsers on it. Starting at the unshifted soft_floor would spend the whole
+    # first interval with the residents' slots subtracted from build capacity.
+    allowed = min(
+        CFG["max_slots"],
+        sem.resident() + max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"])),
+    )
     last_up = 0.0
     # THE HIGH-WATER MARK: the highest concurrency this box has held while the
     # load test was passing. Admissions up to it are replacements and cost
@@ -623,6 +698,41 @@ def main():
             reason = None
 
             occupied = sem.occupancy()
+
+            # RESIDENT TENANTS SHIFT EVERY BOUND, so that `allowed - resident`
+            # keeps exactly the meaning `allowed` had before residency existed:
+            # how many BUILDS may run. A resident browser occupies a slot but is
+            # not a build and must not consume a build's quota.
+            #
+            # The floor is the reason this is not optional. floor=1 exists so a
+            # floored semaphore still makes progress; with two browsers resident
+            # and a static floor, every build would wait out its full timeout and
+            # then run UNGATED -- strictly worse than admitting one. Shifting the
+            # floor keeps the "at least one build may always start" guarantee
+            # true no matter how many browsers are open.
+            #
+            # The ceiling shifts for the same reason and is then clamped to the
+            # pool: residents may not buy capacity that does not exist. Note the
+            # bounds move but the LOAD TEST does not -- browser memory still has
+            # to pass the same free-bytes and PSI checks as anything else, so
+            # this widens the bookkeeping, never the machine's real budget.
+            resident = sem.resident()
+            floor_dyn = min(CFG["max_slots"], CFG["floor"] + resident)
+            soft_floor_dyn = min(CFG["max_slots"], CFG["soft_floor"] + resident)
+            ceil_dyn = min(CFG["max_slots"], CFG["ceil"] + resident)
+            # Growth must never be blocked by a ceiling that has slipped BELOW
+            # the floor, which max_slots clamping can do once residents are many.
+            ceil_dyn = max(ceil_dyn, floor_dyn)
+
+            # A CLOSING BROWSER MUST TAKE ITS CAPACITY WITH IT. `allowed` only
+            # ever moves on a TIGHTEN or a LOOSEN, so a ceiling that was raised
+            # to 12 by four residents would keep sanctioning 12 builds after the
+            # last one closed and the real ceiling fell back to 8 -- capacity
+            # granted on the strength of tenants that have gone. Lowering it here
+            # is a clamp, not a tighten: it can only ever reduce `allowed`.
+            if allowed > ceil_dyn:
+                allowed = ceil_dyn
+                reason = f"RECLAIM resident={resident} ceiling {ceil_dyn}"
 
             tick = time.monotonic()
 
@@ -720,8 +830,14 @@ def main():
                 # makes no progress at all -- and every caller would then sit out
                 # its timeout and run UNGATED, which is strictly worse than
                 # admitting one job. Same reasoning as floor being 1, not 0.
-                if _occ == 0:
-                    t = max(t, CFG["floor"])
+                # The test is "no BUILDS running", not "no slots occupied".
+                # Resident browsers occupy slots permanently, so `_occ == 0` is
+                # false for as long as any session is open -- this guard would
+                # simply stop firing, and an idle box with one browser on it
+                # would admit nothing at all. That is the exact deadlock the
+                # floor exists to prevent, reintroduced through the back door.
+                if _occ - resident <= 0:
+                    t = max(t, floor_dyn)
                 return t
 
             # Is `allowed` ITSELF the binding constraint? That is the only
@@ -744,9 +860,13 @@ def main():
                 # The predictive signal alone may not drive to the absolute
                 # floor. WHY: memory.current is the WHOLE pool, but this
                 # controller only governs the part that takes slots. The agents
-                # fleet, its MCP servers and any resident browser sit in the
-                # same pool and ask for nothing -- measured at 2-3 GB of a
-                # 9-16 GB pool. If those tenants alone hold the pool above
+                # fleet and its MCP servers sit in the same pool and ask for
+                # nothing -- measured at 2-3 GB of a 9-16 GB pool. (Resident
+                # browsers WERE in that list until 2026-08-07; they now hold a
+                # slot for their lifetime and are counted, which is what
+                # `resident` above is for. The rest of the untracked set is
+                # still real, so this reasoning still stands.) If those tenants
+                # alone hold the pool above
                 # tighten_high_frac (and the baseline says the pool exceeds 14G,
                 # 87.5% of high, 28% of the time) then a high-frac-only rule
                 # would floor the semaphore permanently, serialising every build
@@ -758,7 +878,7 @@ def main():
                 # psi10, i.e. evidence that something is actually stalling. That
                 # keeps the aggressive state reserved for demonstrated harm
                 # rather than for a threshold this box crosses routinely.
-                limit = CFG["floor"] if hot_psi else max(CFG["floor"], CFG["soft_floor"])
+                limit = floor_dyn if hot_psi else max(floor_dyn, soft_floor_dyn)
                 # The outer min() is load-bearing: a tighten must NEVER raise
                 # capacity. Without it, `max(limit, allowed - step_down)` reads
                 # max(4, -1) = 4 once PSI has already driven allowed to 1, so a
@@ -791,16 +911,18 @@ def main():
                 # pinned the pool at 100% of memory.high. Same reason TCP does
                 # not grow cwnd while the sender is idle.
                 and cap_saturated
-                and allowed < CFG["ceil"]
+                and allowed < ceil_dyn
                 and (time.monotonic() - last_up) >= CFG["dwell"]
             ):
-                allowed = min(CFG["ceil"], allowed + CFG["step_up"])
+                allowed = min(ceil_dyn, allowed + CFG["step_up"])
                 last_up = time.monotonic()
                 reason = f"LOOSEN psi60={psi60:.1f}%"
 
             target = admit_target(allowed)
             effective = sem.reconcile(target)
-            sem.publish(allowed, effective, occupied, target, mark)
+            sem.publish(
+                allowed, effective, occupied, target, mark, resident, healthy
+            )
 
             if reason and allowed != before:
                 log(

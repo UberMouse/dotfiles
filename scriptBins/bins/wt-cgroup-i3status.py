@@ -213,12 +213,30 @@ def sem_block():
             fields = f.read().split()
         allowed = int(fields[0])
         effective = int(fields[1])
+        # Field 6 is `resident`: slots held for the LIFETIME of a browser rather
+        # than for the duration of a build. Appended last and read defensively,
+        # because a controller from before residency existed writes six fields
+        # and this block has to survive the window between switch and restart.
+        resident = int(fields[6]) if len(fields) > 6 else 0
     except (OSError, ValueError, IndexError):
         return block("◱ off", DIM, name="buildsem")
 
-    used = sum(1 for pid in held.values() if not is_controller(pid))
-    if used == 0:
+    # SPLIT THE HOLDERS. A resident browser is a slot holder but not a build,
+    # and lumping the two together makes the bar lie in whichever direction the
+    # accounting happens to be wrong: before residency it read 1/1 with four
+    # browsers up (the tenants were invisible), and counting them as builds
+    # would now read 4/5 on an idle box with no build running at all. Neither is
+    # what someone glancing at a bar wants to know, which is how much BUILD
+    # capacity is left.
+    holders = sum(1 for pid in held.values() if not is_controller(pid))
+    used = max(0, holders - resident)
+    build_effective = max(0, effective - resident)
+    if used == 0 and resident == 0:
         return block("◱ idle", DIM, name="buildsem")
+    if used == 0:
+        # Nothing building, but the browsers are still costing capacity and are
+        # the reason `allowed` is not what it would otherwise be. Worth seeing.
+        return block(f"◱ idle ◐{resident}", DIM, name="buildsem")
 
     # THE NUMBER IS AVAILABILITY, THE COLOUR IS THROTTLING, and they are drawn
     # from different denominators on purpose.
@@ -236,9 +254,15 @@ def sem_block():
     # the ramp. So the colour keeps `allowed` as its denominator. used > allowed
     # is legitimate mid-tighten (jobs drain rather than being preempted) and
     # correctly shows as saturated red.
-    u = used / allowed if allowed > 0 else 1.0
+    # Residents come out of BOTH denominators, for the same reason they come out
+    # of the numerator: the controller raises every bound by the resident count,
+    # so `allowed - resident` is the build cap in the sense `allowed` had before
+    # residency existed, and the colour keeps meaning what it always meant.
+    build_allowed = allowed - resident
+    u = used / build_allowed if build_allowed > 0 else 1.0
     color = GREEN if u < 0.5 else (YELLOW if u < 1.0 else RED)
-    return block(f"◱ {used}/{effective}", color, name="buildsem")
+    tail = f" ◐{resident}" if resident else ""
+    return block(f"◱ {used}/{build_effective}{tail}", color, name="buildsem")
 
 prev_usage = None
 prev_t = None
