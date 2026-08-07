@@ -92,7 +92,6 @@
       sysbench
       nixfmt
       nixd
-      (callPackage ./kart.nix { })
       uv
       ngrok
 
@@ -107,6 +106,7 @@
     ]
     ++ [
       unstable-pkgs.gh
+      unstable-pkgs.kart
       unstable-pkgs.playwright-test
       unstable-pkgs.playwright-cli
       unstable-pkgs.plannotator

@@ -45,6 +45,7 @@
           playwright-test
           ;
         claude-code = final.callPackage ./packages/claude-code/package.nix { };
+        kart = final.callPackage ./packages/kart/package.nix { };
         playwright-cli = final.callPackage ./packages/playwright-cli/package.nix { };
         plannotator = final.callPackage ./packages/plannotator/package.nix { };
         ccstatusline = final.callPackage ./packages/ccstatusline/package.nix { };
@@ -94,6 +95,7 @@
       packages.${system} = {
         inherit (unstable-pkgs)
           claude-code
+          kart
           playwright-cli
           plannotator
           ccstatusline
