@@ -6,13 +6,18 @@
 NO CONTROLLER IS STARTED, and that is the point. kx-build-slot only ever READS
 the published state -- it never negotiates -- so the state file can be written by
 hand, which makes every assertion here deterministic and the whole run finish in
-seconds. Contrast build-semaphore-controller.test.py, which has to drive a real
-control loop through real dwell and grant intervals and consequently flakes on a
-loaded box. Behaviour that can be tested without the clock should be.
+seconds. Behaviour that can be tested without the clock should be.
+
+Blocking is asserted from the log (RESIDENT-WAIT / TIMEOUT lines), not from
+elapsed time: a `waited >= 5s` proxy both slowed the suite by its own timeout
+and bet against the scheduler. The keeper's poll interval is driven down via
+KX_KEEPER_POLL so its lifetime tests converge in tenths of a second, polled by
+wait_for rather than padded with sleeps.
 
 Covers the client half: the resident gate, the keeper's lifetime, and the three
-fail-open paths. The controller half has its own suite.
+fail-open paths. The controller half has its own suites (policy + machinery).
 """
+
 import os
 import shutil
 import subprocess
@@ -21,7 +26,11 @@ import tempfile
 import time
 from pathlib import Path
 
-SLOT = Path(__file__).resolve().parent.parent / "scriptBins" / "bins" / "kx-build-slot.sh"
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from testlib import check, summary, wait_for  # noqa: E402
+
+SLOT = HERE.parent / "scriptBins" / "bins" / "kx-build-slot.sh"
 # Resolve bash at runtime rather than via `#!/usr/bin/env bash`: the nix build
 # sandbox (where this runs as a flake check) has no /usr/bin/env.
 BASH = shutil.which("bash")
@@ -30,9 +39,7 @@ SEM = BASE / "sem"
 HOME = BASE / "home"
 SEM.mkdir(parents=True)
 HOME.mkdir(parents=True)
-
-fails = []
-passes = []
+LOG = HOME / ".local/state/cgroup-pressure/build-semaphore.log"
 
 # A fake "daemon": a sleep with a distinctive argv we can match exactly. Stands
 # in for the playwright cliDaemon -- the point under test is the handoff, not
@@ -76,9 +83,22 @@ def publish(allowed=4, effective=4, occupied=0, target=4, mark=0, resident=0,
     )
 
 
-def run(*args, timeout="6"):
+def log_text():
+    """The semaphore log so far, then reset -- each check reads only what its
+    own run wrote."""
+    try:
+        text = LOG.read_text()
+    except OSError:
+        text = ""
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    LOG.write_text("")
+    return text
+
+
+def run(*args, timeout="2"):
     env = dict(os.environ)
-    env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME))
+    env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME),
+               KX_KEEPER_POLL="0.2")
     env.pop("KX_BUILD_SLOT_HELD", None)
     t = time.time()
     # -o nounset matches the built writeShellApplication wrapper's bashOptions
@@ -92,12 +112,6 @@ def run(*args, timeout="6"):
     return p, time.time() - t
 
 
-def check(name, got, want):
-    ok = got == want
-    (passes if ok else fails).append(name)
-    print(f"{'PASS' if ok else 'FAIL'}  {name}: got {got}, want {want}")
-
-
 def held(slot="slot.00"):
     """True if anything holds an exclusive flock on the slot."""
     r = subprocess.run(["flock", "-n", str(SEM / slot), "-c", "true"],
@@ -105,10 +119,20 @@ def held(slot="slot.00"):
     return r.returncode != 0
 
 
+def probe_pids():
+    r = subprocess.run([str(PROBE)], capture_output=True, text=True)
+    return [int(x) for x in r.stdout.split() if x.isdigit()]
+
+
 def reap():
-    subprocess.run(["pkill", "-9", "-x", "-f", f"sleep {MARK}"],
-                   capture_output=True)
-    time.sleep(0.5)
+    """Kill exactly the pids the probe sees (its match is argv-field exact),
+    never a machine-global pkill pattern."""
+    for pid in probe_pids():
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            pass
+    wait_for(lambda: not probe_pids(), timeout=5)
 
 
 def markers():
@@ -119,26 +143,34 @@ def markers():
 # 1. THE RESIDENT GATE. A build takes the slot the floor keeps free however
 #    hostile the box looks; a resident job must wait for the load test, because
 #    that free slot exists to keep BUILDS moving and a browser that took it would
-#    raise the floor and open the next one. Detected by elapsed time: a gated job
-#    that never gets in sits until its timeout and then fails open.
+#    raise the floor and open the next one. Asserted from the log: a gated run
+#    writes RESIDENT-WAIT and then a TIMEOUT ... UNGATED line; an ungated one
+#    writes neither.
 slots()
 publish(healthy=0)
-_, el = run("--label", "build", "--", "true")
-check("build ignores the health gate", el < 3, True)
+log_text()
+p, _ = run("--label", "build", "--", "true")
+check("build ignores the health gate", p.returncode, 0)
+check("build never waited on the gate", "RESIDENT-WAIT" in log_text(), False)
 
-_, el = run("--label", "browser", "--resident", "--", "true")
-check("resident blocked while unhealthy", el >= 5, True)
+p, _ = run("--label", "browser", "--resident", "--", "true")
+blocked_log = log_text()
+check("resident blocked while unhealthy", "RESIDENT-WAIT" in blocked_log, True)
+check("blocked resident fails open at timeout",
+      "TIMEOUT" in blocked_log and "UNGATED" in blocked_log, True)
+check("fail-open still ran the command", p.returncode, 0)
 
 publish(healthy=1)
-_, el = run("--label", "browser", "--resident", "--", "true")
-check("resident admitted when healthy", el < 3, True)
+p, _ = run("--label", "browser", "--resident", "--", "true")
+check("resident admitted when healthy", "RESIDENT-WAIT" in log_text(), False)
 
 # An older controller publishes seven fields. Reading a missing field as
 # "unhealthy" would wedge every browser on the machine for a whole deploy, so
 # the gate fails OPEN on anything it cannot read.
 (SEM / "allowed").write_text("4 4 16 0 4 0 0\n")
-_, el = run("--label", "browser", "--resident", "--", "true")
-check("gate fails open on a short state line", el < 3, True)
+p, _ = run("--label", "browser", "--resident", "--", "true")
+check("gate fails open on a short state line",
+      "RESIDENT-WAIT" in log_text(), False)
 
 # 2. THE KEEPER. A command that leaves a daemon behind keeps its slot after
 #    kx-build-slot itself has exited, and releases it when the daemon dies.
@@ -152,8 +184,9 @@ check("slot still held after exit", held(), True)
 check("marker written", len(markers()), 1)
 
 reap()
-time.sleep(7)  # keeper polls every 5s
-check("slot released when daemon dies", held(), False)
+check("slot released when daemon dies",
+      bool(wait_for(lambda: not held(), timeout=10)), True)
+wait_for(lambda: markers() == [], timeout=10)
 check("marker cleaned up", markers(), [])
 
 # 3. A FAILED command that still spawned something must STILL be accounted. The
@@ -167,8 +200,8 @@ p, _ = run("--label", "pwfail", "--resident", "--resident-probe", str(PROBE),
 check("failing command's rc propagates", p.returncode, 7)
 check("slot held despite failure", held(), True)
 reap()
-time.sleep(7)
-check("released after failure path too", held(), False)
+check("released after failure path too",
+      bool(wait_for(lambda: not held(), timeout=10)), True)
 
 # 4. NO SPAWN, NO KEEPER. A gated command that leaves nothing behind must return
 #    its slot immediately, or every build would leak one.
@@ -202,9 +235,11 @@ check("runs with no semaphore dir", p.stdout.strip(), "ran")
 
 for f in SEM.glob("slot.*"):
     f.unlink()
-p, el = run("--label", "emptysem", "--", "echo", "ran")
+log_text()
+p, _ = run("--label", "emptysem", "--", "echo", "ran")
 check("runs with an empty semaphore", p.stdout.strip(), "ran")
-check("empty semaphore does not stall", el < 3, True)
+check("empty semaphore does not stall (no wait was logged)",
+      log_text(), "")
 
 # 7. THE STATE-FILE CONTRACT. Every test above wrote the `allowed` line BY
 #    HAND, which means a controller that changed the format could never fail
@@ -215,7 +250,7 @@ check("empty semaphore does not stall", el < 3, True)
 import importlib.util  # noqa: E402  (deliberate: only this section needs it)
 
 spec = importlib.util.spec_from_file_location(
-    "bsc", Path(__file__).resolve().parent / "build-semaphore-controller.py"
+    "bsc", HERE / "build-semaphore-controller.py"
 )
 bsc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bsc)
@@ -240,13 +275,10 @@ check("publish resident lands where readers look",
 slots()
 pub_sem.dir = SEM
 pub_sem.publish(4, 4, occupied=0, target=4, mark=0, resident=0, healthy=False)
-_, el = run("--label", "contract", "--resident", "--", "true")
-check("real publish(healthy=False) blocks a resident job", el >= 5, True)
+log_text()
+run("--label", "contract", "--resident", "--", "true")
+check("real publish(healthy=False) blocks a resident job",
+      "RESIDENT-WAIT" in log_text(), True)
 
 reap()
-if fails:
-    print("\nFAILURES:", fails)
-else:
-    shutil.rmtree(BASE, ignore_errors=True)
-    print(f"\nall {len(passes)} assertions passed")
-sys.exit(1 if fails else 0)
+summary(cleanup_dir=BASE)

@@ -6,6 +6,7 @@ build it fails to thaw is a hung build, so its sweep logic (which scopes are
 touched, which are deliberately left alone) gets a real behavioural test.
 Fast, deterministic, sandbox-safe: KX_POOL points at a tempdir.
 """
+import os
 import shutil
 import subprocess
 import sys
@@ -16,14 +17,8 @@ SCRIPT = Path(__file__).resolve().parent / "cgroup-thaw-all.sh"
 BASH = shutil.which("bash")
 POOL = Path(tempfile.mkdtemp(prefix="thaw-test."))
 
-fails = []
-passes = []
-
-
-def check(name, got, want):
-    ok = got == want
-    (passes if ok else fails).append(name)
-    print(f"{'PASS' if ok else 'FAIL'}  {name}: got {got!r}, want {want!r}")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from testlib import check, summary  # noqa: E402
 
 
 def scope(path, frozen):
@@ -42,7 +37,7 @@ frozen_fleet = scope("worktrees-agents.slice/fleet", frozen=True)
 
 r = subprocess.run(
     [BASH, str(SCRIPT)],
-    env={"KX_POOL": str(POOL), "PATH": "/run/current-system/sw/bin:/usr/bin:/bin"},
+    env={"KX_POOL": str(POOL), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
     capture_output=True,
     text=True,
 )
@@ -69,7 +64,7 @@ stuck.mkdir(parents=True)
 (stuck / "cgroup.freeze").chmod(0o444)
 r2 = subprocess.run(
     [BASH, str(SCRIPT)],
-    env={"KX_POOL": str(POOL2), "PATH": "/run/current-system/sw/bin:/usr/bin:/bin"},
+    env={"KX_POOL": str(POOL2), "PATH": os.environ.get("PATH", "/usr/bin:/bin")},
     capture_output=True,
     text=True,
 )
@@ -79,10 +74,9 @@ check("failed thaw counted in summary", "0 thawed, 1 FAILED, of 1" in r2.stdout,
 (stuck / "cgroup.freeze").chmod(0o644)
 shutil.rmtree(POOL2, ignore_errors=True)
 
-if fails:
-    print("\nFAILURES:", fails)
+def dump():
     print("stdout:", r.stdout)
     print("stderr:", r.stderr)
-else:
-    shutil.rmtree(POOL, ignore_errors=True)
-sys.exit(1 if fails else 0)
+
+
+summary(cleanup_dir=POOL, extra_on_fail=dump)

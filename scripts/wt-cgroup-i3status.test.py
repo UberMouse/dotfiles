@@ -24,14 +24,8 @@ spec = importlib.util.spec_from_file_location(
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-fails = []
-passes = []
-
-
-def check(name, got, want):
-    ok = got == want
-    (passes if ok else fails).append(name)
-    print(f"{'PASS' if ok else 'FAIL'}  {name}: got {got!r}, want {want!r}")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from testlib import check, summary  # noqa: E402
 
 
 def publish(line):
@@ -73,6 +67,4 @@ b = mod.sem_block()
 check("mid-tighten colour saturates", b["color"], mod.RED)
 check("mid-tighten text", b["full_text"], "◱ 3/3")
 
-if fails:
-    print("\nFAILURES:", fails)
-sys.exit(1 if fails else 0)
+summary(cleanup_dir=SEM)

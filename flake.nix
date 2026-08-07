@@ -105,11 +105,13 @@
           # desktop?" as a command instead of a live experiment.
           toplevel = self.nixosConfigurations.ubermouse.config.system.build.toplevel;
 
-          # The deterministic half of the semaphore tests (client side; no
-          # controller, no clock). The controller suite is wall-clock timed and
-          # stays out of the sandbox — run it via scripts/run-tests.sh.
-          kx-build-slot-test =
-            checkPkgs.runCommand "kx-build-slot-test"
+          # Every deterministic suite, discovered by glob (a hardcoded list is
+          # how a new suite silently never runs). The one exclusion is the
+          # controller MACHINERY suite, which Popens a live controller and
+          # holds real flocks — that stays in scripts/run-tests.sh; its
+          # policy half (pure decide()) runs here.
+          script-tests =
+            checkPkgs.runCommand "script-tests"
               {
                 nativeBuildInputs = with checkPkgs; [
                   python313
@@ -127,7 +129,12 @@
                 cp -r ${./scripts} scripts
                 cp -r ${./scriptBins/bins} scriptBins/bins
                 chmod -R +w .
-                python3 scripts/kx-build-slot.test.py
+                export PYTHONDONTWRITEBYTECODE=1
+                for t in scripts/*.test.py; do
+                  case "$t" in *build-semaphore-controller.test.py) continue ;; esac
+                  echo "== $t"
+                  python3 "$t"
+                done
                 touch $out
               '';
 

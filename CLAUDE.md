@@ -26,9 +26,11 @@ This is also aliased as `hms` in the shell.
   tree, and runs the deterministic test suites in the sandbox.
 - `nix build .#<name>` — builds one custom package in isolation (seconds);
   the way to verify a version/hash bump.
-- `scripts/run-tests.sh` — all five script test suites (~200 assertions, all
-  deterministic; the controller suite unit-tests a pure `decide()` with an
-  injected clock, so nothing here is wall-clock sensitive).
+- `scripts/run-tests.sh` — every `scripts/*.test.py` suite (discovered by
+  glob, never listed) plus the lint tripwires. All deterministic: policy is
+  unit-tested against a pure `decide()` with an injected clock, blocking is
+  asserted from log lines rather than elapsed time, and slow-converging
+  outcomes are polled via `testlib.wait_for`, never fixed sleeps.
 - `nix fmt` — formats the tree (nixfmt-rfc-style via treefmt). Whole-tree
   mechanical reformats get their SHA added to `.git-blame-ignore-revs`.
 
@@ -158,15 +160,19 @@ Two standing traps when working on any of this:
   the `compgen` and dead-actuator bugs: a test that can no longer be true,
   quietly disabling a safety property while the log still looks healthy.
 
-Tests: `scripts/run-tests.sh` runs all five suites, all deterministic —
-`kx-build-slot.test.py` (client half + the state-format contract; also runs as
-a flake check in the sandbox), `build-semaphore-controller.test.py` (the
-control law as pure-`decide()` unit tests with injected clocks, plus a few
-convergence-polled integration tests), `cgroup-governor.test.py` (governor
-functions against a synthetic pool), `wt-cgroup-i3status.test.py` (the bar's
-resident-split arithmetic), and `cgroup-thaw-all.test.py` (the
-ExecStopPost-of-last-resort, end to end). Anything testable without a live
-control loop belongs in a unit test, not a new integration harness.
+Tests: `scripts/run-tests.sh` discovers and runs every `scripts/*.test.py`
+suite (shared harness in `scripts/testlib.py` — `check`/`wait_for`/`summary`).
+The semaphore splits in two: `build-semaphore-policy.test.py` (the control
+law as pure-`decide()` unit tests with injected clocks; sandboxed by `nix
+flake check`) and `build-semaphore-controller.test.py` (the machinery —
+flock reconcile, marker pruning, SIGTERM — convergence-polled against a live
+subprocess; run-tests only). The rest — `kx-build-slot.test.py` (client half
++ the state-format contract), `cgroup-governor.test.py` (detection functions
+AND actuator failure paths against a synthetic pool),
+`kx-proc-find.test.py` (argv-matching semantics against real fixture
+processes), `wt-cgroup-i3status.test.py`, `cgroup-thaw-all.test.py` — are
+all sandboxed flake checks too. Anything testable without a live control
+loop belongs in a unit test, not a new integration harness.
 
 ## Updating Custom Packages
 

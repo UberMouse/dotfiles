@@ -35,14 +35,8 @@ BASE = Path(tempfile.mkdtemp(prefix="cggov-test."))
 OUT = BASE / "out"
 OUT.mkdir()
 
-fails = []
-passes = []
-
-
-def check(name, got, want):
-    ok = got == want
-    (passes if ok else fails).append(name)
-    print(f"{'PASS' if ok else 'FAIL'}  {name}: got {got!r}, want {want!r}")
+sys.path.insert(0, str(HERE))
+from testlib import check, summary  # noqa: E402
 
 
 def sh(script, body):
@@ -204,9 +198,70 @@ check("read_meminfo fails open (99999 = never TIGHT) on a truncated file",
       out, "99999 99999")
 
 # ---------------------------------------------------------------------------
-if fails:
-    print("\nFAILURES:", fails)
-else:
-    shutil.rmtree(BASE, ignore_errors=True)
-    print(f"\nall {len(passes)} assertions passed")
-sys.exit(1 if fails else 0)
+# 3. The ACTUATORS' failure paths. freeze_scope/thaw_scope must never fail
+#    silently, and a failed thaw must be RETRIED: the old code dropped the
+#    frozen_since entry unconditionally, so a refused write left the scope
+#    frozen with nothing left to retry it (the deadline enforcer iterates
+#    frozen_since). A read-only cgroup.freeze simulates the refusal the same
+#    way the thaw-all suite does.
+
+
+def gov_log():
+    try:
+        return (OUT / "governor.log").read_text()
+    except OSError:
+        return ""
+
+
+def reset_log():
+    (OUT / "governor.log").write_text("")
+
+
+act = scope("worktrees-act.slice", "mj-act.scope", procs=ME + "\n",
+            memcur="1048576")
+
+# Happy path: freeze records frozen_since, thaw clears it, both log.
+reset_log()
+out, rc = sh(GOV, f'POOL="{POOL}"; freeze_scope "{act}" test; '
+                  f'printf "%s/%s/" "$(cat "{act}/cgroup.freeze")" '
+                  '"${#frozen_since[@]}"; '
+                  f'thaw_scope "{act}" test; '
+                  f'printf "%s/%s" "$(cat "{act}/cgroup.freeze")" '
+                  '"${#frozen_since[@]}"')
+check("freeze->thaw round trip (freeze state and frozen_since bookkeeping)",
+      out, "1/1/0/0")
+check("round trip logged both actions",
+      "FREEZE|" in gov_log() and "THAW|" in gov_log(), True)
+
+# Failure path: the write is refused. The scope must stay in frozen_since
+# (so the next tick retries) and the log must say FAILED.
+(act / "cgroup.freeze").write_text("1\n")
+(act / "cgroup.freeze").chmod(0o444)
+reset_log()
+out, rc = sh(GOV, f'POOL="{POOL}"; frozen_since["{act}"]=123; '
+                  f'thaw_scope "{act}" test; '
+                  'printf "%s" "${#frozen_since[@]}"')
+check("failed thaw KEEPS the frozen_since entry (retry next tick)", out, "1")
+check("failed thaw is loud", "THAW|FAILED" in gov_log(), True)
+
+# A refused freeze must not look like "cap not exceeded": it logs FAILED and
+# records nothing to thaw later.
+(act / "cgroup.freeze").chmod(0o644)
+(act / "cgroup.freeze").write_text("0\n")
+(act / "cgroup.freeze").chmod(0o444)
+reset_log()
+out, rc = sh(GOV, f'POOL="{POOL}"; freeze_scope "{act}" test; '
+                  'printf "%s" "${#frozen_since[@]}"')
+check("failed freeze records no frozen_since entry", out, "0")
+check("failed freeze is loud", "FREEZE|FAILED" in gov_log(), True)
+(act / "cgroup.freeze").chmod(0o644)
+
+# A vanished scope needs no thaw and no retry: entry dropped, no FAILED noise.
+reset_log()
+out, rc = sh(GOV, f'POOL="{POOL}"; frozen_since["{POOL}/gone.scope"]=123; '
+                  f'thaw_scope "{POOL}/gone.scope" test; '
+                  'printf "%s" "${#frozen_since[@]}"')
+check("vanished scope dropped from frozen_since without noise", out, "0")
+check("vanished scope logs no FAILED", "FAILED" in gov_log(), False)
+
+summary(cleanup_dir=BASE)
