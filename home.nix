@@ -3,7 +3,6 @@
   pkgs,
   lib,
   unstable-pkgs,
-  unstable-small-pkgs,
   ...
 }:
 
@@ -113,8 +112,7 @@
       unstable-pkgs.plannotator
       unstable-pkgs.ccstatusline
       unstable-pkgs.rushjs
-
-      unstable-small-pkgs.claude-code
+      unstable-pkgs.claude-code
     ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;

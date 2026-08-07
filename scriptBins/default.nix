@@ -1,7 +1,6 @@
 {
   pkgs,
   unstable-pkgs,
-  unstable-small-pkgs,
   ...
 }:
 
@@ -220,7 +219,7 @@ in
         pkgs.systemd
         pkgs.coreutils
         kx-proc-find
-        unstable-small-pkgs.claude-code
+        unstable-pkgs.claude-code
       ];
       bashOptions = [ "nounset" ];
     })
@@ -232,7 +231,7 @@ in
         pkgs.gnugrep
         pkgs.gawk
         pkgs.coreutils
-        unstable-small-pkgs.claude-code
+        unstable-pkgs.claude-code
       ];
       bashOptions = [ "nounset" ];
     })

@@ -7,7 +7,7 @@
 {
   pkgs,
   lib,
-  unstable-small-pkgs,
+  unstable-pkgs,
   ...
 }:
 let
@@ -236,11 +236,11 @@ in
             pkgs.findutils
             pkgs.libnotify
             pkgs.git
-            unstable-small-pkgs.claude-code
+            unstable-pkgs.claude-code
           ]
         }"
         "CGPM_INVESTIGATE=1"
-        "CGPM_CLAUDE=${unstable-small-pkgs.claude-code}/bin/claude"
+        "CGPM_CLAUDE=${unstable-pkgs.claude-code}/bin/claude"
         "CGPM_MODEL=opus"
         "CGPM_INVESTIGATE_COOLDOWN=1800"
       ];

@@ -4,8 +4,11 @@
   inputs = {
     # Specify the source of Home Manager and Nixpkgs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    # Two channels only. unstable-small existed solely for a fresher
+    # claude-code, but claude-code's version is pinned by our own manifest
+    # override (packages/default.nix) -- the channel's freshness was buying
+    # nothing while costing a third nixpkgs eval and weekly lock churn.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    nixpkgs-unstable-small.url = "github:NixOS/nixpkgs/nixos-unstable-small";
     playwright = {
       # Pentusha's fork — pinned to 1.62.1 (auto-update 2026-08-02).
       # Upstream pietdevries94 is still behind at 1.61.1 (no 1.62 yet); the fork
@@ -33,33 +36,26 @@
       playwright,
       self,
       nixpkgs-unstable,
-      nixpkgs-unstable-small,
       kolide-launcher,
       ...
     }:
     let
       system = "x86_64-linux";
-      overlay = final: _prev: {
-        inherit (playwright.packages.${system})
-          playwright-driver
-          playwright-test
-          ;
-        claude-code = final.callPackage ./packages/claude-code/package.nix { };
-        kart = final.callPackage ./packages/kart/package.nix { };
-        playwright-cli = final.callPackage ./packages/playwright-cli/package.nix { };
-        plannotator = final.callPackage ./packages/plannotator/package.nix { };
-        ccstatusline = final.callPackage ./packages/ccstatusline/package.nix { };
-        # rushjs, NOT rush: nixpkgs' `rush` is GNU Rush, a restricted login
-        # shell. Overlaying that name replaced an unrelated package globally.
-        rushjs = final.callPackage ./packages/rush/package.nix { };
-        sentry = final.callPackage ./packages/sentry/package.nix { };
-      };
+      # Custom packages are auto-discovered from packages/*/package.nix (plus
+      # the claude-code manifest override) -- see packages/default.nix. The
+      # overlay is the single declaration site; `packages` below derives its
+      # attr list from the same source, so the two cannot drift.
+      custom = import ./packages { inherit (nixpkgs) lib; };
+      overlay =
+        final: prev:
+        {
+          inherit (playwright.packages.${system})
+            playwright-driver
+            playwright-test
+            ;
+        }
+        // custom.overlay final prev;
       unstable-pkgs = import nixpkgs-unstable {
-        inherit system;
-        config.allowUnfree = true;
-        overlays = [ overlay ];
-      };
-      unstable-small-pkgs = import nixpkgs-unstable-small {
         inherit system;
         config.allowUnfree = true;
         overlays = [ overlay ];
@@ -68,7 +64,7 @@
     {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit unstable-pkgs unstable-small-pkgs self; };
+        specialArgs = { inherit unstable-pkgs self; };
 
         modules = [
           # Hardware first, generic policy second: nixos.nix stays reusable for
@@ -78,7 +74,7 @@
           kolide-launcher.nixosModules.kolide-launcher
           home-manager.nixosModules.home-manager
           {
-            home-manager.extraSpecialArgs = { inherit unstable-pkgs unstable-small-pkgs; };
+            home-manager.extraSpecialArgs = { inherit unstable-pkgs; };
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
 
@@ -91,18 +87,14 @@
       formatter.${system} = nixpkgs.legacyPackages.${system}.nixfmt-tree;
 
       # The custom packages, buildable in isolation: `nix build .#claude-code`
-      # verifies a version/hash bump in seconds instead of a full system switch.
-      packages.${system} = {
-        inherit (unstable-pkgs)
-          claude-code
-          kart
-          playwright-cli
-          plannotator
-          ccstatusline
-          rushjs
-          sentry
-          ;
-      };
+      # verifies a version/hash bump in seconds instead of a full system
+      # switch. The attr list comes from the overlay's own discovery, and
+      # every package resolves from the SAME channel the system installs
+      # from -- when claude-code came from unstable here but unstable-small
+      # in home.nix, this command verified a different derivation than the
+      # one that ran (identical only by coincidence of the two channels'
+      # revs).
+      packages.${system} = nixpkgs.lib.genAttrs custom.names (n: unstable-pkgs.${n});
 
       checks.${system} =
         let

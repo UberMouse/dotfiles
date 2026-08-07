@@ -50,14 +50,20 @@ composing, in module order:
   `scriptBins/bins/`, wired by `scriptBins/default.nix`)
 
 **Custom packages:** one directory per package under `packages/<name>/`
-(`package.nix` + `UPDATE.md`), wired through the overlay in `flake.nix` — the
-overlay is the authoritative list, don't enumerate it here. Consumed from
-`unstable-pkgs`, exposed under `packages.x86_64-linux` for isolated builds.
+(`package.nix` + `UPDATE.md`), AUTO-DISCOVERED by `packages/default.nix` into
+the overlay — adding a package is one directory, no flake.nix edit. The
+flake's `packages.x86_64-linux` output derives its attr list from the same
+discovery, so the two cannot drift. Directories WITHOUT a `package.nix` are
+deliberate: `playwright/` and `kolide-launcher/` are check-only UPDATE.md
+specs for flake inputs, and `claude-code/` holds only a version manifest —
+claude-code is nixpkgs' own derivation with `manifest` overridden (the weekly
+bump is one `curl` of the upstream manifest.json).
 
-**Three nixpkgs channels:** stable (`nixpkgs` — the release is whatever
-`flake.nix` pins; don't restate the number in prose, it rots),
-`nixpkgs-unstable`, and `nixpkgs-unstable-small` (claude-code only, for faster
-update propagation). Passed via `specialArgs`/`extraSpecialArgs`.
+**Two nixpkgs channels:** stable (`nixpkgs` — the release is whatever
+`flake.nix` pins; don't restate the number in prose, it rots) and
+`nixpkgs-unstable`. Passed via `specialArgs`/`extraSpecialArgs`. (A third,
+unstable-small, existed solely for fresher claude-code; the manifest override
+made channel freshness irrelevant and it was dropped.)
 
 ## Conventions
 
