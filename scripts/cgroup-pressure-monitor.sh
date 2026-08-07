@@ -53,7 +53,7 @@ LOG="$OUTDIR/events.log"
 
 U=$(id -u)
 UNAME=$(id -un)
-POOL="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice"
+POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
 USERAT="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service"
 USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
 DESKTOP=""     # graphical session scope; resolved lazily, cached, re-resolved if it vanishes

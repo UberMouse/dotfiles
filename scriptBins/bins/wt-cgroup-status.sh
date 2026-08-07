@@ -22,7 +22,7 @@
 # Env: WT_CG_SAMPLE=<secs> — gap between the two CPU samples (default 1).
 
 U=$(id -u)
-POOL="/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice"
+POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
 SAMPLE="${WT_CG_SAMPLE:-1}"
 
 # Both have a fallback because getconf lives in glibc.bin, which is on PATH by

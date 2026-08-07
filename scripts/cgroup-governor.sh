@@ -160,7 +160,9 @@ U=$(id -u)
 UNAME=$(id -un)
 USERSLICE="/sys/fs/cgroup/user.slice/user-$U.slice"
 USERAT="$USERSLICE/user@$U.service"
-POOL="$USERAT/worktrees.slice"
+# KX_POOL overrides for tests (same convention repo-wide); default identical
+# at every site — the flake lint check trips if a copy drifts.
+POOL="${KX_POOL:-$USERAT/worktrees.slice}"
 # Reclaim target is the agents SLICE, deliberately -- not the `fleet` LEAF the
 # processes actually sit in. memory.reclaim on a parent reclaims across its whole
 # subtree, so the slice covers the fleet either way, and only the slice is

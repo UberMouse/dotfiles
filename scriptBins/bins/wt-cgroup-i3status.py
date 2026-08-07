@@ -35,7 +35,10 @@ import sys, os, json, time, subprocess, signal
 I3STATUS = "@i3status@"
 
 UID = os.getuid()
-POOL = f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service/worktrees.slice"
+POOL = os.environ.get(
+    "KX_POOL",
+    f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service/worktrees.slice",
+)
 
 ACTIVE_CORES = float(os.environ.get("WT_BAR_ACTIVE_CORES", "0.15"))
 

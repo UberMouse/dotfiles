@@ -43,7 +43,7 @@ fi
 # currently running (the daemon outlives the TUI, so a repair may run TUI-less).
 systemctl --user start worktrees-agents.slice 2>/dev/null || true
 
-base="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/worktrees.slice/worktrees-agents.slice"
+base="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/worktrees.slice}/worktrees-agents.slice"
 if [ ! -d "$base" ]; then
   echo "worktrees-agents.slice cgroup did not materialize; cannot reattach." >&2
   exit 1
