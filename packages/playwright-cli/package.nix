@@ -156,6 +156,8 @@ buildNpmPackage (finalAttrs: {
     hash = "sha256-VxrappuH7YJejG5W9ght27EUXwlppWRdOPTVsYfP1ek=";
   };
 
+  # regen: nix run nixpkgs#prefetch-npm-deps -- packages/playwright-cli/package-lock.json
+  # (UPDATE.md step 3) -- the one value every version bump must recompute.
   npmDepsHash = "sha256-B6t59yhBIBMvI5XN8t2uUq96+Gsu6QVkvdb//DrgL10=";
 
   postPatch = ''
@@ -232,7 +234,9 @@ buildNpmPackage (finalAttrs: {
   meta = {
     description = "Official Playwright CLI (@playwright/cli)";
     homepage = "https://playwright.dev";
-    changelog = "https://github.com/microsoft/playwright-cli/releases";
+    # The playwright monorepo, NOT microsoft/playwright-cli -- that repo is
+    # the long-archived pre-1.x tool (see UPDATE.md's frontmatter note).
+    changelog = "https://github.com/microsoft/playwright/releases";
     license = lib.licenses.asl20;
     # Prebuilt JS from the npm registry; the browsers come prebuilt from the
     # playwright-web-flake input, which only packages x86_64-linux here.

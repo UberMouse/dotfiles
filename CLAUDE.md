@@ -60,8 +60,9 @@ composing, in module order:
 the overlay — adding a package is one directory, no flake.nix edit. The
 flake's `packages.x86_64-linux` output derives its attr list from the same
 discovery, so the two cannot drift. Directories WITHOUT a `package.nix` are
-deliberate: `playwright/` and `kolide-launcher/` are check-only UPDATE.md
-specs for flake inputs, and `claude-code/` holds only a version manifest —
+deliberate: `playwright/` is a check-only UPDATE.md spec for a flake input
+(check-only is declared by `mode:` in the spec's own frontmatter, never
+listed in the skill), and `claude-code/` holds only a version manifest —
 claude-code is nixpkgs' own derivation with `manifest` overridden (the weekly
 bump is one `curl` of the upstream manifest.json).
 
@@ -137,7 +138,12 @@ Traps when diagnosing it:
   (`allowed effective max_slots occupied target mark resident healthy`,
   append-only), and the fast suite asserts every reader's indices against it.
   `1 1 16 1 1 1 0 1` means capacity 1, one job running, no browsers, load test
-  passing — a *healthy* saturated semaphore, not a stuck one.
+  passing — a *healthy* saturated semaphore, not a stuck one. The file's
+  mtime is a HEARTBEAT: the controller re-publishes every tick (unchanged or
+  not — that is a contract, never optimize it to publish-on-change), and
+  readers treat age beyond `KX_SEM_STALE_AFTER` (~3 ticks) as controller-dead
+  — the client fails open instead of trusting a stale `healthy=0`, and
+  i3status shows "off" instead of a dead controller rendering as "idle".
 - **Some slots are held by browsers, not builds.** `playwright-cli open` gates
   the launch *and* keeps the slot for as long as the browser lives, via a keeper
   subshell forked (never exec'd — fork shares the open file description and so
@@ -179,22 +185,28 @@ Two standing traps when working on any of this:
   quietly disabling a safety property while the log still looks healthy.
 
 Tests: `scripts/run-tests.sh` discovers and runs every `scripts/*.test.py`
-suite (shared harness in `scripts/testlib.py` — `check`/`wait_for`/`summary`).
-The semaphore splits in two: `build-semaphore-policy.test.py` (the control
-law as pure-`decide()` unit tests with injected clocks; sandboxed by `nix
-flake check`) and `build-semaphore-controller.test.py` (the machinery —
-flock reconcile, marker pruning, SIGTERM — convergence-polled against a live
-subprocess; run-tests only). The rest — `kx-build-slot.test.py` (client half
-+ the state-format contract), `cgroup-governor.test.py` (detection functions
-AND actuator failure paths against a synthetic pool),
-`kx-proc-find.test.py` (argv-matching semantics against real fixture
-processes), `wt-cgroup-i3status.test.py`, `cgroup-thaw-all.test.py` — are
+suite (shared harness in `scripts/testlib.py` — `check`/`wait_for`/`summary`),
+and ALL of them also run sandboxed under `nix flake check`. The semaphore
+splits in two: `build-semaphore-policy.test.py` (the control law as
+pure-`decide()` unit tests with injected clocks) and
+`build-semaphore-controller.test.py` (the machinery — flock reconcile,
+publish heartbeat, marker pruning, orphan-slot sweep — running the real
+`main()` in a thread with a stepping sleep stub, so each tick is exact and
+the suite finishes in well under a second). The machinery suite's genuinely
+host-only checks (kernel signal delivery, flock drop on real process death)
+run only under `KX_TEST_HOST_ONLY=1`, which run-tests.sh exports; in the
+sandbox they SKIP loudly. The rest — `kx-build-slot.test.py` (client half +
+the state-format and resident-marker contracts), `cgroup-governor.test.py`
+(the extracted tick decision, detection functions AND actuator failure paths
+against a synthetic pool), `kx-proc-find.test.py` (argv-matching semantics
+against real fixture processes), `wt-cgroup-i3status.test.py`,
+`cgroup-thaw-all.test.py`, `op-cached.test.py`, `claude-usage.test.py` — are
 all sandboxed flake checks too. Anything testable without a live control
 loop belongs in a unit test, not a new integration harness.
 
 ## Updating Custom Packages
 
-Use `/weekly-update` to update all packages with UPDATE.md specs. Each package in `packages/*/UPDATE.md` defines its own version check command and update process. For manual updates, follow the instructions in the relevant UPDATE.md file, and verify with `nix build .#<name>` before switching.
+Use `/weekly-update` to update all packages with UPDATE.md specs. Each package in `packages/*/UPDATE.md` defines its own version check command and update process. For manual updates, follow the instructions in the relevant UPDATE.md file, and verify with `nix build .#<flake_attr>` (the spec frontmatter's `flake_attr`, defaulting to its `name`) before switching.
 
 Use `/repo-audit` for the periodic drift sweep (docs vs reality, dead code,
 orphaned pins, repo weight, cross-file contracts).

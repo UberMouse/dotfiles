@@ -2,6 +2,9 @@
 name: rush
 version_check: npm view @microsoft/rush version
 version_file: packages/rush/package.json
+# The overlay attr is `rushjs` (plain `rush` would shadow GNU Rush) -- this is
+# what `nix build .#<flake_attr>` must use; the default (= name) would fail.
+flake_attr: rushjs
 changelog_github: microsoft/rushstack
 ---
 

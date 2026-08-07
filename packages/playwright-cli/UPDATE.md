@@ -1,7 +1,10 @@
 ---
 name: playwright-cli
 version_check: npm view @playwright/cli version
-version_file: packages/playwright-cli/package.nix
+# The current version is the lock's top-level `version` field: package.nix
+# holds no version literal (it derives one FROM this lock, so the two cannot
+# disagree by construction).
+version_file: packages/playwright-cli/package-lock.json
 # @playwright/cli is developed in the playwright monorepo; the standalone
 # microsoft/playwright-cli repo is the long-archived pre-1.x tool.
 changelog_github: microsoft/playwright
@@ -83,9 +86,10 @@ before continuing.
    ```
 
 3. Compute the new `npmDepsHash` directly from the regenerated lock file (no
-   build-fail round trip):
+   build-fail round trip). NOTE the `cd`: step 2 left the shell in
+   /tmp/pwcli-update, and this path is repo-root-relative:
    ```bash
-   nix run nixpkgs#prefetch-npm-deps -- packages/playwright-cli/package-lock.json
+   cd ~/dotfiles && nix run nixpkgs#prefetch-npm-deps -- packages/playwright-cli/package-lock.json
    ```
 
 4. Edit `packages/playwright-cli/package.nix`:

@@ -37,8 +37,8 @@ day-to-day work.
 - Version pins with no owner: anything pinned in `home.nix`/`cgroups.nix`
   (npm:… strings, explicit versions) that no UPDATE.md covers.
 - Overlay attrs never consumed; packages in `packages/` not in the overlay.
-- Config files (`p10k/`, `nohang/`, `i3-workspaces/`, `zsh-customizations/`,
-  root-level rc files) not referenced from any `.nix`.
+- Config files (`p10k/`, `nohang/`, `i3-workspaces/`, root-level rc files)
+  not referenced from any `.nix`.
 - `git log --format=%s -20 -- <path>` on anything suspicious: a file untouched
   since its subsystem was removed is residue.
 

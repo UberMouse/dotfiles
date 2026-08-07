@@ -7,6 +7,10 @@ changelog_url: https://raw.githubusercontent.com/anthropics/claude-code/main/CHA
 
 # Update Process
 
+The current version is the top-level `version` field of `manifest.json`
+(`version_file` above is a JSON manifest, not a `version = "X.Y.Z"` nix
+assignment).
+
 claude-code is nixpkgs' own derivation (wrapper env, alsa-lib, install check)
 with only the version `manifest` overridden — see `packages/default.nix`. The
 vendored `manifest.json` is the VERBATIM upstream manifest for the pinned

@@ -22,9 +22,12 @@ file deliberately stays a pointer so the two never drift.
 
 ## Bootstrapping a new machine
 
-1. Install NixOS (graphical installer is fine; enable flakes are already
-   configured by this repo once switched).
-2. Clone: `git clone git@github.com:UberMouse/dotfiles.git ~/dotfiles`
+1. Install NixOS (graphical installer is fine). Flakes are configured by this
+   repo once switched, but the stock installer does NOT enable them — which
+   is why step 5 passes `NIX_CONFIG` for the first switch.
+2. Clone over HTTPS: `git clone https://github.com/UberMouse/dotfiles.git ~/dotfiles`.
+   (Not SSH — the 1Password SSH agent doesn't exist until step 4. Switch the
+   remote to `git@github.com:UberMouse/dotfiles.git` after signing in.)
 3. Regenerate hardware config and replace `work-vm.nix` with it — the
    filesystem/LUKS UUIDs in that file are machine-unique
    (`nixos-generate-config --show-hardware-config`). Keep the module name so
@@ -36,4 +39,12 @@ file deliberately stays a pointer so the two never drift.
      voice-assistant hotkey relay (see `scriptBins/bins/kx-host-hotkey.sh`).
    - 1Password sign-in (the SSH agent, commit signing, and the op-cached
      token wrappers all hang off it).
-5. `sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse`
+5. First switch, with flakes force-enabled for the not-yet-switched host:
+
+   ```bash
+   sudo NIX_CONFIG="experimental-features = nix-command flakes" \
+     nixos-rebuild switch --flake ~/dotfiles#ubermouse
+   ```
+
+   Subsequent rebuilds are plain `hms` — the repo's own
+   `nix.settings.experimental-features` applies from here on.
