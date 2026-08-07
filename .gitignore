@@ -4,3 +4,20 @@ keyring.deb
 # `python3 -m py_compile scripts/*.py` (the syntax check before a rebuild) drops
 # these next to the source; nix would otherwise see them as untracked noise.
 __pycache__/
+
+# Agent runtime state. These live in the tracked .gitignore (not
+# .git/info/exclude) deliberately: exclude files are machine-local and don't
+# survive a clone, and unignored runtime state is exactly how 144 MiB of agent
+# transcripts (.pi/) once got committed by an automated `git add -A`.
+.pi/
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
+.claude/routines/.state/
+.claude/worktrees/
+.claude/checkpoints/
+.claude/mailbox/
+.claude/agent-registry.json
+.claude/agent-memory-local
+.claude/first-run
+.claude/assistant-daemon-state.json
