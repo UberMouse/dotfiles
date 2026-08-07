@@ -206,6 +206,7 @@
 #
 # Tunables are env vars, all optional; defaults are in CFG below.
 
+import collections
 import fcntl
 import os
 import signal
@@ -595,16 +596,19 @@ class Semaphore:
                 break
             if i in self.held:
                 continue
+            fh = None
             try:
                 fh = open(self._path(i), "w")
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.held[i] = fh
             except OSError:
-                # Slot busy: a job holds it. Try again next tick.
-                try:
-                    fh.close()
-                except (OSError, UnboundLocalError, NameError):
-                    pass
+                # Slot busy: a job holds it. Try again next tick. `fh` is None
+                # when open() itself failed, so there is nothing to close.
+                if fh is not None:
+                    try:
+                        fh.close()
+                    except OSError:
+                        pass
 
         return self.max_slots - len(self.held)
 
@@ -663,7 +667,350 @@ class Semaphore:
                 self.held.pop(i, None)
 
 
-def main():
+# ---------------------------------------------------------------------------
+# THE POLICY, separated from the machinery.
+#
+# decide() below is the entire control law as a PURE function: no I/O, no
+# clock of its own (the caller injects `now`), no reads of module globals (the
+# caller passes the config dict). main() is thereby reduced to read signals ->
+# decide() -> reconcile/publish/log -> sleep, and the fast test suite can
+# drive every policy branch with hand-written inputs instead of sleeping a
+# real subprocess through real dwell and grant intervals.
+
+# What the policy remembers between ticks. `allowed` is the AIMD capacity;
+# `mark` and `last_growth` are the high-water mark and its spacing clock;
+# `last_up` is the loosen dwell clock; `was_resident_full` is the edge
+# detector behind the RESIDENT-CAP log line.
+State = collections.namedtuple(
+    "State",
+    "allowed mark last_up last_growth was_resident_full",
+    defaults=(0, 0.0, 0.0, False),
+)
+
+# One tick's worth of signals, all read by the caller. `now` is a monotonic
+# timestamp; `psi10`/`psi60` are PSI percentages or None for "no signal";
+# `pool_mem` is (current, high) bytes or None; `occupied` is how many slots
+# jobs hold in total (residents included) or None when /proc/locks is
+# unreadable; `resident` is the live-keeper count.
+Inputs = collections.namedtuple(
+    "Inputs", "now psi10 psi60 pool_mem occupied resident"
+)
+
+# The verdict. `state` is the successor State; `target` feeds reconcile();
+# `healthy` is the raw load-test verdict the policy itself acts on, while
+# `published_healthy` additionally folds in the resident cap and is what goes
+# into the state file. `reasons` is a list of (text, before, after) capacity
+# transitions -- a list, not a single variable, because a RECLAIM clamp and a
+# TIGHTEN can fire on the same tick and each deserves its own log line (the
+# old single `reason` let the later branch overwrite the earlier one, so the
+# reclaim never reached the log). `notes` are complete log lines (RESIDENT-CAP
+# edges) to emit verbatim; `hold` is a ready-made HOLD line or None, which the
+# caller rate-limits before logging.
+Decision = collections.namedtuple(
+    "Decision", "state target healthy published_healthy reasons notes hold"
+)
+
+
+def decide(state, inputs, cfg):
+    """One control tick of pure policy: (State, Inputs, cfg) -> Decision.
+
+    Everything here is arithmetic on the arguments -- no file, clock, or
+    global is consulted -- so a test can assert any branch instantly by
+    constructing the situation it is about.
+    """
+    allowed = state.allowed
+    mark = state.mark
+    last_up = state.last_up
+    last_growth = state.last_growth
+    was_resident_full = state.was_resident_full
+
+    now = inputs.now
+    psi10 = inputs.psi10
+    psi60 = inputs.psi60
+    pool_mem = inputs.pool_mem
+    occupied = inputs.occupied
+    resident = inputs.resident
+
+    reasons = []
+    notes = []
+
+    high_frac = None if pool_mem is None else pool_mem[0] / pool_mem[1]
+
+    # RESIDENT TENANTS SHIFT EVERY BOUND, so that `allowed - resident`
+    # keeps exactly the meaning `allowed` had before residency existed:
+    # how many BUILDS may run. A resident browser occupies a slot but is
+    # not a build and must not consume a build's quota.
+    #
+    # The floor is the reason this is not optional. floor=1 exists so a
+    # floored semaphore still makes progress; with two browsers resident
+    # and a static floor, every build would wait out its full timeout and
+    # then run UNGATED -- strictly worse than admitting one. Shifting the
+    # floor keeps the "at least one build may always start" guarantee
+    # true no matter how many browsers are open.
+    #
+    # The ceiling shifts for the same reason and is then clamped to the
+    # pool: residents may not buy capacity that does not exist. Note the
+    # bounds move but the LOAD TEST does not -- browser memory still has
+    # to pass the same free-bytes and PSI checks as anything else, so
+    # this widens the bookkeeping, never the machine's real budget.
+    floor_dyn = min(cfg["max_slots"], cfg["floor"] + resident)
+    soft_floor_dyn = min(cfg["max_slots"], cfg["soft_floor"] + resident)
+    ceil_dyn = min(cfg["max_slots"], cfg["ceil"] + resident)
+    # Growth must never be blocked by a ceiling that has slipped BELOW
+    # the floor, which max_slots clamping can do once residents are many.
+    ceil_dyn = max(ceil_dyn, floor_dyn)
+
+    # A CLOSING BROWSER MUST TAKE ITS CAPACITY WITH IT. `allowed` only
+    # ever moves on a TIGHTEN or a LOOSEN, so a ceiling that was raised
+    # to 12 by four residents would keep sanctioning 12 builds after the
+    # last one closed and the real ceiling fell back to 8 -- capacity
+    # granted on the strength of tenants that have gone. Lowering it here
+    # is a clamp, not a tighten: it can only ever reduce `allowed`.
+    if allowed > ceil_dyn:
+        reasons.append(
+            (f"RECLAIM resident={resident} ceiling {ceil_dyn}",
+             allowed, ceil_dyn)
+        )
+        allowed = ceil_dyn
+
+    # THE LOAD TEST. `allowed` counts slots; this counts bytes and
+    # stalls, which are what actually run out. Both halves must hold,
+    # and both are about the box's ability to absorb ONE MORE heavy job:
+    # memory says there is room for it with slack to spare, PSI says
+    # nothing is already struggling with what is resident.
+    #
+    # This deliberately reaches further than the predictive tighten,
+    # which the header notes may only drive to soft_floor because the
+    # pool contains tenants that take no slots and will not give memory
+    # back. The test does not have that problem, for two reasons: it
+    # withholds only NEW admissions rather than forcing the running set
+    # down, and it cannot deadlock, because the no-builds-running rule
+    # below always leaves a slot free when no build is running at all. A pool
+    # held near its ceiling by the agents fleet delays the next build; it
+    # can never stop builds happening.
+    need = cfg["grant_headroom_jobs"] * cfg["job_bytes"]
+    headroom = None if pool_mem is None else pool_mem[1] - pool_mem[0]
+    # Unreadable memory is NO SIGNAL, not a refusal: a pool with
+    # memory.high unset would otherwise serialise every build forever.
+    mem_ok = headroom is None or headroom >= need
+    psi_ok = psi10 is None or psi10 <= cfg["grant_psi"]
+    healthy = mem_ok and psi_ok
+
+    # The RESIDENT CAP folds into the PUBLISHED health bit only: that
+    # field is read solely by jobs about to become resident (builds
+    # ignore it), so refusing it when residents are at cap gates
+    # exactly the admissions the cap is about -- while `healthy` keeps
+    # its own meaning for every decision this function makes about builds.
+    resident_full = resident >= cfg["max_resident"]
+    if resident_full != was_resident_full:
+        notes.append(
+            f"RESIDENT-CAP {'engaged' if resident_full else 'released'} "
+            f"resident={resident} cap={cfg['max_resident']}"
+        )
+        was_resident_full = resident_full
+
+    # Move the mark. Upward only on evidence -- occupancy that was
+    # actually reached while the load test passed -- and downward
+    # whenever the test fails, so a level the box can no longer sustain
+    # stops being treated as demonstrated. Growth restarts the spacing
+    # clock; replacements do not touch it, which is the entire point:
+    # under steady churn the mark is hit constantly, and a clock reset on
+    # every admission would freeze concurrency at whatever level
+    # happened to be reached first.
+    if occupied is not None:
+        if not healthy:
+            mark = min(mark, occupied)
+        elif occupied > mark:
+            mark = occupied
+            last_growth = now
+
+    grow = (
+        healthy
+        and occupied is not None
+        and occupied >= mark
+        and (now - last_growth) >= cfg["grant_every"]
+    )
+
+    # How many jobs the CURRENT headroom can absorb, keeping one job's
+    # worth of slack in hand. This is what bounds a replacement batch:
+    # when a build phase ends, five jobs can finish within one interval
+    # and the mark alone would offer all five slots back at once. Five
+    # simultaneous admissions need five jobs' worth of memory, but the
+    # load test above only ever checked for two -- so the batch, not the
+    # test, would decide how far the pool overshot. Sizing the offer to
+    # the headroom keeps admission honest at any batch size: roomy pool,
+    # several may restart together; tight pool, strictly one at a time.
+    absorbable = (
+        None
+        if headroom is None
+        else max(0, int(headroom // cfg["job_bytes"]) - 1)
+    )
+
+    # Is `allowed` ITSELF the binding constraint? That is the only
+    # question a loosen has any business answering, and the test must be
+    # against `allowed` rather than against the target in effect. The
+    # weaker test (occupied >= target) is satisfied on EVERY tick that
+    # withholds a grant -- target is `occupied` exactly then, so it reads
+    # as "saturated" and would grow the cap on the strength of the load
+    # test refusing, or merely of the spacing clock running. Requiring
+    # the cap to be genuinely full keeps the ratchet answering to demand
+    # alone.
+    cap_saturated = occupied is None or occupied >= allowed
+
+    hot_psi = psi10 is not None and psi10 > cfg["tighten_psi"]
+    hot_high = (
+        high_frac is not None and high_frac > cfg["tighten_high_frac"]
+    )
+
+    if hot_psi or hot_high:
+        # The predictive signal alone may not drive to the absolute
+        # floor. WHY: memory.current is the WHOLE pool, but this
+        # controller only governs the part that takes slots. The agents
+        # fleet and its MCP servers sit in the same pool and ask for
+        # nothing -- measured at 2-3 GB of a 9-16 GB pool. (Resident
+        # browsers WERE in that list until 2026-08-07; they now hold a
+        # slot for their lifetime and are counted, which is what
+        # `resident` above is for. The rest of the untracked set is
+        # still real, so this reasoning still stands.) If those tenants
+        # alone hold the pool above
+        # tighten_high_frac (and the baseline says the pool exceeds 14G,
+        # 87.5% of high, 28% of the time) then a high-frac-only rule
+        # would floor the semaphore permanently, serialising every build
+        # to reclaim memory that was never the builds' to give back.
+        #
+        # So high-frac is treated as what it is -- an EARLY WARNING that
+        # buys a head start on a burst -- and is allowed to take capacity
+        # down only to soft_floor. Reaching the true floor requires
+        # psi10, i.e. evidence that something is actually stalling. That
+        # keeps the aggressive state reserved for demonstrated harm
+        # rather than for a threshold this box crosses routinely.
+        limit = floor_dyn if hot_psi else max(floor_dyn, soft_floor_dyn)
+        # The outer min() is load-bearing: a tighten must NEVER raise
+        # capacity. Without it, `max(limit, allowed - step_down)` reads
+        # max(4, -1) = 4 once PSI has already driven allowed to 1, so a
+        # subsequent predictive-only tick RAISES 1 -> 4 -- a loosen
+        # wearing a TIGHTEN label, and one that skips the dwell guard
+        # entirely. Observed live 2026-08-03 14:23 as a 1->4->2->1 ring,
+        # which is precisely the oscillation the fast-tighten/slow-loosen
+        # asymmetry exists to prevent. Loosening has exactly one route
+        # out of this function: the LOOSEN branch below, gated on the
+        # long PSI window and on dwell.
+        before = allowed
+        allowed = min(allowed, max(limit, allowed - cfg["step_down"]))
+        bits = []
+        if hot_psi:
+            bits.append(f"psi10={psi10:.1f}%")
+        if hot_high:
+            bits.append(f"high={high_frac * 100:.0f}%")
+        if not hot_psi:
+            bits.append(f"[predictive, soft floor {limit}]")
+        # Appended even when the clamp did not move `allowed` (before ==
+        # after): the caller logs only real transitions, but a non-empty
+        # `reasons` also records that a decision branch fired at all,
+        # which is what suppresses a SETTLE line on the same tick.
+        reasons.append(("TIGHTEN " + " ".join(bits), before, allowed))
+    elif (
+        psi60 is not None
+        and psi60 < cfg["loosen_psi"]
+        # Only grow capacity that is actually being USED. A quiet PSI on
+        # an idle box is not evidence that a larger `allowed` is safe --
+        # it is the absence of evidence, measured on a machine doing
+        # nothing. Without this the ratchet accrues capacity it never
+        # earned: observed 2026-08-04 as four consecutive LOOSEN lines on
+        # psi60=0.0% taking allowed 5 -> 9 across an idle four minutes,
+        # followed 10 s later by the burst that walked it back 9 -> 1 and
+        # pinned the pool at 100% of memory.high. Same reason TCP does
+        # not grow cwnd while the sender is idle.
+        and cap_saturated
+        and allowed < ceil_dyn
+        and (now - last_up) >= cfg["dwell"]
+    ):
+        before = allowed
+        allowed = min(ceil_dyn, allowed + cfg["step_up"])
+        last_up = now
+        reasons.append((f"LOOSEN psi60={psi60:.1f}%", before, allowed))
+
+    # HOW MANY SLOTS TO OFFER, given the capacity just settled on. This was
+    # a closure (admit_target) that mixed default-argument capture with
+    # lexical capture; every dependency is now an explicit local.
+    if occupied is None:
+        # No occupancy signal: fail open to pre-gate behaviour rather
+        # than guessing. `allowed` alone still bounds things.
+        target = allowed
+    else:
+        if not healthy:
+            # Offer nothing new; the running set drains and the mark
+            # follows it down.
+            target = min(allowed, occupied)
+        else:
+            target = min(allowed, mark + (cfg["grow_step"] if grow else 0))
+        # THE FREE-SLOT CAP, and the reason it is a separate term from
+        # everything above it. Each clause so far answers "how high may
+        # concurrency go" -- the cap, the mark, the load test. None of
+        # them answers "how many may start in the same instant", and on
+        # a DRAINING box the two diverge completely: occupancy falls to
+        # 1 while the mark still remembers 8, so the window the mark
+        # leaves open is seven wide at precisely the moment the loop has
+        # the least evidence about what is coming next.
+        #
+        # Clamping to `occupied + burst` makes availability track the
+        # running set instead of the peak. It costs nothing in steady
+        # state -- a finished job drops occupancy and the target with
+        # it, so the free pool stays pinned at `burst` rather than
+        # growing, and a waiting job still starts immediately.
+        target = min(target, occupied + cfg["burst"])
+        if absorbable is not None:
+            target = min(target, occupied + absorbable)
+        # Never gate the machine to a standstill. With nothing running,
+        # at least one job must be able to start or the build system
+        # makes no progress at all -- and every caller would then sit out
+        # its timeout and run UNGATED, which is strictly worse than
+        # admitting one job. Same reasoning as floor being 1, not 0.
+        # The test is "no BUILDS running", not "no slots occupied".
+        # Resident browsers occupy slots permanently, so `occupied == 0`
+        # is false for as long as any session is open -- this guard would
+        # simply stop firing, and an idle box with one browser on it
+        # would admit nothing at all. That is the exact deadlock the
+        # floor exists to prevent, reintroduced through the back door.
+        if occupied - resident <= 0:
+            target = max(target, floor_dyn)
+
+    # Only a grant withheld on LOAD is worth a line. Withholding on
+    # spacing is the ordinary rhythm of the thing -- true of most
+    # ticks between admissions -- and logging it would bury the
+    # decisions under its own metronome. `target < allowed` keeps
+    # quiet when the cap is the real constraint, since the TIGHTEN
+    # lines already tell that story. (The caller additionally
+    # rate-limits this line with hold_log_every.)
+    hold = None
+    if not healthy and target < allowed and occupied is not None:
+        bits = []
+        if not mem_ok:
+            bits.append(
+                f"free={headroom / 2**30:.1f}G<{need / 2**30:.1f}G"
+            )
+        if not psi_ok:
+            bits.append(f"psi10={psi10:.1f}%")
+        hold = f"HOLD {' '.join(bits)} occupied={occupied} allowed={allowed}"
+
+    return Decision(
+        state=State(
+            allowed=allowed,
+            mark=mark,
+            last_up=last_up,
+            last_growth=last_growth,
+            was_resident_full=was_resident_full,
+        ),
+        target=target,
+        healthy=healthy,
+        published_healthy=healthy and not resident_full,
+        reasons=reasons,
+        notes=notes,
+        hold=hold,
+    )
+
+
+def main(sleep=time.sleep):
     sem = Semaphore(SEM_DIR, CFG["max_slots"])
     # START CONSERVATIVE AND EARN THE REST. Initialising to `ceil` asserts that
     # maximum concurrency is safe having measured precisely nothing -- the same
@@ -678,17 +1025,19 @@ def main():
     # switch` restarts the controller straight into a machine that already has
     # browsers on it. Starting at the unshifted soft_floor would spend the whole
     # first interval with the residents' slots subtracted from build capacity.
-    allowed = min(
-        CFG["max_slots"],
-        sem.resident() + max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"])),
+    state = State(
+        allowed=min(
+            CFG["max_slots"],
+            sem.resident()
+            + max(CFG["floor"], min(CFG["soft_floor"], CFG["ceil"])),
+        ),
+        # THE HIGH-WATER MARK: the highest concurrency this box has held while
+        # the load test was passing. Admissions up to it are replacements and
+        # cost nothing; going above it is growth and has to be earned. Starts
+        # at zero, so a fresh controller has demonstrated nothing and climbs
+        # from the floor.
+        mark=0,
     )
-    last_up = 0.0
-    # THE HIGH-WATER MARK: the highest concurrency this box has held while the
-    # load test was passing. Admissions up to it are replacements and cost
-    # nothing; going above it is growth and has to be earned. Starts at zero, so
-    # a fresh controller has demonstrated nothing and climbs from the floor.
-    mark = 0
-    last_growth = 0.0
     stop = {"now": False}
 
     def _term(_sig, _frm):
@@ -709,302 +1058,73 @@ def main():
         f"grow+{CFG['grow_step']} every>={CFG['grant_every']}s free<={CFG['burst']} "
         f"needs {CFG['grant_headroom_jobs']}x{CFG['job_bytes'] / 2**30:.1f}G free "
         f"and psi10<={CFG['grant_psi']}% max_resident={CFG['max_resident']} "
-        f"start={allowed}"
+        f"start={state.allowed}"
     )
 
     prev_effective = None
     last_hold_log = 0.0
-    was_resident_full = False
     try:
         while not stop["now"]:
             psi10 = read_psi(POOL, "full", "avg10")
             psi60 = read_psi(POOL, "full", "avg60")
             pool_mem = read_pool_mem(POOL)
-            high_frac = None if pool_mem is None else pool_mem[0] / pool_mem[1]
-
-            before = allowed
-            reason = None
-
             occupied = sem.occupancy()
-
-            # RESIDENT TENANTS SHIFT EVERY BOUND, so that `allowed - resident`
-            # keeps exactly the meaning `allowed` had before residency existed:
-            # how many BUILDS may run. A resident browser occupies a slot but is
-            # not a build and must not consume a build's quota.
-            #
-            # The floor is the reason this is not optional. floor=1 exists so a
-            # floored semaphore still makes progress; with two browsers resident
-            # and a static floor, every build would wait out its full timeout and
-            # then run UNGATED -- strictly worse than admitting one. Shifting the
-            # floor keeps the "at least one build may always start" guarantee
-            # true no matter how many browsers are open.
-            #
-            # The ceiling shifts for the same reason and is then clamped to the
-            # pool: residents may not buy capacity that does not exist. Note the
-            # bounds move but the LOAD TEST does not -- browser memory still has
-            # to pass the same free-bytes and PSI checks as anything else, so
-            # this widens the bookkeeping, never the machine's real budget.
             resident = sem.resident()
-            floor_dyn = min(CFG["max_slots"], CFG["floor"] + resident)
-            soft_floor_dyn = min(CFG["max_slots"], CFG["soft_floor"] + resident)
-            ceil_dyn = min(CFG["max_slots"], CFG["ceil"] + resident)
-            # Growth must never be blocked by a ceiling that has slipped BELOW
-            # the floor, which max_slots clamping can do once residents are many.
-            ceil_dyn = max(ceil_dyn, floor_dyn)
+            now = time.monotonic()
 
-            # A CLOSING BROWSER MUST TAKE ITS CAPACITY WITH IT. `allowed` only
-            # ever moves on a TIGHTEN or a LOOSEN, so a ceiling that was raised
-            # to 12 by four residents would keep sanctioning 12 builds after the
-            # last one closed and the real ceiling fell back to 8 -- capacity
-            # granted on the strength of tenants that have gone. Lowering it here
-            # is a clamp, not a tighten: it can only ever reduce `allowed`.
-            if allowed > ceil_dyn:
-                allowed = ceil_dyn
-                reason = f"RECLAIM resident={resident} ceiling {ceil_dyn}"
-
-            tick = time.monotonic()
-
-            # THE LOAD TEST. `allowed` counts slots; this counts bytes and
-            # stalls, which are what actually run out. Both halves must hold,
-            # and both are about the box's ability to absorb ONE MORE heavy job:
-            # memory says there is room for it with slack to spare, PSI says
-            # nothing is already struggling with what is resident.
-            #
-            # This deliberately reaches further than the predictive tighten,
-            # which the header notes may only drive to soft_floor because the
-            # pool contains tenants that take no slots and will not give memory
-            # back. The test does not have that problem, for two reasons: it
-            # withholds only NEW admissions rather than forcing the running set
-            # down, and it cannot deadlock, because the occupied == 0 rule below
-            # always leaves a slot free when no build is running at all. A pool
-            # held near its ceiling by the agents fleet delays the next build; it
-            # can never stop builds happening.
-            need = CFG["grant_headroom_jobs"] * CFG["job_bytes"]
-            headroom = None if pool_mem is None else pool_mem[1] - pool_mem[0]
-            # Unreadable memory is NO SIGNAL, not a refusal: a pool with
-            # memory.high unset would otherwise serialise every build forever.
-            mem_ok = headroom is None or headroom >= need
-            psi_ok = psi10 is None or psi10 <= CFG["grant_psi"]
-            healthy = mem_ok and psi_ok
-
-            # The RESIDENT CAP folds into the PUBLISHED health bit only: that
-            # field is read solely by jobs about to become resident (builds
-            # ignore it), so refusing it when residents are at cap gates
-            # exactly the admissions the cap is about -- while `healthy` keeps
-            # its own meaning for every decision this loop makes about builds.
-            resident_full = resident >= CFG["max_resident"]
-            if resident_full != was_resident_full:
-                log(
-                    f"RESIDENT-CAP {'engaged' if resident_full else 'released'} "
-                    f"resident={resident} cap={CFG['max_resident']}"
-                )
-                was_resident_full = resident_full
-
-            # Move the mark. Upward only on evidence -- occupancy that was
-            # actually reached while the load test passed -- and downward
-            # whenever the test fails, so a level the box can no longer sustain
-            # stops being treated as demonstrated. Growth restarts the spacing
-            # clock; replacements do not touch it, which is the entire point:
-            # under steady churn the mark is hit constantly, and a clock reset on
-            # every admission would freeze concurrency at whatever level
-            # happened to be reached first.
-            if occupied is not None:
-                if not healthy:
-                    mark = min(mark, occupied)
-                elif occupied > mark:
-                    mark = occupied
-                    last_growth = tick
-
-            grow = (
-                healthy
-                and occupied is not None
-                and occupied >= mark
-                and (tick - last_growth) >= CFG["grant_every"]
+            d = decide(
+                state,
+                Inputs(
+                    now=now, psi10=psi10, psi60=psi60, pool_mem=pool_mem,
+                    occupied=occupied, resident=resident,
+                ),
+                CFG,
             )
+            state = d.state
 
-            # How many jobs the CURRENT headroom can absorb, keeping one job's
-            # worth of slack in hand. This is what bounds a replacement batch:
-            # when a build phase ends, five jobs can finish within one interval
-            # and the mark alone would offer all five slots back at once. Five
-            # simultaneous admissions need five jobs' worth of memory, but the
-            # load test above only ever checked for two -- so the batch, not the
-            # test, would decide how far the pool overshot. Sizing the offer to
-            # the headroom keeps admission honest at any batch size: roomy pool,
-            # several may restart together; tight pool, strictly one at a time.
-            absorbable = (
-                None
-                if headroom is None
-                else max(0, int(headroom // CFG["job_bytes"]) - 1)
-            )
-
-            def admit_target(cap, _occ=occupied, _mark=mark, _grow=grow):
-                """Slots to offer, given a capacity ceiling of `cap`."""
-                if _occ is None:
-                    # No occupancy signal: fail open to pre-gate behaviour rather
-                    # than guessing. `allowed` alone still bounds things.
-                    return cap
-                if not healthy:
-                    # Offer nothing new; the running set drains and the mark
-                    # follows it down.
-                    t = min(cap, _occ)
-                else:
-                    t = min(cap, _mark + (CFG["grow_step"] if _grow else 0))
-                # THE FREE-SLOT CAP, and the reason it is a separate term from
-                # everything above it. Each clause so far answers "how high may
-                # concurrency go" -- the cap, the mark, the load test. None of
-                # them answers "how many may start in the same instant", and on
-                # a DRAINING box the two diverge completely: occupancy falls to
-                # 1 while the mark still remembers 8, so the window the mark
-                # leaves open is seven wide at precisely the moment the loop has
-                # the least evidence about what is coming next.
-                #
-                # Clamping to `occupied + burst` makes availability track the
-                # running set instead of the peak. It costs nothing in steady
-                # state -- a finished job drops occupancy and the target with
-                # it, so the free pool stays pinned at `burst` rather than
-                # growing, and a waiting job still starts immediately.
-                t = min(t, _occ + CFG["burst"])
-                if absorbable is not None:
-                    t = min(t, _occ + absorbable)
-                # Never gate the machine to a standstill. With nothing running,
-                # at least one job must be able to start or the build system
-                # makes no progress at all -- and every caller would then sit out
-                # its timeout and run UNGATED, which is strictly worse than
-                # admitting one job. Same reasoning as floor being 1, not 0.
-                # The test is "no BUILDS running", not "no slots occupied".
-                # Resident browsers occupy slots permanently, so `_occ == 0` is
-                # false for as long as any session is open -- this guard would
-                # simply stop firing, and an idle box with one browser on it
-                # would admit nothing at all. That is the exact deadlock the
-                # floor exists to prevent, reintroduced through the back door.
-                if _occ - resident <= 0:
-                    t = max(t, floor_dyn)
-                return t
-
-            # Is `allowed` ITSELF the binding constraint? That is the only
-            # question a loosen has any business answering, and the test must be
-            # against `allowed` rather than against the target in effect. The
-            # weaker test (occupied >= target) is satisfied on EVERY tick that
-            # withholds a grant -- target is `occupied` exactly then, so it reads
-            # as "saturated" and would grow the cap on the strength of the load
-            # test refusing, or merely of the spacing clock running. Requiring
-            # the cap to be genuinely full keeps the ratchet answering to demand
-            # alone.
-            cap_saturated = occupied is None or occupied >= allowed
-
-            hot_psi = psi10 is not None and psi10 > CFG["tighten_psi"]
-            hot_high = (
-                high_frac is not None and high_frac > CFG["tighten_high_frac"]
-            )
-
-            if hot_psi or hot_high:
-                # The predictive signal alone may not drive to the absolute
-                # floor. WHY: memory.current is the WHOLE pool, but this
-                # controller only governs the part that takes slots. The agents
-                # fleet and its MCP servers sit in the same pool and ask for
-                # nothing -- measured at 2-3 GB of a 9-16 GB pool. (Resident
-                # browsers WERE in that list until 2026-08-07; they now hold a
-                # slot for their lifetime and are counted, which is what
-                # `resident` above is for. The rest of the untracked set is
-                # still real, so this reasoning still stands.) If those tenants
-                # alone hold the pool above
-                # tighten_high_frac (and the baseline says the pool exceeds 14G,
-                # 87.5% of high, 28% of the time) then a high-frac-only rule
-                # would floor the semaphore permanently, serialising every build
-                # to reclaim memory that was never the builds' to give back.
-                #
-                # So high-frac is treated as what it is -- an EARLY WARNING that
-                # buys a head start on a burst -- and is allowed to take capacity
-                # down only to soft_floor. Reaching the true floor requires
-                # psi10, i.e. evidence that something is actually stalling. That
-                # keeps the aggressive state reserved for demonstrated harm
-                # rather than for a threshold this box crosses routinely.
-                limit = floor_dyn if hot_psi else max(floor_dyn, soft_floor_dyn)
-                # The outer min() is load-bearing: a tighten must NEVER raise
-                # capacity. Without it, `max(limit, allowed - step_down)` reads
-                # max(4, -1) = 4 once PSI has already driven allowed to 1, so a
-                # subsequent predictive-only tick RAISES 1 -> 4 -- a loosen
-                # wearing a TIGHTEN label, and one that skips the dwell guard
-                # entirely. Observed live 2026-08-03 14:23 as a 1->4->2->1 ring,
-                # which is precisely the oscillation the fast-tighten/slow-loosen
-                # asymmetry exists to prevent. Loosening has exactly one route
-                # out of this function: the LOOSEN branch below, gated on the
-                # long PSI window and on dwell.
-                allowed = min(allowed, max(limit, allowed - CFG["step_down"]))
-                bits = []
-                if hot_psi:
-                    bits.append(f"psi10={psi10:.1f}%")
-                if hot_high:
-                    bits.append(f"high={high_frac * 100:.0f}%")
-                if not hot_psi:
-                    bits.append(f"[predictive, soft floor {limit}]")
-                reason = "TIGHTEN " + " ".join(bits)
-            elif (
-                psi60 is not None
-                and psi60 < CFG["loosen_psi"]
-                # Only grow capacity that is actually being USED. A quiet PSI on
-                # an idle box is not evidence that a larger `allowed` is safe --
-                # it is the absence of evidence, measured on a machine doing
-                # nothing. Without this the ratchet accrues capacity it never
-                # earned: observed 2026-08-04 as four consecutive LOOSEN lines on
-                # psi60=0.0% taking allowed 5 -> 9 across an idle four minutes,
-                # followed 10 s later by the burst that walked it back 9 -> 1 and
-                # pinned the pool at 100% of memory.high. Same reason TCP does
-                # not grow cwnd while the sender is idle.
-                and cap_saturated
-                and allowed < ceil_dyn
-                and (time.monotonic() - last_up) >= CFG["dwell"]
-            ):
-                allowed = min(ceil_dyn, allowed + CFG["step_up"])
-                last_up = time.monotonic()
-                reason = f"LOOSEN psi60={psi60:.1f}%"
-
-            target = admit_target(allowed)
-            effective = sem.reconcile(target)
+            effective = sem.reconcile(d.target)
             sem.publish(
-                allowed, effective, occupied, target, mark, resident,
-                healthy and not resident_full,
+                state.allowed, effective, occupied, d.target, state.mark,
+                resident, d.published_healthy,
             )
 
-            if reason and allowed != before:
-                log(
-                    f"{reason} allowed {before} -> {allowed} "
-                    f"(occupied {occupied} mark {mark} target {target} "
-                    f"effective {effective})"
-                )
-            elif (
-                # Only a grant withheld on LOAD is worth a line. Withholding on
-                # spacing is the ordinary rhythm of the thing -- true of most
-                # ticks between admissions -- and logging it would bury the
-                # decisions under its own metronome. `target < allowed` keeps
-                # quiet when the cap is the real constraint, since the TIGHTEN
-                # lines already tell that story.
-                not healthy
-                and target < allowed
-                and occupied is not None
-                and (tick - last_hold_log) >= CFG["hold_log_every"]
-            ):
-                bits = []
-                if not mem_ok:
-                    bits.append(
-                        f"free={headroom / 2**30:.1f}G<{need / 2**30:.1f}G"
+            # RESIDENT-CAP engage/release edges, already formatted by decide().
+            for line in d.notes:
+                log(line)
+
+            # Every decision that MOVED `allowed` gets its own line with its
+            # own before/after: a RECLAIM clamp and a TIGHTEN can fire on the
+            # same tick, and each transition is worth a line of its own.
+            moved = [(text, b, a) for (text, b, a) in d.reasons if a != b]
+            if moved:
+                for text, b, a in moved:
+                    log(
+                        f"{text} allowed {b} -> {a} "
+                        f"(occupied {occupied} mark {state.mark} "
+                        f"target {d.target} effective {effective})"
                     )
-                if not psi_ok:
-                    bits.append(f"psi10={psi10:.1f}%")
-                log(
-                    f"HOLD {' '.join(bits)} occupied={occupied} allowed={allowed}"
-                )
-                last_hold_log = tick
-            elif effective != prev_effective and reason is None and target >= allowed:
+            elif d.hold is not None and (
+                (now - last_hold_log) >= CFG["hold_log_every"]
+            ):
+                # decide() already vetted this as a withheld-on-load line; the
+                # throttle here only keeps a long busy period from logging one
+                # every tick.
+                log(d.hold)
+                last_hold_log = now
+            elif (
+                effective != prev_effective
+                and not d.reasons
+                and d.target >= state.allowed
+            ):
                 # Capacity moved without a decision: jobs returned slots the
                 # controller had been waiting to take. Worth seeing, since it is
                 # how a tighten actually lands. Suppressed while the burst gate
                 # is what is moving `effective`, since that tracks occupancy by
                 # design and would otherwise log on every admission.
-                log(f"SETTLE allowed={allowed} effective={effective}")
+                log(f"SETTLE allowed={state.allowed} effective={effective}")
             prev_effective = effective
 
-            time.sleep(CFG["interval"])
+            sleep(CFG["interval"])
     finally:
         sem.release_all()
         sem.publish(CFG["max_slots"], CFG["max_slots"])

@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Run both semaphore test suites and forward a combined exit code.
 #
-# The client suite (kx-build-slot.test.py) is deterministic and also runs in
-# the sandbox as a flake check. The controller suite drives a real control loop
-# through real dwell intervals: it is wall-clock timed and can flake on a
-# loaded box — re-run on a quiet machine before believing a failure in its
-# ramp/dwell tests (see CLAUDE.md).
+# All suites are deterministic since the 2026-08-07 decide() extraction: the
+# controller's policy is unit-tested against a pure function with an injected
+# clock, and its few remaining integration tests are convergence-polled rather
+# than dwell-timed.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -13,5 +12,6 @@ rc=0
 python3 scripts/kx-build-slot.test.py || rc=1
 python3 scripts/wt-cgroup-i3status.test.py || rc=1
 python3 scripts/cgroup-thaw-all.test.py || rc=1
+python3 scripts/cgroup-governor.test.py || rc=1
 python3 scripts/build-semaphore-controller.test.py || rc=1
 exit "$rc"
