@@ -171,7 +171,15 @@ with open(pid_path, "w") as f:
 log(f"pid={os.getpid()}")
 
 sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.bind(sock_path)
+# The socket must never EXIST with open perms: bind() creates it under the
+# process umask, and the old bind-then-chmod pair left a window in which any
+# local user could connect and read cached secrets out. 0o177 makes bind
+# create it 0600 from the first instant; the chmod stays as belt-and-braces.
+old_umask = os.umask(0o177)
+try:
+    sock.bind(sock_path)
+finally:
+    os.umask(old_umask)
 os.chmod(sock_path, 0o600)
 # Backlog well above the 1 this used to use. Requests are served one at a time
 # and a cache miss can sit for minutes waiting on a 1Password prompt, so with a

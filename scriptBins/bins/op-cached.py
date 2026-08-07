@@ -8,6 +8,8 @@ import socket
 import os
 import sys
 import base64
+import binascii
+import fcntl
 import time
 import subprocess
 import signal
@@ -22,6 +24,9 @@ def log(msg):
 runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 sock_path = os.path.join(runtime_dir, "op-cached.sock")
 pid_path = os.path.join(runtime_dir, "op-cached.pid")
+# Client-only (the daemon never takes it), so NOT part of the hand-synced
+# block above: serialises the unlink/spawn dance -- see serialised() below.
+lock_path = os.path.join(runtime_dir, "op-cached.lock")
 # Seconds to wait for accept(). A live daemon listens with a backlog of 16 and
 # accepts instantly no matter what it is busy with, so this only has to outlast
 # scheduling noise -- it is not sized for any real work.
@@ -145,10 +150,69 @@ def restart_daemon():
         except OSError: pass
     start_daemon()
 
+def serialised(dance):
+    """Run dance() -- an unlink/spawn of the daemon -- with the spawn lock held.
+
+    Two clients that both found no socket used to both spawn a daemon; each
+    daemon unlinks sock_path before binding, so the loser's unlink stranded the
+    winner's freshly bound socket, and the NEXT client spawned a third daemon --
+    one wasted 1Password prompt per collision. Only the spawn/unlink dance is
+    locked; every read path stays lock-free.
+
+    The loser waits for the winner instead of dancing over it, then takes the
+    winner's socket as its answer. Every lock failure fails OPEN into the old
+    unserialised behaviour: racy beats wedged for a client sitting inside a
+    TOKEN="$(...)" capture.
+    """
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        log(f"spawn lock unavailable ({e}), dancing unserialised")
+        dance()
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            log("another client holds the spawn lock, waiting for it...")
+            # Poll rather than block so a winner wedged mid-dance cannot wedge
+            # us with it. Its worst case is ~7s (2s SIGTERM wait in
+            # restart_daemon + 5s socket wait in start_daemon); 10s covers it.
+            for _ in range(100):
+                time.sleep(0.1)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    pass
+            else:
+                log("spawn lock never freed, dancing unserialised")
+                dance()
+                return
+            if os.path.exists(sock_path):
+                # The winner delivered while we waited. Its daemon is fresher
+                # than whatever diagnosis brought us here (even "wedged": the
+                # winner has already replaced that one), so take its socket
+                # rather than killing it for a THIRD daemon.
+                log("winner's socket is up, skipping our own spawn")
+                return
+        dance()
+    finally:
+        os.close(fd)
+
+def start_daemon_if_still_absent():
+    # Re-checked under the lock: between our caller's look and the lock grant
+    # another client may have finished the whole dance, and spawning over its
+    # live daemon would re-open the exact strand the lock exists to close.
+    if os.path.exists(sock_path):
+        log("socket appeared while we waited for the spawn lock")
+        return
+    start_daemon()
+
 def ensure_daemon():
     if not os.path.exists(sock_path):
         log("no socket, starting daemon")
-        start_daemon()
+        serialised(start_daemon_if_still_absent)
     elif os.path.exists(pid_path):
         try:
             pid = int(open(pid_path).read().strip())
@@ -156,7 +220,7 @@ def ensure_daemon():
             log("daemon already running")
         except (OSError, ValueError):
             log("stale pidfile, restarting daemon")
-            restart_daemon()
+            serialised(restart_daemon)
 
 def send_request():
     log("connecting to daemon...")
@@ -209,7 +273,14 @@ def parse_response(response):
         sys.stderr.write(f"op-cached: bad response from daemon: {response!r}\n")
         sys.exit(1)
     log(f"status={parts[0]}")
-    return parts[0], base64.b64decode(parts[1])
+    try:
+        return parts[0], base64.b64decode(parts[1])
+    except binascii.Error as e:
+        # The error alone, NEVER the payload: on the OK path the undecodable
+        # bytes are still (mangled) secret material, and this lands on the
+        # stderr of a TOKEN="$(...)" capture.
+        sys.stderr.write(f"op-cached: undecodable payload from daemon ({parts[0]}): {e}\n")
+        sys.exit(1)
 
 ensure_daemon()
 
@@ -217,14 +288,15 @@ try:
     response = send_request()
 except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
     log(f"connection failed ({e}), retrying with fresh daemon...")
-    restart_daemon()
+    serialised(restart_daemon)
     # Guarded, because this retry is no longer the rare path it was: a connect
     # timeout now routes here. Callers run us as TOKEN="$(op-cached read ...)",
     # and a Python traceback on stderr there is far less legible than saying
-    # what actually went wrong.
+    # what actually went wrong. ValueError covers a reply that is not UTF-8
+    # (recv's decode) -- same legibility rule, same verdict.
     try:
         response = send_request()
-    except OSError as e2:
+    except (OSError, ValueError) as e2:
         sys.stderr.write(f"op-cached: daemon unreachable after restart: {e2}\n")
         sys.exit(1)
 
@@ -235,8 +307,15 @@ status, payload = parse_response(response)
 # "unknown command". Swap it for the current build and retry exactly once.
 if status == "ERR" and payload == b"unknown command":
     log("pre-READ2 daemon still listening, replacing it")
-    restart_daemon()
-    status, payload = parse_response(send_request())
+    serialised(restart_daemon)
+    # Same guard shape as the connect-failure retry above: this talks to a
+    # daemon we just replaced, and every way THAT can go wrong (unreachable
+    # socket, non-UTF-8 reply) used to traceback inside the capture.
+    try:
+        status, payload = parse_response(send_request())
+    except (OSError, ValueError) as e:
+        sys.stderr.write(f"op-cached: daemon unreachable after restart: {e}\n")
+        sys.exit(1)
 
 if status == "OK":
     sys.stdout.write(payload.decode())
