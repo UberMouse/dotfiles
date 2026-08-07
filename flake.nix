@@ -48,7 +48,9 @@
         playwright-cli = final.callPackage ./packages/playwright-cli/package.nix { };
         plannotator = final.callPackage ./packages/plannotator/package.nix { };
         ccstatusline = final.callPackage ./packages/ccstatusline/package.nix { };
-        rush = final.callPackage ./packages/rush/package.nix { };
+        # rushjs, NOT rush: nixpkgs' `rush` is GNU Rush, a restricted login
+        # shell. Overlaying that name replaced an unrelated package globally.
+        rushjs = final.callPackage ./packages/rush/package.nix { };
         sentry = final.callPackage ./packages/sentry/package.nix { };
       };
       unstable-pkgs = import nixpkgs-unstable {
@@ -95,7 +97,7 @@
           playwright-cli
           plannotator
           ccstatusline
-          rush
+          rushjs
           sentry
           ;
       };

@@ -6,9 +6,20 @@
 }:
 buildNpmPackage {
   pname = "rush";
-  version = "5.178.0";
+  # The pin in package.json is the single source of truth: it is what npm
+  # actually resolves, so deriving the derivation version from it means the two
+  # can never drift (they used to be maintained by hand in both files).
+  version = (lib.importJSON ./package.json).dependencies."@microsoft/rush";
 
-  src = ./.;
+  # Only the two files npm needs. `src = ./.` made every edit to UPDATE.md (or
+  # this file itself) invalidate the build.
+  src = lib.fileset.toSource {
+    root = ./.;
+    fileset = lib.fileset.unions [
+      ./package.json
+      ./package-lock.json
+    ];
+  };
 
   npmDepsHash = "sha256-2i8WkQM9r5leZUHgpNd0yKU8ODiRveJe7ONwFfvnsFI=";
 

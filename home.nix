@@ -111,7 +111,7 @@
       unstable-pkgs.playwright-cli
       unstable-pkgs.plannotator
       unstable-pkgs.ccstatusline
-      unstable-pkgs.rush
+      unstable-pkgs.rushjs
 
       unstable-small-pkgs.claude-code
     ];
