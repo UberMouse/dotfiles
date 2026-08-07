@@ -49,6 +49,9 @@ For each UPDATE.md:
 
 **c. If current != latest**:
 - Follow the instructions in the markdown body, substituting `${VERSION}` with the new version
+- Verify the package in isolation with `nix build .#<name>` (each spec's final
+  step) BEFORE moving to the next spec — a bad hash surfaces in seconds here
+  instead of aborting the whole run at the system rebuild
 - After completing the update, fetch and summarize changelog (see Changelog Handling below)
 - Record "name oldVer → newVer" for the final commit message
 
@@ -58,26 +61,34 @@ For each UPDATE.md:
 cd ~/dotfiles && nix flake update
 ```
 
-### 4. Rebuild System
+### 4. Check, then Rebuild
+
+```bash
+nix flake check
+```
+
+runs eval, the lints, and the fast test suite — catching breakage before the
+switch touches the live system. Then:
 
 ```bash
 sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
 ```
-
-This is the verification step. If the build succeeds, all updates are working.
 
 ### 5. Commit
 
 Stage all changed files and commit with format:
 
 ```
-weekly update: name1 X.Y.Z → A.B.C, name2 X.Y.Z → A.B.C, flake inputs
+chore(deps): name1 X.Y.Z → A.B.C, name2 X.Y.Z → A.B.C, flake inputs
 ```
+
+(`chore(deps):` so automated bumps are distinguishable in history from changes
+to this skill itself, which commit as `docs(weekly-update):` or similar.)
 
 Omit packages that were already current. If no packages were updated:
 
 ```
-weekly update: flake inputs
+chore(deps): flake inputs
 ```
 
 ## Changelog Handling
