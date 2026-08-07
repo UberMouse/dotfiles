@@ -2,7 +2,9 @@
 name: playwright-cli
 version_check: npm view @playwright/cli version
 version_file: packages/playwright-cli/package.nix
-changelog_github: microsoft/playwright-cli
+# @playwright/cli is developed in the playwright monorepo; the standalone
+# microsoft/playwright-cli repo is the long-archived pre-1.x tool.
+changelog_github: microsoft/playwright
 ---
 
 # Update Process
@@ -28,9 +30,7 @@ Gather the three versions that drive the decision:
 
 ```bash
 # (a) what the flake CURRENTLY provides (the pinned input):
-#     read the pinned rev from flake.lock (node "playwright"), then:
-nix eval --raw "github:Pentusha/playwright-web-flake/<PINNED_REV>#playwright-driver.version"
-#     (currently 1.60.0)
+nix eval --raw "github:Pentusha/playwright-web-flake/$(jq -r '.nodes.playwright.locked.rev' flake.lock)#playwright-driver.version"
 
 # (b) what the LATEST CLI wants:
 npm view @playwright/cli version                     # latest CLI version
@@ -82,15 +82,23 @@ before continuing.
    cp package-lock.json ~/dotfiles/packages/playwright-cli/package-lock.json
    ```
 
-3. Edit `packages/playwright-cli/package.nix`:
-   - `version` → new version
-   - `src.hash` → SRI hash from step 1
-   - `npmDepsHash` → placeholder: `sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`
-
-4. Attempt build — it will fail printing the correct `npmDepsHash`:
+3. Compute the new `npmDepsHash` directly from the regenerated lock file (no
+   build-fail round trip):
    ```bash
-   sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10
+   nix run nixpkgs#prefetch-npm-deps -- packages/playwright-cli/package-lock.json
    ```
 
-5. Extract the correct `npmDepsHash` from the error output, update
-   `packages/playwright-cli/package.nix`, and rebuild.
+4. Edit `packages/playwright-cli/package.nix`:
+   - `version` → new version
+   - `src.hash` → SRI hash from step 1
+   - `npmDepsHash` → hash from step 3
+
+5. Verify in isolation:
+   ```bash
+   nix build .#playwright-cli
+   ```
+   The build ASSERTS that playwright-core still ships
+   `lib/entry/cliDaemon.js` — the path the browser-residency probe matches. If
+   it fails there, a playwright bump moved the daemon entry point: update
+   `daemonProbe` in `package.nix` and re-check the residency contract
+   (kx-build-slot.sh + Semaphore.resident(), see CLAUDE.md).

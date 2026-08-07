@@ -41,7 +41,9 @@ For each UPDATE.md:
 
 **a. Check versions**
 - Run `version_check` command → latest version
-- Read `version_file` → extract current version (look for `version = "X.Y.Z"` pattern)
+- Read `version_file` → extract current version (a `version = "X.Y.Z"`-style
+  assignment, unless the spec's body says where the version lives — e.g. rush's
+  is the `@microsoft/rush` pin in its package.json)
 
 **b. If current == latest**: Log "package-name already at X.Y.Z" and skip to next spec.
 

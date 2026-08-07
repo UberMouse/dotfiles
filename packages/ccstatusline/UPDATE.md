@@ -16,3 +16,8 @@ changelog_github: sirmalloc/ccstatusline
 2. Edit `packages/ccstatusline/package.nix`:
    - `version` → new version
    - `src.hash` → SRI hash from step 1
+
+3. Verify in isolation:
+   ```bash
+   nix build .#ccstatusline && ./result/bin/ccstatusline --help >/dev/null
+   ```

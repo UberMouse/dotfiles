@@ -7,12 +7,17 @@ changelog_url: https://raw.githubusercontent.com/anthropics/claude-code/main/CHA
 
 # Update Process
 
-1. Get source hash:
+1. Get the source hash (SRI, directly):
    ```bash
-   nix-prefetch-url "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/${VERSION}/linux-x64/claude"
-   nix hash convert --hash-algo sha256 --to sri <HASH_FROM_ABOVE>
+   nix store prefetch-file --json "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/${VERSION}/linux-x64/claude" | jq -r .hash
    ```
 
 2. Edit `packages/claude-code/package.nix`:
    - `version` → new version
-   - `src.hash` → SRI hash from step 1
+   - `src.hash` → hash from step 1
+
+3. Verify in isolation (the derivation also runs `claude --version` as an
+   install check):
+   ```bash
+   nix build .#claude-code
+   ```
