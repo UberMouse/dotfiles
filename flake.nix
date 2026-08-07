@@ -156,6 +156,14 @@
                 shellcheck scripts/*.sh
                 export PYTHONPYCACHEPREFIX=$TMPDIR/pycache
                 python3 -m py_compile scripts/*.py scriptBins/bins/*.py
+
+                # Repo-specific tripwires. Each of these encodes a rule that was
+                # once broken silently (see CLAUDE.md's standing traps):
+                #  1. pgrep -f is banned (kx-proc-find is the replacement)
+                #  2. /home/taylorl literals in nix (one allowed definition)
+                #  3. the pool cgroup path must carry the KX_POOL override
+                #  4. every repo path CLAUDE.md names must exist (docs-liveness)
+                python3 ${./scripts/lint-tripwires.py}
                 touch $out
               '';
         };
