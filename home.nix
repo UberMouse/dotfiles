@@ -47,23 +47,18 @@
       gnumake
       perl
       openvpn
-      keychain
       xclip
       maim
-      libuuid
       rename
       fd
       ripgrep
       bat
       inotify-tools
       unixtools.ifconfig
-      glibc
       tree
-      meslo-lgs-nf
       lsof
       pstree
       sysstat
-      rinetd
       gnuplot
       nautilus
       libnotify
@@ -129,8 +124,9 @@
       enable = true;
 
       defaultApplications = {
-        "default-web-browser" = [ "vivaldi-stable.desktop" ];
-        "x-www-browser" = [ "vivaldi-stable.desktop" ];
+        # No "default-web-browser"/"x-www-browser" keys: those are not MIME
+        # types, so xdg-mime silently ignored them -- the scheme-handler and
+        # text/html lines below are what actually route URLs.
         "x-scheme-handler/https" = [ "vivaldi-stable.desktop" ];
         "x-scheme-handler/http" = [ "vivaldi-stable.desktop" ];
         "text/html" = [ "vivaldi-stable.desktop" ];
@@ -247,11 +243,16 @@
       global = {
         monitor = 0;
         follow = "mouse";
-        geometry = "300x50-20+20";
+        # dunst 1.7+ geometry syntax. The old `geometry`/`shrink`/
+        # `notification_height` keys were removed upstream and silently
+        # ignored for years -- the size/position below is what
+        # "300x50-20+20" always meant.
+        width = 300;
+        height = 50;
+        origin = "top-right";
+        offset = "20x20";
         indicate_hidden = true;
-        shrink = false;
         transparency = 10;
-        notification_height = 0;
         separator_height = 2;
         padding = 8;
         horizontal_padding = 8;
@@ -280,7 +281,6 @@
         always_run_script = true;
         title = "Dunst";
         class = "Dunst";
-        startup_notification = false;
         verbosity = "mesg";
         corner_radius = 5;
       };

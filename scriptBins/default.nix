@@ -186,7 +186,11 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
   home.packages = [
     (sh {
       name = "koordinates-dev-protocol";
-      runtimeInputs = [ pkgs.curl ];
+      # jq: JSON-escapes the attacker-influenced URL into the request body.
+      runtimeInputs = [
+        pkgs.curl
+        pkgs.jq
+      ];
       bashOptions = [ "nounset" ];
     })
     # Voice-assistant chord relay to the VMware host; reads the host's LAN

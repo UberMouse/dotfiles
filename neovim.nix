@@ -10,8 +10,9 @@
     withPython3 = false;
 
     plugins = with pkgs.vimPlugins; [
+      # No syntastic: it was installed for years with zero checkers configured,
+      # i.e. doing nothing but slowing startup.
       nerdtree
-      syntastic
       vim-surround
       vim-commentary
       vim-gitgutter
@@ -64,13 +65,9 @@
       inoremap <A-k> <up>
       inoremap <A-l> <right>
 
-      " insert line before/after current line in normal mode
-      nmap <leader>o o<esc>k
+      " insert line before current line in normal mode (no <leader>o twin:
+      " that was shadowed by the :only mapping below and silently dead)
       nmap <leader>O O<esc>j
-
-
-      " Reload our .vimrc
-      nmap <leader>~ :source ~/.vimrc<CR>:redraw!<CR>:AirlineRefresh<CR>:echo "~/.vimrc reloaded!"<CR>
 
       " Write file
       nmap <leader>w :w<CR>
@@ -84,10 +81,11 @@
       " Reindent the entire file
       nmap <leader>= gg=G``:echo "reindent global"<CR>
 
-      " Fugitive mappings
-      nmap <leader>gs :Gstatus<cr>
-      nmap <leader>gc :Gcommit<cr>
-      nmap <leader>gd :Gdiff<cr>
+      " Fugitive mappings (modern command names: :Gstatus/:Gcommit/:Gdiff
+      " were deleted upstream in 2021 and error on current fugitive)
+      nmap <leader>gs :Git<cr>
+      nmap <leader>gc :Git commit<cr>
+      nmap <leader>gd :Gdiffsplit<cr>
 
       " diff mappings
       nmap <leader>gg :diffget<cr>

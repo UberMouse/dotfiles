@@ -1,6 +1,3 @@
-local*
-keyring.deb
-.nvimlog
 # nix build output symlinks. `nix build .#<pkg>` (the documented bump check)
 # drops these at the repo root; committed once by accident (073080c) where it
 # invalidated the lint check's cache on every package build.
@@ -9,6 +6,9 @@ result-*
 # `python3 -m py_compile scripts/*.py` (the syntax check before a rebuild) drops
 # these next to the source; nix would otherwise see them as untracked noise.
 __pycache__/
+# ruff writes its own .ruff_cache/.gitignore, but runtime-state policy lives
+# HERE (see the agent-state note below), not in tool-emitted exclude files.
+.ruff_cache/
 
 # Agent runtime state. These live in the tracked .gitignore (not
 # .git/info/exclude) deliberately: exclude files are machine-local and don't

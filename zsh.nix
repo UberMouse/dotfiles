@@ -91,8 +91,24 @@
         export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD="1"
         export PATH="$PATH:$HOME/.pnpm-packages/bin:$HOME/.local/bin"
 
+        # Rebuilt on kx-proc-find 2026-08-07: the old `ps -ef | grep [$1]`
+        # version was the banned pgrep -f trap with SIGKILL attached --
+        # unquoted [$1] was a zsh glob (nomatch abort, or grep on a stray
+        # FILENAME), and if the brackets ever reached grep, [node] is a
+        # character class matching any process containing n/o/d/e.
         function kill-all {
-          ps -ef | grep [$1] | awk '{print $2}' | xargs kill -9
+          if [[ $# -lt 1 ]]; then
+            echo "usage: kill-all <name>  (glob *name* against single argv fields)" >&2
+            return 1
+          fi
+          local -a pids
+          pids=($(kx-proc-find "*$1*"))
+          if (( ''${#pids} == 0 )); then
+            echo "kill-all: no process has an argv field matching *$1*" >&2
+            return 1
+          fi
+          echo "kill-all: SIGKILL -> ''${pids[*]}" >&2
+          kill -9 "''${pids[@]}"
         }
       '')
       (lib.mkAfter ''
