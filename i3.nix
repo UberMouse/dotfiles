@@ -2,6 +2,10 @@
 
 let
   mod = "Mod4";
+  # The VMware HOST's LAN address (DHCP; rediscover with `ip route` on the
+  # host if it moves). 8004 = the host-side voice-assistant hotkey listener;
+  # the reciprocal VM-inbound port 8003 is opened in nixos.nix's firewall.
+  hostIp = "192.168.50.16";
 in
 {
   xsession.windowManager.i3 = {
@@ -68,7 +72,7 @@ in
         # never sees the press — this curl shim plumbs it back over HTTP.
         # Matches the host-side chord (lshift+f3) for muscle-memory parity.
         "Shift+F3" =
-          "exec --no-startup-id ${pkgs.curl}/bin/curl -fsS -m 2 -X POST -H 'Content-Type: application/json' -d '{\"kind\":\"short\"}' http://192.168.50.16:8004/hotkey";
+          "exec --no-startup-id ${pkgs.curl}/bin/curl -fsS -m 2 -X POST -H 'Content-Type: application/json' -d '{\"kind\":\"short\"}' http://${hostIp}:8004/hotkey";
       };
 
       startup = [
@@ -85,7 +89,7 @@ in
     };
 
     extraConfig = ''
-      exec --no-startup-id "i3-msg 'workspace \"3: dev\"; split v; append_layout /home/taylorl/dotfiles/i3-workspaces/dev.json'"
+      exec --no-startup-id "i3-msg 'workspace \"3: dev\"; split v; append_layout ${./i3-workspaces/dev.json}'"
       exec alacritty -e dev-terminal
 
       for_window [class="^Chromium-browser$"] move to workspace number 4
