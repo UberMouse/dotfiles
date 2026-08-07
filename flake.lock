@@ -72,8 +72,8 @@
       },
       "original": {
         "owner": "kolide",
-        "ref": "main",
         "repo": "nix-agent",
+        "rev": "72a0cfaa328f87589a420fa9f2994418f9a46ebd",
         "type": "github"
       }
     },

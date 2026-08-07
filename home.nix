@@ -1,5 +1,4 @@
-{ system ? builtins.currentSystem, config, pkgs, lib, unstable-pkgs
-, unstable-small-pkgs, ... }:
+{ config, pkgs, lib, unstable-pkgs, unstable-small-pkgs, ... }:
 
 {
   imports = [ ./i3.nix ./neovim.nix ./zsh.nix ./scriptBins ];
@@ -30,15 +29,11 @@
   home.packages = with pkgs;
     [
       # System
-      git
-      curl
       htop
-      i3
       gcc
       gnumake
       perl
       openvpn
-      fzf
       keychain
       xclip
       maim
@@ -50,7 +45,6 @@
       inotify-tools
       unixtools.ifconfig
       glibc
-      libuuid
       tree
       meslo-lgs-nf
       lsof
@@ -59,7 +53,6 @@
       rinetd
       gnuplot
       nautilus
-      dunst
       libnotify
 
       # Dev
@@ -84,9 +77,7 @@
       fx
       axel
       sysbench
-      direnv
       nixfmt
-      zsh-powerlevel10k
       nixd
       (callPackage ./kart.nix { })
       uv
@@ -195,11 +186,6 @@
              "run \"tmux list-panes -a -F '##{session_name}:##{window_index}.##{pane_index}' \
                     | xargs -I PANE tmux send-keys -t PANE '%1' Enter\""
     '';
-  };
-
-  programs.vscode = {
-    enable = false;
-    package = unstable-pkgs.vscode-fhs;
   };
 
   programs.bash = { enable = true; };

@@ -19,7 +19,9 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     kolide-launcher = {
-      url = "github:/kolide/nix-agent/main";
+      # Runs as a root system service, so track a deliberate rev rather than
+      # whatever `main` is on flake-update day. Bump by replacing the rev.
+      url = "github:kolide/nix-agent/72a0cfaa328f87589a420fa9f2994418f9a46ebd";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
@@ -37,9 +39,6 @@
         rush = final.callPackage ./packages/rush/package.nix {};
         sentry = final.callPackage ./packages/sentry/package.nix {};
       };
-      pkgs = import nixpkgs {
-        inherit system;
-      };
       unstable-pkgs = import nixpkgs-unstable {
         inherit system;
         config.allowUnfree = true;
@@ -49,7 +48,7 @@
     in {
       nixosConfigurations.ubermouse = nixpkgs.lib.nixosSystem {
         inherit system;
-        specialArgs = { inherit unstable-pkgs unstable-small-pkgs;  };
+        specialArgs = { inherit unstable-pkgs unstable-small-pkgs self; };
 
         modules = [
           ./nixos.nix
