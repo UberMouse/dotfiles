@@ -161,6 +161,9 @@
       rerere.enabled = "true";
       core.pager = "delta";
       diff.algorithm = "histogram";
+      # Skip whole-tree mechanical reformat commits in blame (repo-relative
+      # path: only takes effect in repos that ship the file, like dotfiles).
+      blame.ignoreRevsFile = ".git-blame-ignore-revs";
       init.defaultBranch = "main";
       gpg.format = "ssh";
       "gpg \"ssh\"".program = "${lib.getExe' pkgs._1password-gui "op-ssh-sign"}";
