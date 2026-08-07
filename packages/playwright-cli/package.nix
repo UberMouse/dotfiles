@@ -111,8 +111,9 @@ let
     # resident-held slots; without that, browsers would eat the admission pool
     # and every build would sit out its timeout and then run UNGATED, which is
     # strictly worse than not gating at all. See the RESIDENCY note in
-    # scriptBins/bins/kx-build-slot.sh and `resident_slots` in
-    # scripts/build-semaphore-controller.py -- the three have to agree.
+    # scriptBins/bins/kx-build-slot.sh and Semaphore.resident() plus the
+    # floor_dyn block in scripts/build-semaphore-controller.py -- the three
+    # have to agree.
     #
     # Re-invoking THIS wrapper under kx-build-slot (rather than wrapping $entry
     # directly) keeps the `exec -a "$0"` argv[0] fixup below intact -- prefixing
@@ -169,6 +170,18 @@ buildNpmPackage (finalAttrs: {
     rm -rf $pkgdir/node_modules/playwright $pkgdir/node_modules/playwright-core
     ln -s ${playwright-test}/lib/node_modules/playwright       $pkgdir/node_modules/playwright
     ln -s ${playwright-test}/lib/node_modules/playwright-core  $pkgdir/node_modules/playwright-core
+
+    # The residency probe (daemonProbe above) matches */entry/cliDaemon.js in
+    # argv[1] -- an INTERNAL playwright-core path. If a playwright bump moves or
+    # renames it, the probe returns nothing, no keeper forks, and browsers
+    # escape semaphore accounting with no error anywhere. Fail the BUILD
+    # instead of degrading silently at runtime.
+    if [ ! -e "$pkgdir/node_modules/playwright-core/lib/entry/cliDaemon.js" ]; then
+      echo "ERROR: playwright-core no longer ships lib/entry/cliDaemon.js;" >&2
+      echo "the kx-pw-daemons residency probe would silently match nothing." >&2
+      echo "Update daemonProbe in this file to the new daemon entry path."   >&2
+      exit 1
+    fi
 
     # Install our own wrapper (see wrapperScript above) in place of the npm bin
     # symlink, then bake in the absolute path to the CLI entry point.

@@ -76,8 +76,8 @@ Two traps when diagnosing it:
 
 Three files have to agree on residency — `kx-build-slot.sh` (keeper + marker),
 `packages/playwright-cli/package.nix` (`--resident-probe`), and
-`build-semaphore-controller.py` (`resident_slots` + dynamic floor). Change one,
-check the other two.
+`build-semaphore-controller.py` (`Semaphore.resident()` + the dynamic floor).
+Change one, check the other two.
 
 Two standing traps when working on any of this:
 
