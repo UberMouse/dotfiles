@@ -46,7 +46,8 @@
 # slot is returned while the memory stays, so the semaphore counts a burst that
 # has ended and misses a tenant that has not.
 #
-# --resident-probe CMD closes that gap. CMD lists pids (one per line) and is run
+# --resident-probe CMD closes that gap. CMD is a single executable (invoked
+# directly, never through a shell) that lists pids one per line, and is run
 # twice: once BEFORE the command and once AFTER. Anything that appears in the
 # second list and not the first was spawned by this job, and the slot is HELD
 # until every such pid is gone.
@@ -148,11 +149,14 @@ fi
 export KX_BUILD_SLOT_HELD=1
 
 sem_healthy() {
-  # Field 8 of the published state: whether the controller's load test passes
-  # right now. FAIL-OPEN on anything unexpected -- a missing file, a short line
-  # from an older controller mid-deploy, a non-numeric field -- because the
-  # alternative is a browser that never launches on a machine whose semaphore is
-  # merely misconfigured. Only an explicit "0" blocks.
+  # Field 8 ("healthy") of the published state: whether the controller's load
+  # test passes AND the resident cap has room. The authoritative field order is
+  # the FIELDS tuple next to publish() in scripts/build-semaphore-controller.py;
+  # the fast test suite asserts this index against it. FAIL-OPEN on anything
+  # unexpected -- a missing file, a short line from an older controller
+  # mid-deploy, a non-numeric field -- because the alternative is a browser that
+  # never launches on a machine whose semaphore is merely misconfigured. Only an
+  # explicit "0" blocks.
   local f
   f=$(cut -d' ' -f8 "$SEM_DIR/allowed" 2>/dev/null) || return 0
   [ "$f" = "0" ] && return 1
@@ -165,8 +169,20 @@ probe_pids() {
   # fabricate a pid -- a fabricated pid is one that never dies, and a keeper
   # waiting on it holds a slot forever. Filtering rather than sanitising is the
   # point: `tr -cd 0-9` would turn "error: no such file" into a plausible pid.
+  #
+  # Filtered in bash, not `grep -E`: grep was never in this script's
+  # runtimeInputs, so under a restricted PATH the pipeline died inside
+  # `|| true` and every probe read as empty -- no keeper, browser unaccounted,
+  # nothing logged. A shell pattern depends on nothing and cannot fail that way
+  # (same shape as the compgen bug above).
   [ -n "$resident_probe" ] || return 0
-  eval "$resident_probe" 2>/dev/null | grep -E '^[0-9]+$' || true
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      '' | *[!0-9]*) ;;
+      *) printf '%s\n' "$line" ;;
+    esac
+  done < <("$resident_probe" 2>/dev/null || true)
 }
 
 resident_new=""
@@ -204,7 +220,17 @@ run_child() {
   # path cannot invent one.
   resident_new=""
   if [ -n "$resident_probe" ]; then
-    for p in $(probe_pids); do
+    after_pids="$(probe_pids | tr '\n' ' ')"
+    # A probe that sees NOTHING at all after the command ran is the signature
+    # of a broken probe (the daemon path moved in an upgrade), and it is
+    # otherwise indistinguishable from a genuine no-spawn: no keeper forks, no
+    # slot is held, and the log stays silent while browsers escape accounting.
+    # Log it so a silent zero can be told apart after the fact.
+    case "$after_pids" in
+      *[0-9]*) ;;
+      *) slotlog "RESIDENT-PROBE-EMPTY $label probe saw no daemons at all" ;;
+    esac
+    for p in $after_pids; do
       case " $before_pids " in
         *" $p "*) ;;
         *) resident_new="$resident_new $p" ;;
@@ -230,9 +256,13 @@ start_keeper() {
     # exits moments from now. The controller prunes markers whose keeper is
     # dead, so naming the parent here would make every marker look stale and
     # the floor would never rise at all.
-    printf 'keeper=%s label=%s daemons=%s\n' \
-      "$BASHPID" "$label" "$(echo "$keeper_pids" | tr ' ' ',')" \
-      > "$marker" 2>/dev/null || true
+    #
+    # MARKER FORMAT: exactly `keeper=<pid>`. The parser is
+    # Semaphore.resident() in scripts/build-semaphore-controller.py -- it is
+    # the contract; anything added here that it does not read is drift waiting
+    # to happen (label= and daemons= fields once lived here, written by this
+    # line and read by nothing).
+    printf 'keeper=%s\n' "$BASHPID" > "$marker" 2>/dev/null || true
     trap 'rm -f "$marker" 2>/dev/null || true; exit 0' TERM INT
     while :; do
       alive=0
@@ -247,6 +277,14 @@ start_keeper() {
     # needs to happen, and nothing can leak it if this process is killed.
   ) >/dev/null 2>&1 &
   disown 2>/dev/null || true
+}
+
+jitter_sleep() {
+  # 0.2-0.5s. Jitter matters: without it a burst of jobs that arrived together
+  # stays in lockstep and they all retry on the same tick forever, which is the
+  # thundering herd this whole service exists to prevent. (String-built on
+  # purpose; the range must stay single-digit tenths.)
+  sleep "0.$(((RANDOM % 4) + 2))"
 }
 
 start=$(date +%s)
@@ -280,7 +318,7 @@ while :; do
       slotlog "TIMEOUT $label waited ${waited}s unhealthy, running UNGATED"
       exec "$@"
     fi
-    sleep "0.$(( (RANDOM % 4) + 2 ))"
+    jitter_sleep
     continue
   fi
 
@@ -318,8 +356,5 @@ while :; do
     exec "$@"
   fi
 
-  # Jittered poll. Jitter matters: without it a burst of jobs that arrived
-  # together stays in lockstep and they all retry on the same tick forever,
-  # which is the thundering herd this whole service exists to prevent.
-  sleep "0.$(( (RANDOM % 4) + 2 ))"
+  jitter_sleep
 done
