@@ -12,28 +12,31 @@
 # Also safe and useful to run by hand if a build ever looks wedged:
 #   cgroup-thaw-all
 #
-# Only mj-<name>.scope is touched. The agents fleet is never frozen by design, so
-# it is never thawed here either -- if it is somehow frozen, that came from
-# something else and silently undoing it would hide a real problem.
+# Both freeze-target shapes are touched: mj-<name>.scope and the `transient`
+# leaves (the pair kx_freeze_targets defines). The agents `fleet` is never
+# frozen by design, so it is never thawed here either -- if it is somehow
+# frozen, that came from something else and silently undoing it would hide a
+# real problem.
 set -u
 
 # The freeze-target shapes come from cgroup-lib.sh (kx_freeze_targets),
 # SHARED with the governor's list_build_scopes, so this sweep can never
 # drift from what the governor actually freezes -- a shape a hand-copied
 # glob pair here missed would stay frozen FOREVER after a SIGKILL, the one
-# failure this script exists to prevent. CGLIB is inherited from the
-# governor unit's Environment= (ExecStopPost runs with the same env as
-# ExecStart); the sibling-path fallback serves manual runs from a checkout.
+# failure this script exists to prevent. Both installed copies pin CGLIB to
+# the lib's store path (the governor unit via Environment=, the on-PATH
+# command via the prefix scriptBins/default.nix prepends); the sibling-path
+# fallback serves manual runs from a checkout and the test suite.
 #
-# FAIL OPEN, deliberately: this is the thaw of last resort, so a missing or
-# unreadable lib must not stop the sweep. Warn loudly and fall back to the
-# last-known inline pair rather than dying with builds still frozen.
-have_lib=0
+# No inline glob fallback: it existed for a "cannot source" case neither
+# installed copy can reach, and a stale copy IS the documented disaster --
+# a shape it lacks stays frozen forever while the run reports success. If
+# the lib is genuinely unsourceable, say exactly what to do by hand.
 # shellcheck disable=SC1090  # path is env-supplied (CGLIB) in production
-if . "${CGLIB:-$(dirname "$0")/cgroup-lib.sh}" 2>/dev/null; then
-  have_lib=1
-else
-  echo "cgroup-thaw-all: WARNING cannot source cgroup-lib.sh (CGLIB='${CGLIB:-}'); falling back to inline freeze-target globs" >&2
+if ! . "${CGLIB:-$(dirname "$0")/cgroup-lib.sh}" 2>/dev/null; then
+  echo "cgroup-thaw-all: FATAL cannot source cgroup-lib.sh (CGLIB='${CGLIB:-}')" >&2
+  echo "cgroup-thaw-all: recover by hand: printf 0 > <scope>/cgroup.freeze for each frozen mj-*.scope / transient leaf under worktrees.slice" >&2
+  exit 1
 fi
 
 uid="$(id -u)"
@@ -50,14 +53,9 @@ for slice in "$pool"/worktrees-*.slice; do
   # Both freeze targets: the monorepo-jobs build daemons, and the `transient`
   # leaves the governor migrates agent-spawned test/browser workers into. The
   # agents slice contributes only its transient leaf -- `fleet` is never frozen,
-  # so it is deliberately not swept here either. The shape pair itself lives in
-  # kx_freeze_targets (cgroup-lib.sh); the inline pair below is only the
-  # fail-open fallback for a run that could not source the lib.
-  if [ "$have_lib" = 1 ]; then
-    kx_freeze_targets "$slice"
-  else
-    FREEZE_TARGETS=( "$slice"/mj-*.scope "$slice"/transient )
-  fi
+  # so it is deliberately not swept here either. The shape pair lives in
+  # kx_freeze_targets (cgroup-lib.sh), the governor's own definition.
+  kx_freeze_targets "$slice"
   for scope in "${FREEZE_TARGETS[@]}"; do
     [ -e "$scope/cgroup.freeze" ] || continue
     checked=$((checked + 1))

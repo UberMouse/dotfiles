@@ -40,10 +40,13 @@ let
   # ----- 1Password-backed CLI wrappers --------------------------------------
   #
   # Each tool that fetches its token through op-cached is declared ONCE here;
-  # the wrapper script, its runtime deps, and its per-caller shim all derive
-  # from this attrset, so adding a tool is one entry and the shim roster
-  # cannot drift from the consumer list (an eval-time assert below pins the
-  # explicit roster the lint tripwire reads).
+  # the wrapper script, its runtime deps, its per-caller shim AND its
+  # home.packages entry (mapAttrsToList at the bottom) all derive from this
+  # attrset, so adding a tool is one entry and the shim roster cannot drift
+  # from the consumer list (an eval-time assert below pins the explicit
+  # roster the lint tripwire reads). The install list used to be
+  # hand-maintained beside this claim -- a third opTools entry would have
+  # built and installed nothing, silently.
   opTools = {
     bk = {
       pkg = pkgs.buildkite-cli;
@@ -175,6 +178,23 @@ let
     runtimeInputs = [ pkgs.systemd ];
     bashOptions = [ "nounset" ];
   };
+
+  # Let-bound because claude-agents INVOKES it (command -v guard + call): as
+  # an undeclared sibling it resolved by ambient PATH, and "not on PATH"
+  # degraded to silently skipping the reattach -- whose documented worst case
+  # is the escaped fleet as the largest memory consumer during a stall.
+  claude-agents-reattach = sh {
+    name = "claude-agents-reattach";
+    runtimeInputs = [
+      pkgs.systemd
+      pkgs.procps
+      pkgs.gnugrep
+      pkgs.coreutils
+      kx-proc-find
+      kx-pool-loaded
+    ];
+    bashOptions = [ "nounset" ];
+  };
 in
 # The lint tripwire reads the opShimCallers literal above; this assert binds
 # it to the generator's consumer list so the two can never disagree.
@@ -244,8 +264,6 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
         "nounset"
       ];
     })
-    (opWrapper "bk" opTools.bk)
-    (opWrapper "sentry" opTools.sentry)
     (sh {
       name = "autosquash-branch";
       runtimeInputs = [ pkgs.git ];
@@ -280,10 +298,18 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
     kx-pool-loaded
     # The documented recovery command for a wedged build ("run cgroup-thaw-all
     # by hand") -- the script is a service asset under scripts/, so this is
-    # its on-PATH face.
+    # its on-PATH face. CGLIB is pinned to the shared lib's store path here
+    # for the same reason the governor unit pins it in Environment=: this
+    # copy lands in a store bin dir with no cgroup-lib.sh sibling, so the
+    # dirname fallback never resolves and the hand-run recovery command was
+    # warning and using a divergent inline glob copy on every invocation.
     (sh {
       name = "cgroup-thaw-all";
-      text = builtins.readFile ../scripts/cgroup-thaw-all.sh;
+      text = ''
+        CGLIB="''${CGLIB:-${../scripts/cgroup-lib.sh}}"
+        export CGLIB
+      ''
+      + builtins.readFile ../scripts/cgroup-thaw-all.sh;
       runtimeInputs = [ pkgs.coreutils ];
       bashOptions = [ "nounset" ];
     })
@@ -294,6 +320,7 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
         pkgs.coreutils
         kx-proc-find
         kx-pool-loaded
+        claude-agents-reattach
         unstable-pkgs.claude-code
       ];
       bashOptions = [ "nounset" ];
@@ -310,18 +337,7 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       ];
       bashOptions = [ "nounset" ];
     })
-    (sh {
-      name = "claude-agents-reattach";
-      runtimeInputs = [
-        pkgs.systemd
-        pkgs.procps
-        pkgs.gnugrep
-        pkgs.coreutils
-        kx-proc-find
-        kx-pool-loaded
-      ];
-      bashOptions = [ "nounset" ];
-    })
+    claude-agents-reattach
 
     op-cached-daemon
     op-cached
@@ -330,5 +346,6 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       i3status = "${pkgs.i3status}/bin/i3status";
       i3statusConf = "${i3statusConf}";
     })
-  ];
+  ]
+  ++ lib.mapAttrsToList opWrapper opTools;
 }
