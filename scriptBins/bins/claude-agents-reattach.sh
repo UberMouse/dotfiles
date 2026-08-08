@@ -9,7 +9,10 @@
 # daemon was first spawned. If the daemon was born outside the pool -- a bare
 # `claude agents` / `claude -p` from an ordinary tmux shell, before the
 # claude-agents wrapper ever ran -- the whole fleet lives in that shell's
-# tmux-spawn scope and escapes the 4G worktrees-agents.slice budget. Forensics
+# tmux-spawn scope and escapes the pool's budget entirely (worktrees-agents.slice
+# deliberately carries no cap of its own -- the pool's MemoryHigh in
+# memory-policy.nix is the fleet's budget, and an escaped fleet answers to
+# neither). Forensics
 # have caught exactly this: the escaped fleet as the single largest memory
 # consumer on the box during a stall. The claude-agents wrapper only cgroups the
 # throwaway TUI, never the daemon, so a wrapped relaunch does NOT rescue an

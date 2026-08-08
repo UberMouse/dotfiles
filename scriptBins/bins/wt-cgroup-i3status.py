@@ -19,9 +19,11 @@
 #            the two numbers is the burst window, and watching it stay small is
 #            watching the ramp work.
 #
-#   ⚙ 2.4/12c 4.2G/16G 3wt   worktrees.slice: cores/cap, mem/cap, active
+#   ⚙ 2.4/12c 4.2G/18G 3wt   worktrees.slice: cores/cap, mem/cap, active
 #            buckets, coloured by peak CPU-or-mem utilisation; "⚙ idle" dimmed
-#            when the pool is absent or below the CPU floor.
+#            when the pool is absent or below the CPU floor. (Sample caps are
+#            illustrative -- the real ones are read live from the cgroup;
+#            policy numbers live in memory-policy.nix.)
 #
 # CPU% is the pool's usage_usec delta averaged over each i3status tick (~5s),
 # so no extra sampling sleep is needed. cgtop convention: 100% == one core.

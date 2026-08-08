@@ -7,7 +7,8 @@
 # MCP servers, agent-spawned monorepo-jobs build daemons. So we run the UI in the
 # ordinary user session (uncapped) and, once the daemon exists, hand it to
 # claude-agents-reattach, which re-homes the daemon + its whole worker subtree
-# into worktrees-agents.slice (governed by the pool's 16G high). Because a cgroup
+# into worktrees-agents.slice (governed by the pool's MemoryHigh -- the number
+# lives in memory-policy.nix, never here). Because a cgroup
 # is inherited at fork, every worker the now-in-pool daemon forks from then on
 # lands in the pool automatically -- so this single launch-time reattach is
 # enough, with no continuous sweeper. See claude-agents-reattach.sh for the full
@@ -73,7 +74,7 @@ fi
 # it actually OUTRANKS the fleet for CPU rather than merely escaping the pool's
 # memory cap. Exemption is not priority: measured 2026-07-31, this TUI stalled on
 # cpu.pressure full avg10 6% with memory and io pressure both flat 0.00, because
-# a bare tmux-spawn scope gives cpu.weight=100 -- par with the twelve-core pool.
+# a bare tmux-spawn scope gives cpu.weight=100 -- par with the whole build pool.
 # See the slice definition in cgroups.nix for the full reasoning.
 #
 # --scope (not --service) is required: it runs the command in the CALLER's

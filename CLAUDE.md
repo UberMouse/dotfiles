@@ -21,9 +21,9 @@ This is also aliased as `hms` in the shell.
 ## Verify Before You Switch
 
 - `nix flake check` — builds the full system closure, runs the lints
-  (statix, deadnix, shellcheck on `scripts/`, ruff + py_compile,
-  forbidden-pattern and docs-liveness tripwires), fails on an unformatted
-  tree, and runs the deterministic test suites in the sandbox.
+  (statix, deadnix, shellcheck on `scripts/` AND `scriptBins/bins/`, ruff +
+  py_compile, forbidden-pattern and docs-liveness tripwires), fails on an
+  unformatted tree, and runs the deterministic test suites in the sandbox.
 - `nix build .#<name>` — builds one custom package in isolation (seconds);
   the way to verify a version/hash bump.
 - `scripts/run-tests.sh` — every `scripts/*.test.py` suite (discovered by
@@ -52,6 +52,11 @@ composing, in module order:
 - `work-vm.nix` — VMware hardware (filesystems, LUKS). Machine-unique; listed
   in the flake's module list so `nixos.nix` stays host-generic.
 - `nixos.nix` — system-level config (services, users, i3, OOM protection)
+- the kolide-launcher input's NixOS module — a root-privileged endpoint agent,
+  enabled in `nixos.nix`. It tracks upstream `main` and moves with the weekly
+  `nix flake update` like every other input; it deliberately has NO UPDATE.md
+  (retired 3547f73 — not worth the weekly question). Don't re-flag the
+  missing spec in audits.
 - `home.nix` — user-level config via home-manager (packages, programs)
 - `cgroups.nix` — the worktrees resource-pool subsystem (pool slices + the
   governor/monitor/semaphore-controller services); imported by `home.nix`
@@ -78,7 +83,11 @@ bump is one `curl` of the upstream manifest.json).
 `flake.nix` pins; don't restate the number in prose, it rots) and
 `nixpkgs-unstable`. Passed via `specialArgs`/`extraSpecialArgs`. (A third,
 unstable-small, existed solely for fresher claude-code; the manifest override
-made channel freshness irrelevant and it was dropped.)
+made channel freshness irrelevant and it was dropped.) The channel RULE:
+ordinary packages come from stable; unstable exists as the overlay's base —
+only the custom/overlaid packages (and playwright, whose flake follows
+stable) resolve from it. A non-custom package taken from unstable needs a
+recorded reason, or it's drift.
 
 ## Docs Layout
 
@@ -92,8 +101,11 @@ made channel freshness irrelevant and it was dropped.)
 - `README.md` — bootstrap + day-to-day pointer; it deliberately defers to
   this file so the two never drift.
 
-The lint's docs-liveness check walks CLAUDE.md, `docs/**/*.md`, and the
-skills, so a path named anywhere in them must exist.
+The lint's docs-liveness check walks CLAUDE.md, README.md, `docs/**/*.md`,
+the skills, and the COMMENT LINES of every `.nix` file (Nix comments narrate
+the tree layout — `packages/default.nix` named a deleted directory for three
+commits before they joined the corpus), so a path named anywhere in them
+must exist.
 
 ## Conventions
 
@@ -120,13 +132,17 @@ skills, so a path named anywhere in them must exist.
 - Agent runtime state (`.pi/`-shaped directories, `.claude/` scratch) is
   ignored via the tracked `.gitignore`, never `.git/info/exclude` (machine-
   local, doesn't survive a clone — that gap once let 144 MiB of agent
-  transcripts get committed by an automated `git add -A`)
+  transcripts get committed by an automated `git add -A`). `.claude/` is an
+  ALLOWLIST (`.claude/*` + `!` entries for the tracked paths): the harness
+  grows new state files on its own schedule, so tracking a new `.claude/`
+  path means adding a `!` line, and everything unlisted is ignored by
+  default
 
 ## Build Semaphore
 
 Heavy jobs (typechecks, jest shards, browser launches) wrap themselves in
 `kx-build-slot`. A controller (`scripts/build-semaphore-controller.py`) publishes
-16 slot files in `$XDG_RUNTIME_DIR/kx-build-sem/` and throttles capacity by
+`max_slots` slot files in `$XDG_RUNTIME_DIR/kx-build-sem/` and throttles capacity by
 **holding slots itself** — it withholds from the top, clients scan from the
 bottom, and the two never contend. Every tool in this subsystem honours a
 `KX_POOL` env override for the pool cgroup path (tests point it at a synthetic

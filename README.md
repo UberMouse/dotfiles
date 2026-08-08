@@ -28,10 +28,13 @@ file deliberately stays a pointer so the two never drift.
 2. Clone over HTTPS: `git clone https://github.com/UberMouse/dotfiles.git ~/dotfiles`.
    (Not SSH — the 1Password SSH agent doesn't exist until step 4. Switch the
    remote to `git@github.com:UberMouse/dotfiles.git` after signing in.)
-3. Regenerate hardware config and replace `work-vm.nix` with it — the
-   filesystem/LUKS UUIDs in that file are machine-unique
-   (`nixos-generate-config --show-hardware-config`). Keep the module name so
-   `flake.nix` still finds it.
+3. Regenerate hardware config and MERGE its `fileSystems`/`boot.initrd`
+   stanzas into `work-vm.nix` — the filesystem/LUKS UUIDs there are
+   machine-unique (`nixos-generate-config --show-hardware-config`). Do NOT
+   replace the whole file: it also carries hand-written host identity the
+   generator does not emit (hostname, the GRUB/cryptodisk bootloader config,
+   the host-facts-derived boot device) — a wholesale replace produces an
+   unbootable, unnamed system.
 4. Out-of-repo dependencies to restore by hand:
    - `/root/nixos/openvpn/staff.conf` — the staff VPN config
      (`services.openvpn` points at it; not tracked, contains key material).
