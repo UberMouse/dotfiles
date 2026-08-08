@@ -382,6 +382,16 @@ class Config:
     max_resident: int | None = None
 
     def __post_init__(self):
+        # KX_SEM_CEIL arrives DERIVED from Nix (cgroups.nix computes it from
+        # memory-policy.nix's poolHighG), and nothing on that side can see
+        # max_slots -- so ceil <= max_slots is enforceable only here. Left
+        # unclamped, a poolHighG >= 27 derivation would send every consumer
+        # of ceil (max_resident below, decide()'s dynamic bounds) reasoning
+        # past the last slot file that actually exists. Clamp, and remember
+        # the raw value so main() can log the mismatch at START.
+        if self.ceil > self.max_slots:
+            object.__setattr__(self, "ceil_clamped_from", self.ceil)
+            object.__setattr__(self, "ceil", self.max_slots)
         if self.max_resident is None:
             object.__setattr__(
                 self, "max_resident", max(1, self.max_slots - self.ceil)
@@ -398,7 +408,14 @@ class Config:
             env = f"KX_SEM_{f.name.upper()}"
             if env not in os.environ:
                 continue
-            conv = _float if f.type == "float" else _int
+            # f.type is the evaluated annotation OBJECT here (this module has
+            # no `from __future__ import annotations`), so it must be compared
+            # against the class, not the string "float" -- the string form
+            # silently routed every float tunable through _int, which treats
+            # any fractional value ("0.2", "90.5") as garbage and returns the
+            # default. Both forms accepted so a future annotations-import
+            # cannot quietly reintroduce the inverse bug.
+            conv = _float if f.type in (float, "float") else _int
             kwargs[f.name] = conv(env, f.default)
         return cls(**kwargs)
 
@@ -1168,6 +1185,15 @@ def main(sleep=time.sleep):
         f"and psi10<={CFG.grant_psi}% max_resident={CFG.max_resident} "
         f"start={state.allowed}"
     )
+    # Set by __post_init__ when the Nix-derived KX_SEM_CEIL outgrew the slot
+    # pool (not a declared field -- absent means no clamp happened).
+    clamped_from = getattr(CFG, "ceil_clamped_from", None)
+    if clamped_from is not None:
+        log(
+            f"CEIL-CLAMPED|KX_SEM_CEIL={clamped_from} exceeds max_slots="
+            f"{CFG.max_slots}; running with ceil={CFG.ceil} - the pool has "
+            f"outgrown the slot files, raise max_slots with it"
+        )
 
     prev_effective = None
     last_hold_log = 0.0

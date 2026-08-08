@@ -280,4 +280,51 @@ check("cap release noted",
       d3.notes, ["RESIDENT-CAP released resident=7 cap=8"])
 check("published health restored below cap", d3.published_healthy, True)
 
+# --- Config.from_env -------------------------------------------------------
+# Previously untested, and it carried a live bug for exactly that reason:
+# `f.type == "float"` compared the EVALUATED annotation object against a
+# string (this module has no `from __future__ import annotations`), so every
+# float tunable went through _int and any fractional override -- a perfectly
+# valid "0.2" or "90.5" -- silently fell back to the field default. The
+# machinery suite's own KX_SEM_INTERVAL=0.2 never took effect; it passed only
+# because wait_for polls.
+import os  # noqa: E402
+
+
+def with_env(env, fn):
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
+    try:
+        return fn()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+c = with_env({"KX_SEM_DWELL": "90.5", "KX_SEM_INTERVAL": "0.2"},
+             bsc.Config.from_env)
+check("fractional float override survives (dwell)", c.dwell, 90.5)
+check("fractional float override survives (interval)", c.interval, 0.2)
+
+c = with_env({"KX_SEM_GRANT_EVERY": "0.0"}, bsc.Config.from_env)
+check("float-typed zero stays zero (the machinery suite's time gate)",
+      c.grant_every, 0.0)
+
+c = with_env({"KX_SEM_CEIL": "6", "KX_SEM_DWELL": "garbage"},
+             bsc.Config.from_env)
+check("int override still lands", c.ceil, 6)
+check("garbage still degrades to the default (no crash-loop)",
+      c.dwell, 60.0)
+
+# The ceil/max_slots invariant: the Nix side derives KX_SEM_CEIL from
+# poolHighG and cannot see max_slots, so the clamp lives in __post_init__.
+c = with_env({"KX_SEM_CEIL": "99"}, bsc.Config.from_env)
+check("derived ceil clamps to max_slots", c.ceil, 16)
+check("raw value remembered for the START log",
+      getattr(c, "ceil_clamped_from", None), 99)
+check("max_resident derives from the CLAMPED ceil", c.max_resident, 1)
+
 summary()
