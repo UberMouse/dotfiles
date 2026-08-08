@@ -6,7 +6,9 @@
 # for the CPU column of transient scopes) and un-escapes slice names back to
 # readable worktree names.
 #
-# CPU% is cgtop-style: 100% == one core. The pool cap of 1200% == 12 cores.
+# CPU% is cgtop-style: 100% == one core. The pool cap is not a constant of
+# this script: cgroups.nix derives it as (cpuCores - 4) * 100% from
+# host-facts.nix, so read the number off the POOL line, not out of a comment.
 #
 # Process rows are ranked by RSS, which double-counts pages shared between
 # processes (every node fork maps the same binary), so they deliberately do NOT
@@ -24,7 +26,7 @@
 # SIBLING FILE: wt-cgroup-i3status.py reads the same cgroup fields
 # (cpu.stat usage_usec, memory.current/high, cpu.max, pids.current) in
 # Python for the bar. A cgroup-v2 layout change needs both; their humanizers
-# already deliberately differ (numfmt "4.2GiB" here vs "4.2G" there).
+# already deliberately differ (numfmt's iec "4.2GB" here vs "4.2G" there).
 U=$(id -u)
 POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
 SAMPLE="${WT_CG_SAMPLE:-1}"
@@ -39,9 +41,16 @@ case "$SAMPLE" in
 esac
 
 # Both have a fallback because getconf lives in glibc.bin, which is on PATH by
-# inheritance rather than by being a declared runtime input.
-HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
-PAGE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
+# inheritance rather than by being a declared runtime input. The WT_CG_HZ /
+# WT_CG_PAGE overrides are test seams (deterministic tick and page math in
+# scripts/wt-cgroup-status.test.py); production never sets them, and the
+# `${VAR:-$(...)}` shape means getconf is not even forked when they are set.
+HZ="${WT_CG_HZ:-$(getconf CLK_TCK 2>/dev/null || echo 100)}"
+PAGE="${WT_CG_PAGE:-$(getconf PAGESIZE 2>/dev/null || echo 4096)}"
+# /proc root for the per-process parsers below — a test seam so the suite can
+# point them at a fixture tree of hand-written stat/statm/cmdline files.
+# Production never sets it.
+PROC="${WT_CG_PROC:-/proc}"
 
 watch=0; interval=2; top=3; sortkey=mem
 while [ "$#" -gt 0 ]; do
@@ -65,6 +74,15 @@ case "$sortkey" in
 esac
 case "$top" in
   ''|*[!0-9]*) printf 'top count must be a whole number, got: %s\n' "$top" >&2; exit 2 ;;
+esac
+# Same contract as the WT_CG_SAMPLE guard above, for a worse failure mode:
+# `sleep abc` fails instantly, so a junk interval turned the watch loop into
+# a tight clear/snapshot spin instead of a refresh. Whole seconds >= 1 only,
+# rejected up front like SAMPLE.
+case "$interval" in
+  ''|*[!0-9]*|0)
+    printf 'watch interval wants whole seconds >= 1, got: %s\n' "$interval" >&2
+    exit 2 ;;
 esac
 
 pool_missing() {
@@ -124,7 +142,7 @@ collect_pids() {
 # 0, i.e. overall field N lands at index N-3 — utime is 14, stime is 15.
 proc_ticks() {
   local line rest
-  read -r line 2>/dev/null < "/proc/$1/stat" || return 1
+  read -r line 2>/dev/null < "$PROC/$1/stat" || return 1
   rest=${line##*') '}
   # shellcheck disable=SC2206 # deliberate splitting of a known-numeric line
   local -a f=( $rest )
@@ -134,7 +152,7 @@ proc_ticks() {
 # statm field 2 is resident pages.
 proc_rss() {
   local line
-  read -r line 2>/dev/null < "/proc/$1/statm" || return 1
+  read -r line 2>/dev/null < "$PROC/$1/statm" || return 1
   # shellcheck disable=SC2206 # ditto
   local -a f=( $line )
   _RSS=$(( ${f[1]:-0} * PAGE ))
@@ -143,9 +161,9 @@ proc_rss() {
 proc_label() {
   local -a toks=()
   local t out=""
-  mapfile -d '' -t toks 2>/dev/null < "/proc/$1/cmdline"
+  mapfile -d '' -t toks 2>/dev/null < "$PROC/$1/cmdline"
   if [ "${#toks[@]}" -eq 0 ] || [ -z "${toks[0]}" ]; then
-    read -r out 2>/dev/null < "/proc/$1/comm" || out="pid $1"
+    read -r out 2>/dev/null < "$PROC/$1/comm" || out="pid $1"
     _LABEL="[$out]"
     return
   fi
@@ -248,6 +266,17 @@ snapshot() {
     if [ "$top" -gt 0 ]; then print_top "$d"; fi
   done
 }
+
+# TEST SEAM. scripts/wt-cgroup-status.test.py exercises the parsers above
+# against fixture trees: it sources this file (KX_POOL and WT_CG_PROC pointed
+# at a tempdir — the pool must exist, or the startup check above exits the
+# sourcing shell) and calls the functions directly. `return` succeeds only in
+# a sourced context, so a sourced load stops HERE — definitions and argument
+# checks only, no sampling, no loop. Executed normally, the subshell's
+# `return` fails and the script falls through to the dispatch below.
+if (return 0 2>/dev/null); then
+  return 0
+fi
 
 if [ "$watch" = 1 ]; then
   while :; do
