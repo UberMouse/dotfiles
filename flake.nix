@@ -23,9 +23,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     kolide-launcher = {
-      # Runs as a root system service, so track a deliberate rev rather than
-      # whatever `main` is on flake-update day. Bump by replacing the rev.
-      url = "github:kolide/nix-agent/72a0cfaa328f87589a420fa9f2994418f9a46ebd";
+      # Tracks upstream main, moved by the weekly `nix flake update` like
+      # every other input. This was a hand-frozen rev 2026-08-07..08-08 (the
+      # UPDATE.md that owned it retired the same day), which left a
+      # root-privileged system service pinned forever with no mechanism to
+      # ever surface it -- per taylorl, riding the lockfile beats an unowned
+      # freeze.
+      url = "github:kolide/nix-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };

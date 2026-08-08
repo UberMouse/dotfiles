@@ -4,9 +4,9 @@
 # Before this file, `nix build .#newpkg` failing while `nixos-rebuild`
 # worked was the standard forgot-one-site symptom.
 #
-# Dirs WITHOUT a package.nix are naturally skipped: playwright/ and
-# kolide-launcher/ are check-only UPDATE.md specs for flake inputs, and
-# claude-code/ carries only a version manifest (below).
+# Dirs WITHOUT a package.nix are naturally skipped: playwright/ is a
+# check-only UPDATE.md spec for a flake input, and claude-code/ carries only
+# a version manifest (below).
 { lib }:
 let
   hasPkg = n: builtins.pathExists (./. + "/${n}/package.nix");
