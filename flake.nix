@@ -47,6 +47,11 @@
       # overlay is the single declaration site; `packages` below derives its
       # attr list from the same source, so the two cannot drift.
       custom = import ./packages { inherit (nixpkgs) lib; };
+      # Host identity (username) comes from the same single-declaration file
+      # as the hardware facts: the string used to be restated here, in
+      # home.nix and in nixos.nix independently, so a rename half-applied --
+      # this site would still point home-manager at the old user.
+      facts = import ./host-facts.nix;
       overlay =
         final: prev:
         {
@@ -79,7 +84,7 @@
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
 
-            home-manager.users.taylorl = import ./home.nix;
+            home-manager.users.${facts.user} = import ./home.nix;
           }
         ];
       };

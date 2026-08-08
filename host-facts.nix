@@ -13,9 +13,16 @@
 let
   rootDisk = "/dev/sda";
   cpuCores = 16;
+  # Host identity, not hardware -- but the same single-declaration rule for
+  # the same reason: the string used to be restated independently in
+  # flake.nix (home-manager.users), home.nix (username/homeDirectory) and
+  # nixos.nix, so a rename half-applied with nothing failing. The lint
+  # tripwire guards the /home/<user> PATH form; the bare identifier is
+  # guarded only by living here once.
+  user = "taylorl";
 in
 {
-  inherit rootDisk cpuCores;
+  inherit rootDisk cpuCores user;
   # Kernel name ("sda"), for /sys/class/block lookups at runtime.
   rootDiskName = baseNameOf rootDisk;
 }

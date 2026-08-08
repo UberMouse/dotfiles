@@ -6,6 +6,10 @@
   ...
 }:
 
+let
+  # Username from the host-facts single declaration site (see its header).
+  facts = import ./host-facts.nix;
+in
 {
   imports = [
     ./i3.nix
@@ -16,8 +20,8 @@
   ];
   # Home Manager needs a bit of information about you and the
   # paths it should manage.
-  home.username = "taylorl";
-  home.homeDirectory = "/home/taylorl";
+  home.username = facts.user;
+  home.homeDirectory = "/home/${facts.user}";
 
   # This value determines the Home Manager release that your
   # configuration is compatible with. This helps avoid breakage

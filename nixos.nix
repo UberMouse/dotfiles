@@ -1,12 +1,13 @@
 { pkgs, self, ... }:
 
 let
-  user = "taylorl";
   # Desktop/pool memory partition — the numbers and their invariant live in
   # one file shared with cgroups.nix (the pool side).
   memory = import ./memory-policy.nix;
-  # Hardware facts (boot disk, core count) — declared once in host-facts.nix.
+  # Hardware facts (boot disk, core count) and host identity (username) —
+  # declared once in host-facts.nix.
   facts = import ./host-facts.nix;
+  inherit (facts) user;
 
   # OOM victim policy, declared ONCE for both killers. nohang gets these
   # substituted into its conf template (nohang/nohang.conf carries the
