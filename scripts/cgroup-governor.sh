@@ -186,6 +186,7 @@ last_state=""
 last_sweep=0                 # maybe_sweep rate limiter
 last_tick=0                  # loop-lag watchdog
 deleg_warned=0               # ensure_delegation: warn once, not every tick
+desktop_blind=0              # resolve_desktop failure: warn once, not every tick
 reclaim_pid=""               # in-flight backgrounded reclaim, if any
 # Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
 # the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
@@ -613,9 +614,20 @@ reclaim_from() {
   # numfmt is gone from this path too: it was three more forks per reclaim, on a
   # path that by definition only runs when memory is short.
   {
-    printf '%d' "$(( mb * 1024 * 1024 ))" > "$cg/memory.reclaim" 2>/dev/null || true
+    ok=1
+    printf '%d' "$(( mb * 1024 * 1024 ))" > "$cg/memory.reclaim" 2>/dev/null || ok=0
     read -r after < "$cg/memory.current" 2>/dev/null || after=0
-    log "RECLAIM|$(pretty "$name") asked=${mb}M $(( ${before:-0} / 1048576 ))M -> $(( ${after:-0} / 1048576 ))M ($why)"
+    if [ "$ok" = 1 ]; then
+      log "RECLAIM|$(pretty "$name") asked=${mb}M $(( ${before:-0} / 1048576 ))M -> $(( ${after:-0} / 1048576 ))M ($why)"
+    else
+      # The write's exit status cannot tell EAGAIN (partial reclaim -- normal,
+      # the header's "information, not a failure") from EACCES/ENOENT
+      # (delegation lost -- the duty silently doing nothing, the freeze/thaw
+      # siblings' documented FAILED shape). Don't swallow both: name the
+      # refusal and let before/after disambiguate -- a refused write that
+      # also moved no memory is the dangerous one.
+      log "RECLAIM|WRITE-REFUSED $(pretty "$name") asked=${mb}M $(( ${before:-0} / 1048576 ))M -> $(( ${after:-0} / 1048576 ))M ($why) - EAGAIN-partial is normal; unchanged usage means delegation is lost"
+    fi
   } &
   reclaim_pid=$!
 }
@@ -907,7 +919,21 @@ while :; do
   # --- 0b. Keep the agents subtree accounted. Cheap, fork-free, every tick. ---
   ensure_delegation
 
-  resolve_desktop memory.pressure || { sleep "$INTERVAL"; continue; }
+  # A governor that cannot find the desktop measures NOTHING, and last_tick
+  # was just refreshed above -- so without this warn-once its log is
+  # indistinguishable from a healthy quiet machine, the exact "silence reads
+  # as calm" failure the lag watchdog exists to prevent on the other axis.
+  if ! resolve_desktop memory.pressure; then
+    if [ "$desktop_blind" = 0 ]; then
+      log "DESKTOP|UNRESOLVED - no readable session scope; detection is BLIND until one appears"
+      desktop_blind=1
+    fi
+    sleep "$INTERVAL"; continue
+  fi
+  if [ "$desktop_blind" = 1 ]; then
+    log "DESKTOP|resolved ${DESKTOP##*/} - detection resumed"
+    desktop_blind=0
+  fi
   # Three fork-free reads. Previously three awk processes, every five seconds,
   # forever -- and unaffordable at exactly the moment they mattered.
   psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"

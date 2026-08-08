@@ -3,7 +3,7 @@
 # three services that govern them (pressure monitor, governor, semaphore
 # controller). Split out of home.nix 2026-08-07 — this is a self-contained
 # subsystem, and it was 55% of that file. The MEMORY NUMBERS live in
-# ../memory-policy.nix, shared with the desktop floor in nixos.nix.
+# ./memory-policy.nix, shared with the desktop floor in nixos.nix.
 {
   pkgs,
   lib,
@@ -242,7 +242,10 @@ in
     Install.WantedBy = [ "default.target" ];
     Service = {
       # User services get a bare PATH; give the script the tools it shells out to
-      # (incl. claude + git for the auto-diagnosis).
+      # (incl. claude + git for the auto-diagnosis). systemd supplies loginctl:
+      # without it resolve_desktop (cgroup-lib.sh) silently skipped its
+      # authoritative Type=x11/wayland query and ran forever on the
+      # most-pids-wins heuristic that is documented as the fallback.
       Environment = [
         "PATH=${
           lib.makeBinPath [
@@ -252,6 +255,7 @@ in
             pkgs.gnused
             pkgs.util-linux
             pkgs.findutils
+            pkgs.systemd
             pkgs.libnotify
             pkgs.git
             unstable-pkgs.claude-code
@@ -349,6 +353,7 @@ in
     Install.WantedBy = [ "default.target" ];
     Service = {
       Environment = [
+        # systemd for loginctl -- see the monitor's PATH note.
         "PATH=${
           lib.makeBinPath [
             pkgs.coreutils
@@ -357,6 +362,7 @@ in
             pkgs.gnused
             pkgs.util-linux
             pkgs.findutils
+            pkgs.systemd
           ]
         }"
         # Shared shell helpers (see the monitor's CGLIB note).

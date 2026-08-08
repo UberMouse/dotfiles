@@ -251,9 +251,14 @@ echo "$(date -Iseconds)  cgroup-pressure-monitor started (DESKTOP-scoped, thresh
 # governor's loop carries the same one). The rare paths behind the trigger --
 # snapshot and investigate -- fork freely, as they should: they are
 # COOLDOWN-limited and by the time they run, detection has already fired.
+desktop_blind=0
 while :; do
   now=$EPOCHSECONDS
   if resolve_desktop io.pressure; then
+    if [ "$desktop_blind" = 1 ]; then
+      echo "$(date -Iseconds)   DESKTOP resolved (${DESKTOP##*/}); stall detection resumed" >> "$LOG"
+      desktop_blind=0
+    fi
     psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"
     psi_full_avg10 "$DESKTOP/io.pressure";     di="$PSI_TEXT"; di_c="$PSI_CENTI"
     if [ "$dm_c" -ge "$THRESH_CENTI" ] || [ "$di_c" -ge "$THRESH_CENTI" ]; then
@@ -261,6 +266,15 @@ while :; do
         snapshot "DESKTOP stall (${DESKTOP##*/}): mem_full_avg10=${dm}%  io_full_avg10=${di}%  (>= ${THRESH}%)"
         last_snap=$now
       fi
+    fi
+  else
+    # Warn once per blind stretch, in the events log this monitor exists to
+    # keep: an unresolvable desktop used to fall through this branch in total
+    # silence, forever -- a watcher whose silence read as calm. Forks (date)
+    # only on the transition, so the per-tick budget is untouched.
+    if [ "$desktop_blind" = 0 ]; then
+      echo "$(date -Iseconds)   DESKTOP UNRESOLVED; stall detection is BLIND until a session scope appears" >> "$LOG"
+      desktop_blind=1
     fi
   fi
   sleep "$INTERVAL"

@@ -20,4 +20,9 @@ fi
 jq -n --arg url "$1" '{url: $url}' \
   | curl -fsS -m 5 -X POST -H 'Content-Type: application/json' \
       -d @- "http://localhost:$PORT" \
-  || echo "koordinates-dev-protocol: dev listener on :$PORT not responding" >&2
+  || {
+    # The echo alone would make the script exit 0 (echo is the last command
+    # and succeeds), silently un-delivering the promise above.
+    echo "koordinates-dev-protocol: dev listener on :$PORT not responding" >&2
+    exit 1
+  }

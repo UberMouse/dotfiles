@@ -308,7 +308,8 @@ start_keeper() {
   # introduce is not acceptable at the floor.
   keeper_slot="$1"; shift
   keeper_pids="$*"
-  mkdir -p "$SEM_DIR/resident" 2>/dev/null || true
+  mkdir -p "$SEM_DIR/resident" 2>/dev/null \
+    || slotlog "RESIDENT-MARKER-FAILED cannot mkdir $SEM_DIR/resident - controller will count this slot as a build"
   (
     marker="$SEM_DIR/resident/$(basename "$keeper_slot")"
     # BASHPID, not $$: inside a subshell $$ is still the PARENT's pid, which
@@ -321,7 +322,14 @@ start_keeper() {
     # the contract; anything added here that it does not read is drift waiting
     # to happen (label= and daemons= fields once lived here, written by this
     # line and read by nothing).
-    printf 'keeper=%s\n' "$BASHPID" > "$marker" 2>/dev/null || true
+    # The marker is a hint for SLOT RESERVATION, but capacity math depends on
+    # it: an unwritten marker means the controller counts this browser as a
+    # build, the resident floor never rises, and the self-feeding open door
+    # (twelve browsers onto a saturated pool, 2026-08-07) is back. Every
+    # other path here got a breadcrumb in the silent-failure sweep; this one
+    # must not be the exception.
+    printf 'keeper=%s\n' "$BASHPID" > "$marker" 2>/dev/null \
+      || slotlog "RESIDENT-MARKER-FAILED $marker unwritable - floor will not rise for this slot"
     trap 'rm -f "$marker" 2>/dev/null || true; exit 0' TERM INT
     while :; do
       alive=0
