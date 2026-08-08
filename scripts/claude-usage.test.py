@@ -31,17 +31,25 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from testlib import check, summary  # noqa: E402
 
-# The nix-flake-check sandbox carries only a small toolset; the script under
-# test needs more (jq above all). A missing tool is a sandbox-configuration
-# gap, not a code failure, so skip loudly rather than fail confusingly --
-# and on any normal host these all resolve, so the suite really runs.
+# The script under test needs a real toolset (jq above all). In the
+# nix-flake-check sandbox that toolset is DECLARED (script-tests'
+# nativeBuildInputs), so a missing tool there means the declaration rotted
+# and must FAIL -- an `exit 0` here once turned this whole 40-assertion
+# suite (including the token-never-on-argv property) into a green no-op that
+# would have survived any nativeBuildInputs edit. Only a host run
+# (KX_TEST_HOST_ONLY=1, run-tests.sh), where PATH is whatever the machine
+# has, may skip -- loudly, like the machinery suite's host-only section.
 REQUIRED = ["bash", "jq", "grep", "awk", "stat", "date", "mkdir", "dirname",
             "cat", "mv", "rm"]
 missing = [t for t in REQUIRED if shutil.which(t) is None]
 if missing:
-    print(f"SKIP claude-usage.test.py: required tool(s) not on PATH: "
-          f"{', '.join(missing)} -- add to the flake-check sandbox toolset")
-    sys.exit(0)
+    msg = (f"claude-usage.test.py: required tool(s) not on PATH: "
+           f"{', '.join(missing)}")
+    if os.environ.get("KX_TEST_HOST_ONLY"):
+        print(f"SKIP {msg}")
+        sys.exit(0)
+    sys.exit(f"FAIL {msg} -- the script-tests sandbox declares these; "
+             f"fix flake.nix's nativeBuildInputs")
 
 SCRIPT = HERE.parent / "scriptBins" / "bins" / "claude-usage.sh"
 # Resolve bash at runtime rather than via `#!/usr/bin/env bash`: the nix build

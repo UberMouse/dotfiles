@@ -137,6 +137,10 @@
                   # claude-usage.test.py runs the real script, which parses
                   # its fixtures with jq.
                   jq
+                  # op-cached.test.py compiles and exercises the REAL
+                  # op-1p-shim.c (the only C in the repo); a missing cc in
+                  # this sandbox must fail the suite, not skip it.
+                  gcc
                 ];
               }
               ''

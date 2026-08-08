@@ -12,6 +12,13 @@ the stub this suite puts on PATH -- the same fixtures therefore pass in both
 worlds. Every fetch a fake shim serves is appended to one log; the hit/miss
 assertions count those lines, keyed by uri.
 
+Sections 8-9 are the exception to the bash fakes: they compile the REAL
+op-1p-shim.c and run the binary itself (still against fake `op` scripts, so
+1Password stays untouched -- section 9's comment explains the extra guard
+that keeps it that way). The C shim EXECS the op path it is handed, which
+the fakes never do, so those sections are the only test of the double-fork /
+setsid / close(status_fd) reasoning the fd-leak wedge fix lives in.
+
 Each section gets its own XDG_RUNTIME_DIR so daemons cannot cross-talk, and
 everything spawned is reaped on the way out. Daemons are found by EXACT
 argv-field match on the substituted daemon path, never by pattern (the
@@ -21,6 +28,7 @@ pgrep -f self-match trap).
 import base64
 import json
 import os
+import select
 import shutil
 import signal
 import socket
@@ -95,6 +103,10 @@ DAEMON = BASE / "op-cached-daemon"
 build("op-cached-daemon", {"opShimPaths": json.dumps(SHIMS)}, DAEMON)
 CLIENT = BASE / "op-cached"
 build("op-cached", {"opCachedDaemon": str(DAEMON)}, CLIENT)
+
+# Built -- and patched -- only inside section 9, but named here so the finally
+# block can reap any daemon it spawned even if that section died halfway.
+DAEMON_REAL = BASE / "op-cached-daemon-realshim"
 
 # A "daemon" that strands its client: creates sock_path as a plain FILE (so
 # start_daemon's existence poll passes) that connect() then refuses. Drives
@@ -192,9 +204,11 @@ def alive(pid):
         return False
 
 
-def find_daemons():
-    """Pids whose argv contains the substituted daemon path as an EXACT
-    field (list membership, so no pattern can self-match)."""
+def find_daemons(exe=None):
+    """Pids whose argv contains the substituted daemon path (DAEMON unless
+    another build is named) as an EXACT field (list membership, so no
+    pattern can self-match)."""
+    target = str(exe or DAEMON).encode()
     pids = []
     for p in Path("/proc").iterdir():
         if not p.name.isdigit():
@@ -203,18 +217,18 @@ def find_daemons():
             argv = (p / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
-        if str(DAEMON).encode() in argv:
+        if target in argv:
             pids.append(int(p.name))
     return pids
 
 
-def kill_daemons():
-    for pid in find_daemons():
+def kill_daemons(exe=None):
+    for pid in find_daemons(exe):
         try:
             os.kill(pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-    wait_for(lambda: not find_daemons(), timeout=5)
+    wait_for(lambda: not find_daemons(exe), timeout=5)
 
 
 def spawn(script, rd, extra=None):
@@ -422,6 +436,237 @@ try:
     check("failed retry names the problem",
           "unreachable after restart" in p.stderr, True)
     check("failed retry raises no traceback", "Traceback" in p.stderr, False)
+
+    # 8. THE REAL C SHIM. Compiled here with the exact flags
+    #    scriptBins/default.nix uses, then run as a binary: the double-fork /
+    #    setsid / close(status_fd) / waitpid reasoning lives only in that C
+    #    and, before this section, its only gate was compiling warning-free.
+    #
+    #    Toolchain contract: the flake-check sandbox GUARANTEES cc
+    #    (script-tests ships gcc for exactly this section), so a missing
+    #    compiler there is a broken sandbox and must FAIL -- a silent green
+    #    would un-test the only C in the repo. Only a host run that exports
+    #    KX_TEST_HOST_ONLY=1 may SKIP, mirroring the controller suite's
+    #    host-only section.
+    CC = shutil.which("cc")
+    SHIM_BIN = BASE / "op-1p-real"
+    shim_ready = False
+    if CC is None:
+        if os.environ.get("KX_TEST_HOST_ONLY"):
+            print("SKIP  real op-1p-shim sections 8-9: no `cc` on this host "
+                  "(KX_TEST_HOST_ONLY=1)")
+        else:
+            check("cc on PATH (the script-tests sandbox ships gcc; a missing "
+                  "toolchain must not read as green)", CC is not None, True)
+    else:
+        cp = subprocess.run(
+            [CC, "-Wall", "-Wextra", "-Werror", "-O2", "-o", str(SHIM_BIN),
+             str(BINS / "op-1p-shim.c")],
+            capture_output=True, text=True, timeout=120)
+        check("shim compiles under the default.nix flags "
+              "(-Wall -Wextra -Werror -O2)", (cp.returncode, cp.stderr), (0, ""))
+        shim_ready = cp.returncode == 0
+
+    if shim_ready:
+        def spawn_shim(*cmd):
+            """Popen the real shim exactly the way the daemon's run_via_shim
+            does: status pipe write end made inheritable and handed over via
+            pass_fds, our copy closed immediately after. Returns (proc, read
+            end of the status pipe)."""
+            r, w = os.pipe()
+            os.set_inheritable(w, True)
+            p = subprocess.Popen(
+                [str(SHIM_BIN), str(w), *cmd],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                pass_fds=(w,))
+            SPAWNED.append(p)
+            os.close(w)
+            return p, r
+
+        def read_status(r):
+            """(status line, eof): the shim's "%d\\n" handshake, then whether
+            the pipe reached EOF -- i.e. every copy of the write end is
+            CLOSED. This is the fd-leak property: a leaked copy (the
+            2026-08-04 `op daemon` wedge) surfaces as eof=False after a
+            bounded select, never as a hung test."""
+            buf = b""
+            while b"\n" not in buf:
+                if not select.select([r], [], [], 15)[0]:
+                    return buf, False
+                chunk = os.read(r, 64)
+                if not chunk:
+                    return buf, False
+                buf += chunk
+            if not select.select([r], [], [], 10)[0]:
+                return buf, False
+            return buf, os.read(r, 4096) == b""
+
+        def shim_run(*cmd):
+            """One whole exchange: (direct child rc, status line, eof, output)."""
+            p, r = spawn_shim(*cmd)
+            rc = p.wait(timeout=15)
+            line, eof = read_status(r)
+            os.close(r)
+            out = p.stdout.read()
+            p.stdout.close()
+            return rc, line, eof, out
+
+        def intfile(path):
+            """Wait for path to hold a complete "<int>\\n" line, return it."""
+            wait_for(lambda: path.read_text().endswith("\n"), timeout=10)
+            return int(path.read_text())
+
+        # A fake op built to hold the shim mid-flight: it records its own
+        # pid/ppid (the topology the C's comments promise), forks a detached
+        # lingerer standing in for the singleton `op daemon` (the process
+        # that inherited the leaked status fd in the 2026-08-04 wedge), then
+        # blocks until the test says go -- so the direct child's exit is
+        # observably BEFORE op's, and the process tree can be probed while
+        # both halves are alive.
+        AD = BASE / "shim-live"
+        AD.mkdir()
+        OP_LIVE = BASE / "fake-op-live"
+        OP_LIVE.write_text(
+            f"#!{BASH}\n"
+            f"echo $$ > {AD}/op.pid\n"
+            f"echo $PPID > {AD}/op.ppid\n"
+            f"sleep 60 >/dev/null 2>&1 &\n"
+            f"echo $! > {AD}/bg.pid\n"
+            "echo live-op-output\n"
+            f"while [ ! -e {AD}/go ]; do sleep 0.05; done\n"
+        )
+        OP_LIVE.chmod(0o755)
+
+        proc, r = spawn_shim(str(OP_LIVE))
+        check("double fork: direct child exits 0 promptly",
+              proc.wait(timeout=10), 0)
+        op_pid = intfile(AD / "op.pid")
+        check("double fork: op still running after its spawner was reaped",
+              alive(op_pid), True)
+        check("status pipe stays silent until op exits",
+              select.select([r], [], [], 0)[0], [])
+
+        op_ppid = intfile(AD / "op.ppid")
+        check("caller is NOT op's parent",
+              op_ppid in (os.getpid(), proc.pid), False)
+        argv = Path(f"/proc/{op_ppid}/cmdline").read_bytes().split(b"\0")
+        check("op's parent is the shim intermediate (exact argv[0] match)",
+              argv[0], str(SHIM_BIN).encode())
+        # /proc/<pid>/stat after the comm field: state ppid pgrp session ...
+        mid = Path(f"/proc/{op_ppid}/stat").read_text().rsplit(")", 1)[1].split()
+        check("intermediate leads its own session (setsid)",
+              int(mid[3]), op_ppid)
+        check("intermediate leads its own process group", int(mid[2]), op_ppid)
+        check("intermediate reparented away from the caller (roots its tree)",
+              int(mid[1]) in (os.getpid(), proc.pid), False)
+
+        (AD / "go").touch()
+        line, eof = read_status(r)
+        check("status fd carries op's exit status", line, b"0\n")
+        bg_pid = intfile(AD / "bg.pid")
+        check("fake `op daemon` stand-in still alive at the EOF check",
+              alive(bg_pid), True)
+        check("status fd CLOSED after the handshake (EOF, not a wedge)",
+              eof, True)
+        os.close(r)
+        out = proc.stdout.read()
+        proc.stdout.close()
+        check("op's stdout passes through the shim untouched",
+              out, b"live-op-output\n")
+        os.kill(bg_pid, signal.SIGKILL)
+
+        # Exit-status propagation, all three legs write_status can take.
+        OP_FAIL7 = BASE / "fake-op-fail7"
+        OP_FAIL7.write_text(f"#!{BASH}\necho 'real op: exploded'\nexit 7\n")
+        OP_FAIL7.chmod(0o755)
+        rc, line, eof, out = shim_run(str(OP_FAIL7))
+        check("failing op: direct child still exits 0", rc, 0)
+        check("failing op: status fd carries the 7", line, b"7\n")
+        check("failing op: status fd closed", eof, True)
+        check("failing op: output passes through", out, b"real op: exploded\n")
+
+        OP_SIG = BASE / "fake-op-sigkill"
+        OP_SIG.write_text(f"#!{BASH}\nkill -KILL $$\n")
+        OP_SIG.chmod(0o755)
+        rc, line, eof, out = shim_run(str(OP_SIG))
+        check("signalled op reported as 128+signo", line, b"137\n")
+        check("signalled op: status fd closed", eof, True)
+
+        rc, line, eof, out = shim_run(str(BASE / "no-such-op"))
+        check("unexecvpable op reported as 127", line, b"127\n")
+        check("unexecvpable op: status fd closed", eof, True)
+        check("exec failure named on stderr", b"op-1p-shim: exec" in out, True)
+
+        # Usage errors happen before any fork, so they come back through the
+        # direct child's own exit status.
+        p = subprocess.run([str(SHIM_BIN)], capture_output=True, timeout=15)
+        check("no-arg usage refused with 2", p.returncode, 2)
+        check("usage error printed", b"usage:" in p.stderr, True)
+        p = subprocess.run([str(SHIM_BIN), "nope", str(OP_FAIL7)],
+                          capture_output=True, timeout=15)
+        check("non-numeric STATUS_FD refused with 2", p.returncode, 2)
+        check("bad STATUS_FD named", b"bad STATUS_FD" in p.stderr, True)
+
+        # 9. THE DAEMON'S REAL SPAWN PATH over the real shim: @opShimPaths@
+        #    points at the compiled binary instead of the bash fakes, and one
+        #    happy-path fetch runs client -> daemon -> C shim -> fake op.
+        #
+        #    resolve_op() is patched OUT of the fixture copy. On a dev box it
+        #    resolves the real setgid /run/wrappers/bin/op, and unlike the
+        #    bash fakes -- which ignore the op argv -- the real shim EXECS
+        #    whatever it is handed. The anchor check below is therefore a
+        #    safety property, not tidiness: if the daemon source drifts and
+        #    the patch stops landing, this section must FAIL rather than run
+        #    the real `op` and raise a real 1Password prompt.
+        RSDIR = BASE / "shim-daemon"
+        RSDIR.mkdir()
+        OP_REAL = BASE / "fake-op-daemon"
+        OP_REAL.write_text(
+            f"#!{BASH}\n"
+            "# argv: read --account ACCT URI (the real `op read` shape the\n"
+            "# daemon builds). Leaves a detached lingerer behind, like the\n"
+            "# singleton `op daemon` the real one forks on a fresh boot.\n"
+            f"printf 'realshim\\t%s\\t%s\\n' \"$3\" \"$4\" >> {OP_LOG}\n"
+            f"sleep 60 >/dev/null 2>&1 &\n"
+            f"echo $! > {RSDIR}/bg.pid\n"
+            "printf 'realsecret:%s' \"$4\"\n"
+        )
+        OP_REAL.chmod(0o755)
+
+        build("op-cached-daemon",
+              {"opShimPaths": json.dumps(
+                  {c: str(SHIM_BIN) for c in ("unknown", "bk")})},
+              DAEMON_REAL)
+        text = DAEMON_REAL.read_text()
+        anchor = "OP, OP_ERROR = resolve_op()"
+        check("daemon source still has the op-resolution line the fixture "
+              "patches (drift here would run the real op)",
+              anchor in text, True)
+        if anchor in text:
+            DAEMON_REAL.write_text(
+                text.replace(anchor, f'OP, OP_ERROR = "{OP_REAL}", None'))
+            CLIENT_REAL = BASE / "op-cached-realshim"
+            build("op-cached", {"opCachedDaemon": str(DAEMON_REAL)}, CLIENT_REAL)
+
+            RD = runtime("realshim")
+            uri = "op://vault/realshim/x"
+            p = client(RD, "--as", "bk", "--account", "acct", uri,
+                       exe=CLIENT_REAL)
+            check("real-shim fetch returns the secret end to end",
+                  (p.returncode, p.stdout), (0, f"realsecret:{uri}"))
+            check("real-shim fetch ran the fake op once", fetch_count(uri), 1)
+            # The fetch left the lingerer behind holding every fd it
+            # inherited; a daemon still answering afterwards is the
+            # 2026-08-04 wedge regression test at the integration level.
+            p = client(RD, "--as", "bk", "--account", "acct", uri,
+                       exe=CLIENT_REAL)
+            check("daemon still answers after the leaky fetch",
+                  (p.returncode, p.stdout), (0, f"realsecret:{uri}"))
+            check("second read was served from cache", fetch_count(uri), 1)
+            os.kill(intfile(RSDIR / "bg.pid"), signal.SIGKILL)
+            dpid = int((RD / "op-cached.pid").read_text())
+            os.kill(dpid, signal.SIGTERM)
+            wait_for(lambda: not alive(dpid), timeout=5)
 finally:
     for p in SPAWNED:
         if p.poll() is None:
@@ -431,5 +676,6 @@ finally:
         except Exception:
             pass
     kill_daemons()
+    kill_daemons(DAEMON_REAL)
 
 summary(cleanup_dir=BASE, extra_on_fail=dump_logs)
