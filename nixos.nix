@@ -7,6 +7,54 @@ let
   memory = import ./memory-policy.nix;
   # Hardware facts (boot disk, core count) — declared once in host-facts.nix.
   facts = import ./host-facts.nix;
+
+  # OOM victim policy, declared ONCE for both killers. nohang gets these
+  # substituted into its conf template (nohang/nohang.conf carries the
+  # @...Re@ tokens); earlyoom's --avoid derives from the same lists below.
+  # The two used to hand-mirror each other and had already diverged in both
+  # directions (nohang protected tmux/ssh that earlyoom didn't; earlyoom's
+  # session names sat on a different nohang line). Entries are comm names
+  # (/proc/[pid]/comm, kernel-truncated to 15 chars) as regex fragments —
+  # hence the escaped dot in .claude-wrapped.
+  oomProtect = {
+    # The user's chosen apps: browser, Slack, Claude Code, shells, ssh.
+    apps = [
+      "vivaldi-bin"
+      "slack"
+      "\\.claude-wrapped"
+      "zsh"
+      "bash"
+      "tmux"
+      "tmux: server"
+      "sshd"
+      "ssh"
+    ];
+    # Core graphical session / system plumbing (safety net).
+    session = [
+      "Xorg"
+      "X"
+      "i3"
+      "i3bar"
+      "i3status"
+      "gnome-shell"
+      "gdm"
+      "gdm-session-wor"
+      "dbus-daemon"
+      "dbus-broker"
+      "pipewire"
+      "wireplumber"
+      "systemd"
+      "systemd-logind"
+      "1password"
+    ];
+  };
+  oomRe = names: "^(" + builtins.concatStringsSep "|" names + ")$";
+  nohangConf = pkgs.writeText "nohang.conf" (
+    builtins.replaceStrings
+      [ "@protectAppsRe@" "@protectSessionRe@" ]
+      [ (oomRe oomProtect.apps) (oomRe oomProtect.session) ]
+      (builtins.readFile ./nohang/nohang.conf)
+  );
 in
 {
   # Bootloader identity (device, hostname) lives in work-vm.nix with the rest
@@ -167,23 +215,24 @@ in
   # live in ./nohang/nohang.conf.
   # nohang landed in nixpkgs stable in 26.05, so use the upstream services.nohang
   # module — its systemd hardening is exactly what we mirrored by hand before.
-  # configPath points at our tuned config; the package defaults to the stable
-  # pkgs.nohang (0.3.0), which matches the config keys in ./nohang/nohang.conf.
+  # configPath points at our tuned config, generated from the template by
+  # substituting the shared oomProtect lists (see the let-binding above); the
+  # package defaults to the stable pkgs.nohang (0.3.0), which matches the
+  # config keys in ./nohang/nohang.conf.
   services.nohang = {
     enable = true;
-    configPath = ./nohang/nohang.conf;
+    configPath = nohangConf;
   };
 
   # Backstop: earlyoom. Free-memory based (no PSI), so it can only fire once
   # memory AND swap are both nearly gone. With nohang doing the early work this
   # is now a pure last resort (e.g. if nohang itself ever dies).
   #
-  # avoid/prefer is a PARTIAL mirror of nohang.conf, and cannot be a full one:
-  # earlyoom matches comm only (15 chars), while nohang matches full cmdlines --
-  # so nohang's build-tool prefer list (heft/eslint/vitest/esbuild/tsc) is
-  # unmirrorable here (they are all comm `node`), and its cmdline-matched
-  # protections collapse to the comm names below. When editing victim rules,
-  # edit BOTH this list and nohang.conf's @BADNESS_ADJ sections together.
+  # --avoid DERIVES from the shared oomProtect lists (one declaration, both
+  # killers). --prefer stays a PARTIAL hand-mirror of nohang's prefer rules
+  # and cannot be more: earlyoom matches comm only (15 chars), while nohang
+  # matches full cmdlines -- the build-tool prefer set
+  # (heft/eslint/vitest/esbuild/tsc) is unmirrorable here (all comm `node`).
   services.earlyoom = {
     enable = true;
     freeMemThreshold = 3;
@@ -191,7 +240,7 @@ in
     enableNotifications = true;
     extraArgs = [
       "--avoid"
-      "^(vivaldi-bin|slack|\\.claude-wrapped|zsh|bash|tmux: server|sshd|Xorg|i3|gnome-shell|systemd)$"
+      (oomRe (oomProtect.apps ++ oomProtect.session))
       "--prefer"
       "^(jest-worker|headless_shell|chrome)$"
     ];
