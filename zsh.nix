@@ -53,7 +53,7 @@
 
     oh-my-zsh = {
       # No `custom` dir: the prompt comes entirely from powerlevel10k below.
-      # The old zsh-customizations/ theme dir was pre-p10k residue, deleted
+      # The old zsh-customizations theme dir was pre-p10k residue, deleted
       # 2026-08-07 (it also hardcoded the checkout path, $HOME/dotfiles).
       enable = true;
       plugins = [

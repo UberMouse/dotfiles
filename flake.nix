@@ -172,6 +172,13 @@
                 statix check .
                 deadnix --fail .
                 shellcheck scripts/*.sh
+                # The bins are fragments (no shebang -- writeShellApplication
+                # adds its own), hence -s bash. They ARE shellchecked at
+                # derivation build too, but that only happens inside
+                # checks.toplevel, which pre-push deliberately excludes -- so
+                # without this line a shellcheck error there passed pre-push
+                # and first surfaced mid nixos-rebuild switch.
+                shellcheck -s bash scriptBins/bins/*.sh
                 # ruff is the semantic layer py_compile lacks (undefined
                 # names, unused imports); config in ruff.toml. --no-cache:
                 # ${self} is a read-only store path.

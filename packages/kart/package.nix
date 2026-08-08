@@ -27,7 +27,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   # Hand-maintained against the release bundle's NEEDED entries; a kart
   # release that gains a new .so lands here (autoPatchelf fails the build and
-  # names it). openssl_3 is an explicit major pin: the bundle's cryptography/
+  # names it). openssl_3 is an explicit major pin: the bundled cryptography
   # libgit2 are built against OpenSSL 3's ABI. stdenv.cc.cc.lib already
   # provides libgcc_s.so.1 alongside libstdc++ (a separate libgcc entry here
   # was redundant).

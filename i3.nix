@@ -11,7 +11,7 @@ in
 
       # Bottom bar: run our wrapper as status_command so a worktrees.slice
       # cgroup-usage block renders to the left of the normal i3status output.
-      # This mirrors the home-manager default bar verbatim (mode/position/colors/
+      # This mirrors the home-manager default bar verbatim (mode, position, colors,
       # tray) and only swaps statusCommand -- specifying `bars` at all resets the
       # whole block to per-field defaults, so the styling must be restated here.
       bars = [

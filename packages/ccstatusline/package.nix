@@ -40,7 +40,7 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     homepage = "https://github.com/sirmalloc/ccstatusline";
     changelog = "https://github.com/sirmalloc/ccstatusline/releases";
     license = lib.licenses.mit;
-    # Prebuilt dist/ JS from the npm registry, not built from source here.
+    # Prebuilt dist JS from the npm registry, not built from source here.
     sourceProvenance = with lib.sourceTypes; [ binaryBytecode ];
     platforms = lib.platforms.all;
     mainProgram = "ccstatusline";

@@ -85,16 +85,40 @@ for p in scripts_and_bins():
 #    the check that would have caught packages/tabby-terminal/package.nix
 #    living on in the docs long after the package was deleted. Covers the
 #    skills too — they instruct future runs, and a skill pointing at a moved
-#    file fails exactly like stale CLAUDE.md prose.
+#    file fails exactly like stale CLAUDE.md prose. Also covers the COMMENT
+#    LINES of every .nix file: Nix comments narrate the tree layout
+#    (packages/default.nix's comments ARE the directory-scheme doc), and the
+#    first confirmed casualty of them being outside this corpus was that
+#    file naming packages/kolide-launcher/ three commits after the directory
+#    was deleted.
 doc_files = [Path("CLAUDE.md"), Path("README.md")]
 doc_files += sorted(Path("docs").rglob("*.md"))
 doc_files += sorted(Path(".claude/skills").rglob("SKILL.md"))
+doc_files += sorted(
+    p for p in Path(".").rglob("*.nix") if ".git" not in p.parts
+)
+
+
+def doc_text(doc):
+    """Whole file for markdown; comment lines only for .nix (code tokens like
+    interpolations aren't path claims — prose is)."""
+    text = doc.read_text()
+    if doc.suffix != ".nix":
+        return text
+    return "\n".join(
+        ln for ln in text.splitlines() if ln.lstrip().startswith("#")
+    )
+
+
 for doc in doc_files:
-    for tok in re.findall(r"[\w~./-]+", doc.read_text()):
+    for tok in re.findall(r"[\w~./-]+", doc_text(doc)):
         if tok.startswith(("~", "/")) or "/" not in tok:
             continue
+        # ./x and ../x are checkout-relative to the FILE that says them
+        # (Nix path-literal convention); bare tokens are repo-root-relative.
+        base = doc.parent if tok.startswith(".") else Path(".")
         if re.search(r"\.(nix|sh|py|md|json|conf|zsh)$", tok):
-            if not os.path.exists(tok):
+            if not os.path.exists(base / tok):
                 failures.append(f"{doc} names a missing path: {tok}")
             continue
         # Bare directory references ("zsh-customizations/") used to slip
@@ -113,7 +137,7 @@ for doc in doc_files:
         ):
             rel = tok.rstrip("/")
             if not (
-                os.path.isdir(rel)
+                os.path.isdir(base / rel)
                 or list(Path(".").glob(f"*/{rel}"))
                 or list(Path(".").glob(f"*/*/{rel}"))
             ):
@@ -234,6 +258,33 @@ for p in scripts_and_bins():
             failures.append(
                 f"{p}:{i + 1}: kx-build-sem path hardcoded without a KX_BUILD_SEM_DIR override nearby"
             )
+
+# 12. Hook wiring. With no CI (deliberate — see CLAUDE.md), pre-push and
+#     `nix flake check` are the only gates, so the hook's git wiring is
+#     load-bearing — and a machine-local `.git/config` core.hooksPath
+#     silently overrides the global include (found dead exactly that way
+#     2026-08-07; until now the remedy was a command a human had to remember
+#     to run). Only checkable where a .git exists: run-tests.sh runs this on
+#     the host; the flake-check sandbox has no repo and skips it.
+if Path(".git").exists():
+    import subprocess
+
+    r = subprocess.run(
+        ["git", "config", "--show-scope", "--get-all", "core.hooksPath"],
+        capture_output=True, text=True,
+    )
+    rows = [ln for ln in r.stdout.splitlines() if ln.strip()]
+    for ln in rows:
+        if ln.startswith("local"):
+            failures.append(
+                f".git/config: local core.hooksPath override ({ln.split(None, 1)[-1]}) "
+                f"is shadowing the pre-push hook; `git config --unset core.hooksPath`"
+            )
+    if not any("dotfiles/hooks" in ln for ln in rows if not ln.startswith("local")):
+        failures.append(
+            "core.hooksPath: no global/include row points at dotfiles/hooks — "
+            "the pre-push gate is not armed (see home.nix's includeIf block)"
+        )
 
 if failures:
     print("\n".join(failures))
