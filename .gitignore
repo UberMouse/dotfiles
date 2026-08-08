@@ -14,15 +14,15 @@ __pycache__/
 # .git/info/exclude) deliberately: exclude files are machine-local and don't
 # survive a clone, and unignored runtime state is exactly how 144 MiB of agent
 # transcripts (.pi/) once got committed by an automated `git add -A`.
+#
+# .claude/ is an ALLOWLIST, not a denylist: the harness grows new state files
+# on its own schedule (a denylist here was reactive -- twelve entries, each
+# added only after its file had already appeared), so everything is ignored
+# except the paths this repo deliberately tracks. Adding a new tracked path
+# means adding a `!` line, which is the failure mode we can live with: an
+# unignored new file gets committed noise-free never; an unlisted tracked
+# file fails loudly at `git add`.
 .pi/
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
-.claude/scheduled_tasks.json
-.claude/routines/.state/
-.claude/worktrees/
-.claude/checkpoints/
-.claude/mailbox/
-.claude/agent-registry.json
-.claude/agent-memory-local
-.claude/first-run
-.claude/assistant-daemon-state.json
+.claude/*
+!.claude/settings.json
+!.claude/skills/
