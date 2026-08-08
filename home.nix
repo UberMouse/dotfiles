@@ -76,6 +76,11 @@ in
       nix-prefetch-git
       git-machete
       git-absorb
+      # From stable like the rest of the ordinary tools: gh was the one
+      # non-custom, non-playwright package still taken from unstable, for no
+      # recorded reason -- moving it makes the channel rule statable (see
+      # CLAUDE.md's channels note).
+      gh
       python313
       pdal
       python313Packages.pip
@@ -104,7 +109,6 @@ in
       libreoffice
     ]
     ++ [
-      unstable-pkgs.gh
       unstable-pkgs.kart
       unstable-pkgs.playwright-test
       unstable-pkgs.playwright-cli
