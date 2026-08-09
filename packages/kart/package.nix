@@ -11,11 +11,11 @@
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "kart";
-  version = "0.15.2";
+  version = "0.17.1";
 
   src = fetchurl {
     url = "https://github.com/koordinates/kart/releases/download/v${finalAttrs.version}/Kart-${finalAttrs.version}-linux-x86_64.tar.gz";
-    hash = "sha256-oUoeD1fLyCI1x9UhxnT5/3iya+myA0M6AB+yDCM6V+o=";
+    hash = "sha256-MV3sx8SdftpzAK3CbAsNFlTozvvZmMk8QiMkSNj90HY=";
   };
 
   sourceRoot = "Kart-${finalAttrs.version}-linux-x86_64";
