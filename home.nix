@@ -251,12 +251,15 @@ in
       global = {
         monitor = 0;
         follow = "mouse";
-        # dunst 1.7+ geometry syntax. The old `geometry`/`shrink`/
-        # `notification_height` keys were removed upstream and silently
-        # ignored for years -- the size/position below is what
-        # "300x50-20+20" always meant.
+        # dunst 1.7+ geometry syntax, replacing the removed `geometry`/
+        # `shrink`/`notification_height` keys. NOTE: `height` is deliberately
+        # absent. The 50 in the old "300x50-20+20" was a notification COUNT
+        # (legacy geometry's second field), not pixels, and since dunst 1.12 a
+        # scalar `height` is a CONSTANT box height rather than a maximum -- so
+        # transcribing it pinned every notification to 50px and clipped the
+        # body away, leaving title-only popups. dunst's own default is
+        # (0, 300), i.e. grow to fit; leave it unset and let it apply.
         width = 300;
-        height = 50;
         origin = "top-right";
         offset = "20x20";
         indicate_hidden = true;
