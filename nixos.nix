@@ -345,8 +345,32 @@ in
     Defaults env_keep += "SSH_AUTH_SOCK"
   '';
 
+  # === Store reclamation ===================================================
+  # Three mechanisms, and they are not interchangeable. On 2026-08-10 the
+  # root filesystem hit 100% with `nix.gc.automatic` working perfectly: the
+  # 03:15 timer had run that morning and freed 244.9 MiB, and its next run
+  # was 13 hours away.
+  #
+  # min-free/max-free is the only one of the three that reacts to FREE SPACE
+  # rather than to the clock. When a build drops free space below min-free
+  # the daemon garbage-collects mid-build until max-free is free, then
+  # carries on -- so a build burst between two timer firings can no longer
+  # run the disk to zero. This is the safety net; nix.gc below is tidiness.
+  # It can only ever free what is unreachable, so it is not a substitute for
+  # keeping GC roots under control (see wt-reap).
+  nix.settings.min-free = 20 * 1024 * 1024 * 1024;
+  nix.settings.max-free = 80 * 1024 * 1024 * 1024;
+
   nix.gc.automatic = true;
-  nix.gc.options = "--delete-older-than 21d";
+  # 7d, not the previous 21d: with near-daily rebuilds plus the weekly-update
+  # cadence, three weeks of generations is a great deal of closure held
+  # against a rollback that would never reach back that far.
+  nix.gc.options = "--delete-older-than 7d";
+
+  # Periodic hardlink deduplication. NOT `auto-optimise-store`, which dedups
+  # inline and taxes every single build and substitution; this does the same
+  # work on its own timer, off the critical path.
+  nix.optimise.automatic = true;
 
   # 8003: claude-voice-assistant wrapper daemon (Windows host orchestrator -> VM).
   networking.firewall.allowedTCPPorts = [ 8003 ];

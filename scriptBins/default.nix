@@ -179,6 +179,20 @@ let
     bashOptions = [ "nounset" ];
   };
 
+  # Let-bound because the weekly timer below runs it: a systemd unit has no
+  # ambient PATH worth trusting, and ExecStart wants the derivation's own
+  # store path (the same reason the governor and semaphore units in
+  # cgroups.nix pin their scripts rather than naming them).
+  wt-reap = sh {
+    name = "wt-reap";
+    runtimeInputs = [
+      pkgs.git
+      pkgs.gawk
+      pkgs.coreutils
+    ];
+    bashOptions = [ "nounset" ];
+  };
+
   # Let-bound because claude-agents INVOKES it (command -v guard + call): as
   # an undeclared sibling it resolved by ambient PATH, and "not on PATH"
   # degraded to silently skipping the reattach -- whose documented worst case
@@ -280,6 +294,13 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       ];
       bashOptions = [ "nounset" ];
     })
+    # Worktree lifecycle, not the cgroup pool -- the pool budgets what a
+    # worktree may consume while it runs, this reclaims what it left behind.
+    # Deliberately NOT errexit: every git probe it makes (rev-list against a
+    # detached HEAD, `worktree remove` on a corrupt admin dir) is allowed to
+    # fail into a decision, and the writeShellApplication errexit default
+    # would turn each of those into a fatal instead.
+    wt-reap
     # Client half of the build admission semaphore (controller lives in
     # cgroups.nix). Deliberately NOT errexit: the slot scan relies on
     # `flock -n` failing on a busy slot, which is the normal path, not an
@@ -348,4 +369,41 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
     })
   ]
   ++ lib.mapAttrsToList opWrapper opTools;
+
+  # Weekly worktree reap. The disk did not fill because anything failed; it
+  # filled because nothing was ever reclaiming worktrees, and the ~2.5G each
+  # accumulates faster than it is noticed (79 of them inside 6 days). A
+  # calendar is the right trigger BECAUSE the reaper's own criterion is
+  # already conservative -- it removes only worktrees that add no commits and
+  # carry no changes, so firing it often costs nothing and firing it rarely
+  # is how this happened.
+  #
+  # --yes, not an interactive prompt: nobody is at a terminal. --no-size is
+  # implied by the non-dry-run path (the du pass over ~80 node_modules trees
+  # dominates the runtime and its output would go to the journal unread).
+  systemd.user.services.wt-reap = {
+    Unit.Description = "Reap agent worktrees holding no commits and no changes";
+    Service = {
+      Type = "oneshot";
+      ExecStart = "${wt-reap}/bin/wt-reap --yes";
+      # Bulk unlink of ~80 node_modules trees; stay out of the way of
+      # anything interactive.
+      Nice = 19;
+      IOSchedulingClass = "idle";
+    };
+  };
+
+  systemd.user.timers.wt-reap = {
+    Unit.Description = "Weekly worktree reap";
+    Install.WantedBy = [ "timers.target" ];
+    Timer = {
+      OnCalendar = "weekly";
+      # The box is a VM that is not always up at the nominal hour; without
+      # this the timer silently skips the weeks it was off -- which is the
+      # same "looks configured, reclaims nothing" failure this whole change
+      # exists to fix.
+      Persistent = true;
+      RandomizedDelaySec = "1h";
+    };
+  };
 }

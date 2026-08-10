@@ -224,9 +224,57 @@ the state-format and resident-marker contracts), `cgroup-governor.test.py`
 (the extracted tick decision, detection functions AND actuator failure paths
 against a synthetic pool), `kx-proc-find.test.py` (argv-matching semantics
 against real fixture processes), `wt-cgroup-i3status.test.py`,
-`cgroup-thaw-all.test.py`, `op-cached.test.py`, `claude-usage.test.py` — are
-all sandboxed flake checks too. Anything testable without a live control
-loop belongs in a unit test, not a new integration harness.
+`cgroup-thaw-all.test.py`, `op-cached.test.py`, `claude-usage.test.py`,
+`wt-reap.test.py` (real git repos and worktrees, not fixtures — every
+decision the reaper makes is a git question) — are all sandboxed flake
+checks too. Anything testable without a live control loop belongs in a unit
+test, not a new integration harness.
+
+## Disk Reclamation
+
+The disk filled on 2026-08-10 with `nix.gc` working perfectly. Understand
+why before touching any of this, because each piece covers a gap the others
+structurally cannot:
+
+- **`nix.gc` reclaims on a CLOCK, not on free space.** The morning of the
+  fill it had run and freed 244.9 MiB, and its next run was 13 hours away.
+  `nix.settings.min-free`/`max-free` (in `nixos.nix`) is the only mechanism
+  that reacts to the disk actually filling: the daemon GCs mid-build and
+  carries on. Never treat the timer as the safety net.
+- **A GC can only free what is unreachable, and direnv makes almost nothing
+  unreachable.** 457 indirect roots in `/nix/var/nix/gcroots/auto`, all
+  `.direnv/flake-inputs` and `.direnv/flake-profile-*` inside agent
+  worktrees, pinned a 6,575-path closure — essentially the whole live store.
+  Roots are why a GC run "does nothing"; check them (`readlink` the auto
+  dir) before concluding the store is genuinely all live.
+- **No GC of any kind reclaims `node_modules`.** The store was never the
+  bulk of it: ~2.5G of rush/pnpm install per worktree, ~80 worktrees.
+  `wt-reap` (`scriptBins/bins/wt-reap.sh`) is the only thing that touches
+  that, and removing the worktree is also what makes its direnv roots
+  dangle — the store reclamation is a second-order effect of the same act.
+
+Traps when working on the reaper:
+
+- **Age is not a staleness signal here.** All 79 worktrees at the time of
+  the fill had been touched inside 6 days. A `--delete-older-than`-shaped
+  rule fires on nothing precisely when it is most needed; the criterion is
+  git state (adds no commits to the integration ref, no modifications, no
+  untracked files). Deletions do NOT veto — the ` D` removal of the
+  `.quint/` tree is the normal dirty state, not work.
+- **A missing integration ref must skip the repo, never reap it.** An
+  unresolved base makes `$base..HEAD` empty for every branch, which scores
+  the entire repo as disposable. This is the worst bug the script can have
+  and it is asserted against.
+- **A nested worktree is not dirt.** Worktrees nest three deep and every
+  level registers against the same repo, so to `git status` in the parent a
+  child is just `?? .claude/` — forever. `tree_is_clean` excludes registered
+  descendants by pathspec; without it no worktree that ever hosted a child
+  is reapable again. kawaka gitignores `.claude/worktrees`, which HIDES this
+  — don't let that mask a regression.
+- **A reapable parent holding a kept child must be kept.** Removing the
+  parent unlinks the child's files regardless of what git thinks it is
+  doing, and git reports nothing because from its side the child was merely
+  pruned.
 
 ## Updating Custom Packages
 

@@ -141,6 +141,10 @@
                   # op-1p-shim.c (the only C in the repo); a missing cc in
                   # this sandbox must fail the suite, not skip it.
                   gcc
+                  # wt-reap.test.py builds real repos and worktrees: every
+                  # decision the reaper makes is a git question, so fixtures
+                  # would only assert a belief about git's output.
+                  git
                 ];
               }
               ''
