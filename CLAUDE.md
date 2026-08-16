@@ -168,6 +168,25 @@ Traps when diagnosing it:
   readers treat age beyond `KX_SEM_STALE_AFTER` (~3 ticks) as controller-dead
   — the client fails open instead of trusting a stale `healthy=0`, and
   i3status shows "off" instead of a dead controller rendering as "idle".
+- **`allowed` is enforced by the CLIENT; withholding alone never worked.** The
+  controller's only lever is locking slots as jobs return them, and it loses
+  that race — it retries once per 5 s control interval while waiting clients
+  retry every 0.2–0.5 s (`jitter_sleep`), roughly 14:1 against it, and under a
+  queue of short jobs the handoffs never stop. Measured 2026-08-17: memory
+  pressure took `allowed` 8 → 1 in seventeen seconds and `effective` sat at 8
+  for ELEVEN MINUTES, admitting 87 typechecks eight-wide against a cap of one,
+  draining only once the burst ended — the clamp took hold exactly when it was
+  no longer needed. So `kx-build-slot` reads the published cap itself
+  (`sem_over_cap`) and refuses a free slot at capacity. Consequences when
+  reading this subsystem: a gap between `allowed` and `effective` is normal and
+  is NOT evidence the cap is being ignored; and the test is `occupied >=
+  allowed`, never `occupied - resident >= allowed` — `decide()` shifts every
+  bound by the resident count so `allowed - resident` means "how many builds
+  may run", which makes the resident terms cancel. Subtracting on one side only
+  spends the resident quota twice and grants an extra build per open browser.
+  A residual overshoot of up to one publish interval remains by construction
+  (`occupied` is a published value); closing it needs the controller to win its
+  reclaim race with a blocking acquire, not another client-side change.
 - **Some slots are held by browsers, not builds.** `playwright-cli open` gates
   the launch *and* keeps the slot for as long as the browser lives, via a keeper
   subshell forked (never exec'd — fork shares the open file description and so

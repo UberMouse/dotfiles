@@ -222,6 +222,55 @@ sem_healthy() {
   return 0
 }
 
+sem_over_cap() {
+  # TRUE (0) when the published cap says no further BUILD may start.
+  #
+  # WHY THE CLIENT ENFORCES THE CAP AT ALL, when the controller already
+  # withholds slots. Withholding is a RACE the controller loses. It can only
+  # lock a slot in the instant between one job releasing and the next taking
+  # it, and it retries once per 5 s control interval while waiting clients
+  # retry every 0.2-0.5 s (jitter_sleep) -- roughly 14:1 against it on every
+  # handoff. With a queue of short jobs the handoffs never stop, so it
+  # reclaims almost nothing and `allowed` decays into advice.
+  #
+  # Measured 2026-08-17: memory pressure took allowed 8 -> 1 in seventeen
+  # seconds, and `effective` then sat at 8 for ELEVEN MINUTES while 87
+  # typechecks were admitted and the load average reached 48. It drained only
+  # when the burst ended -- i.e. the clamp took hold exactly when it was no
+  # longer needed. Reading the published decision here makes it binding no
+  # matter who wins the race for the file.
+  #
+  # THE TEST IS `occupied >= allowed`, NOT `occupied - resident >= allowed`.
+  # `allowed` caps TOTAL occupancy; decide() shifts the floor, soft floor and
+  # ceiling by the live resident count precisely so that `allowed - resident`
+  # keeps the meaning "how many BUILDS may run" (the RESIDENT TENANTS note in
+  # build-semaphore-controller.py). Builds running is `occupied - resident`,
+  # so the build test is `occupied - resident >= allowed - resident` and the
+  # resident terms cancel. Subtracting `resident` from one side only would
+  # spend the resident quota twice and grant an extra build per open browser.
+  #
+  # FAIL-OPEN on everything unexpected, exactly as sem_healthy does: a missing
+  # file, a stale one (dead controller), a short line from an older controller
+  # mid-deploy, or a non-numeric field must never be able to stall a build.
+  # Only a well-formed, fresh, in-force cap blocks. Fields are 1 ("allowed")
+  # and 4 ("occupied") of the FIELDS tuple; the state-format test asserts both
+  # indices against the controller's own tuple.
+  local now mtime a o
+  mtime=$(stat -c %Y "$SEM_DIR/allowed" 2>/dev/null) || return 1
+  now=$(date +%s)
+  if [ $((now - mtime)) -gt "${KX_SEM_STALE_AFTER:-15}" ]; then
+    return 1
+  fi
+  read -r a _ _ o _ < "$SEM_DIR/allowed" 2>/dev/null || return 1
+  # Checked SEPARATELY, never as one concatenated string: "$a$o" with an empty
+  # `o` still reads as all-digits and the arithmetic below would then error on
+  # an empty operand under `set -u`.
+  case "$a" in '' | *[!0-9]*) return 1 ;; esac
+  case "$o" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$o" -ge "$a" ] && return 0
+  return 1
+}
+
 probe_pids() {
   # STRICT: only lines that are ENTIRELY digits count. A probe that prints a
   # diagnostic, a header, or a path containing digits must not be able to
@@ -386,6 +435,45 @@ while :; do
     waited=$((now - start))
     if [ "$waited" -ge "$timeout_s" ]; then
       slotlog "TIMEOUT $label waited ${waited}s unhealthy, running UNGATED"
+      exec "$@"
+    fi
+    jitter_sleep
+    continue
+  fi
+
+  # THE PUBLISHED CAP IS BINDING FOR BUILDS. Checked once per pass rather than
+  # per slot: it is a property of the semaphore as a whole, not of any one
+  # file, and one short read per 0.2-0.5 s poll costs nothing next to the work
+  # being gated.
+  #
+  # RESIDENTS ARE EXEMPT, and that is not an oversight. A job about to become
+  # resident is not yet counted in `resident`, so the bounds have not shifted
+  # for it yet -- holding it to the BUILD cap would make browsers queue behind
+  # builds whenever the cap is saturated, which is a throughput change well
+  # beyond this fix. Residents are already gated, by the load test above and
+  # by the resident cap folded into the same `healthy` bit; that is the
+  # designed mechanism and it stays the only one.
+  #
+  # RESIDUAL RACE, stated rather than hidden: `occupied` is a published value
+  # up to one control interval old, so a burst of clients can read the same
+  # pre-admission count and overshoot the cap by up to that interval's worth
+  # of starts. The flock still bounds them by `effective`, and the next
+  # publish shuts the gate, so the overshoot is bounded and self-correcting
+  # rather than the sustained 8-wide run this replaces. Making it exact needs
+  # the controller to win its reclaim race (a blocking acquire on withheld
+  # slots), which is a change to the controller, not to this client.
+  if [ -z "$resident_mode" ] && sem_over_cap; then
+    # An explicit flag for the same reason the resident wait uses one: the
+    # poll is sub-second, so `waited` stays 0 for the first few passes and an
+    # unguarded line would land three times before the clock ticks over.
+    if [ -z "${cap_wait_logged:-}" ]; then
+      cap_wait_logged=1
+      slotlog "CAP-WAIT $label at published cap, waiting"
+    fi
+    now=$(date +%s)
+    waited=$((now - start))
+    if [ "$waited" -ge "$timeout_s" ]; then
+      slotlog "TIMEOUT $label waited ${waited}s at cap, running UNGATED"
       exec "$@"
     fi
     jitter_sleep

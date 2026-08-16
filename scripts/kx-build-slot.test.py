@@ -344,5 +344,101 @@ p = subprocess.run(["bash", "-o", "nounset", str(SLOT), "--help"],
 check("unwrapped --help anchors identically",
       p.stdout.splitlines()[:1], [HDR])
 
+# 10. THE BUILD CAP. The controller's own enforcement is withholding slots, and
+#     it LOSES that race: it retries once per 5 s control interval while
+#     clients retry every 0.2-0.5 s, so under a queue of short jobs it reclaims
+#     almost nothing. Measured 2026-08-17: allowed fell 8 -> 1 in seventeen
+#     seconds and `effective` stayed at 8 for eleven minutes, admitting 87
+#     typechecks at eight-wide against a cap of one. The client therefore
+#     honours the published cap directly. Asserted from the log, like every
+#     other gate here.
+slots()
+publish(allowed=1, occupied=1, healthy=1)
+log_text()
+p, _ = run("--label", "capped", "--", "true", timeout="1")
+capped_log = log_text()
+check("build blocked at the published cap", "CAP-WAIT" in capped_log, True)
+check("capped build fails open at timeout",
+      "TIMEOUT" in capped_log and "UNGATED" in capped_log, True)
+check("fail-open still ran the command", p.returncode, 0)
+
+publish(allowed=2, occupied=1, healthy=1)
+log_text()
+p, _ = run("--label", "under", "--", "true", timeout="1")
+check("build admitted below the cap", "CAP-WAIT" in log_text(), False)
+check("admitted build ran", p.returncode, 0)
+
+# The boundary is `>=`, not `>`: occupied == allowed is AT capacity, not one
+# short of it. Off by one here is a permanent extra concurrent build.
+publish(allowed=2, occupied=2, healthy=1)
+log_text()
+run("--label", "boundary", "--", "true", timeout="1")
+check("occupied == allowed is at capacity, not under it",
+      "CAP-WAIT" in log_text(), True)
+
+# THE RESIDENT TERMS CANCEL. `allowed` caps TOTAL occupancy and decide() shifts
+# every bound by the live resident count, so builds running (occupied -
+# resident) against build capacity (allowed - resident) reduces to
+# `occupied >= allowed`. This case is the one that separates it from the
+# plausible-looking `occupied - resident >= allowed`: two builds and one
+# browser against a cap of three is AT capacity, but the wrong form reads
+# 3 - 1 >= 3 as false and admits a third build -- the resident quota spent
+# twice, one extra build per open browser.
+publish(allowed=3, occupied=3, resident=1, healthy=1)
+log_text()
+run("--label", "resmath", "--", "true", timeout="1")
+check("resident terms cancel (occupied>=allowed, not occupied-resident)",
+      "CAP-WAIT" in log_text(), True)
+
+# RESIDENTS ARE EXEMPT. A job about to become resident is not yet counted in
+# `resident`, so the bounds have not shifted for it; holding it to the build
+# cap would queue browsers behind builds whenever the cap is saturated. It is
+# gated by the load test and the resident cap instead, both folded into
+# `healthy`.
+publish(allowed=1, occupied=4, healthy=1)
+log_text()
+p, _ = run("--label", "browser", "--resident", "--", "true", timeout="1")
+check("resident job exempt from the build cap", "CAP-WAIT" in log_text(), False)
+check("exempt resident ran", p.returncode, 0)
+
+# FAIL-OPEN, on the same three conditions sem_healthy fails open on. A cap that
+# can stall a build on a dead controller or a mid-deploy format change is worse
+# than no cap.
+publish(allowed=1, occupied=8, healthy=1)
+_old = time.time() - 1000
+os.utime(SEM / "allowed", (_old, _old))
+log_text()
+p, _ = run("--label", "stalecap", "--", "true", timeout="1")
+check("stale cap line fails open", "CAP-WAIT" in log_text(), False)
+check("stale-cap build ran", p.returncode, 0)
+
+(SEM / "allowed").write_text("notanumber 4 16 8 4 0 0 1\n")
+log_text()
+p, _ = run("--label", "junkcap", "--", "true", timeout="1")
+check("non-numeric cap fails open", "CAP-WAIT" in log_text(), False)
+
+# A short line cannot yield an `occupied` field at all. Empty operands under
+# `set -u` are exactly what the separate per-field digit checks defend.
+(SEM / "allowed").write_text("1 1\n")
+log_text()
+p, _ = run("--label", "shortcap", "--", "true", timeout="1")
+check("short state line fails open on the cap", "CAP-WAIT" in log_text(), False)
+check("short-line build ran", p.returncode, 0)
+
+# THE FIELD INDICES, bound to the controller's own tuple like the healthy gate
+# above. The client reads `allowed` and `occupied` positionally
+# (`read -r a _ _ o _`), so a reordered FIELDS would silently compare the
+# wrong two numbers.
+check("occupied is field 4 (client read -r a _ _ o)", F.index("occupied"), 3)
+
+# End-to-end against the REAL publisher: everything above wrote the line by
+# hand, so only this can catch producer/consumer drift on the cap.
+slots()
+pub_sem.publish(1, 1, occupied=1, target=1, mark=1, resident=0, healthy=True)
+log_text()
+run("--label", "realcap", "--", "true", timeout="1")
+check("real publish() at capacity blocks a build", "CAP-WAIT" in log_text(),
+      True)
+
 reap()
 summary(cleanup_dir=BASE)
