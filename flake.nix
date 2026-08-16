@@ -11,10 +11,11 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     playwright = {
       # Pentusha's fork — pinned to 1.62.1 (auto-update 2026-08-02).
-      # Upstream pietdevries94 is still behind at 1.61.1 (no 1.62 yet); the fork
-      # carries the build fixes (libbacktrace in webkit buildInputs,
-      # postPatch sed guards, missing bundle package-lock.json handling).
-      # Switch back to pietdevries94 once it ships 1.62.
+      # Upstream pietdevries94 has since caught up (also 1.62.1, checked
+      # 2026-08-17), so this pin is no longer forced. Kept on the fork for its
+      # build fixes (libbacktrace in webkit buildInputs, postPatch sed guards,
+      # missing bundle package-lock.json handling) — moving back is untested,
+      # and buys nothing while both sit on the same driver version.
       url = "github:Pentusha/playwright-web-flake/74974b957d10ad871afb721a06688bd09eb0bbda";
       inputs.nixpkgs.follows = "nixpkgs";
     };
