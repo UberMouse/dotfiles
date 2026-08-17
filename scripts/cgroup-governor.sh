@@ -187,6 +187,7 @@ last_sweep=0                 # maybe_sweep rate limiter
 last_tick=0                  # loop-lag watchdog
 deleg_warned=0               # ensure_delegation: warn once, not every tick
 desktop_blind=0              # resolve_desktop failure: warn once, not every tick
+pool_blind=0                 # pool memory.pressure unreadable: warn once, not every tick
 reclaim_pid=""               # in-flight backgrounded reclaim, if any
 # Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
 # the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
@@ -937,7 +938,23 @@ while :; do
   # Three fork-free reads. Previously three awk processes, every five seconds,
   # forever -- and unaffordable at exactly the moment they mattered.
   psi_full_avg10 "$DESKTOP/memory.pressure"; dm="$PSI_TEXT"; dm_c="$PSI_CENTI"
-  psi_full_avg10 "$POOL/memory.pressure";    pm="$PSI_TEXT"; pm_c="$PSI_CENTI"
+  # The pool read is allowed to fail: systemd removes the slice's cgroup while
+  # no worktree job is running, and an absent pool has nothing in it to brake,
+  # so 0% is the right reading. Say it ONCE though -- until 2026-08-17 this
+  # logged a shell redirect error every tick for as long as the pool was empty,
+  # which is the "silence reads as calm" failure inverted: noise reading as
+  # breakage. Not a blind-and-skip like the desktop: there is genuinely nothing
+  # to measure, so the tick proceeds on the desktop signal alone.
+  if psi_full_avg10 "$POOL/memory.pressure"; then
+    if [ "$pool_blind" = 1 ]; then
+      log "POOL|memory.pressure readable again - pool pressure back in the tick"
+      pool_blind=0
+    fi
+  elif [ "$pool_blind" = 0 ]; then
+    log "POOL|no readable memory.pressure at $POOL - treating pool as idle (empty slice?)"
+    pool_blind=1
+  fi
+  pm="$PSI_TEXT"; pm_c="$PSI_CENTI"
   read_meminfo; free_mb="$MEMFREE_MB"; avail="$MEMAVAIL_MB"
 
   # --- 1. Classify. The semantics (and the 07-29 pool-clause history) live on

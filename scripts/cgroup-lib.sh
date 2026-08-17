@@ -64,11 +64,32 @@ kx_freeze_targets() {
 # Sets globals rather than echoing because `x=$(fn)` forks a subshell even
 # for a builtin, and this runs two or three times per tick on the detection
 # path of both consumers.
+#
+# The GLOBALS FAIL OPEN: an unreadable file leaves 0/0, i.e. "no pressure".
+# That is deliberate and correct for the pool -- a pool cgroup that does not
+# exist has no tasks in it, so there is nothing to brake -- and the callers'
+# thresholds are all ">=", so 0 never trips one.
+#
+# The RETURN CODE does not fail open: 1 means "could not read", which the
+# globals alone cannot distinguish from a genuinely calm cgroup. Callers that
+# want to say so out loud (the governor's pool_blind warn-once) need that
+# difference; callers that just want a number can keep ignoring it.
+#
+# Measured 2026-08-17: the pool slice is absent until the first worktree job
+# lands, and for the 16 minutes after boot the governor logged this read
+# failing every 5 s -- 190 lines saying nothing, because the `2>/dev/null`
+# below used to sit AFTER the `< "$1"`. Bash applies redirections left to
+# right, so the input redirect failed and printed its error before stderr had
+# been redirected anywhere. Order matters here; do not swap them back.
 PSI_TEXT=0
 PSI_CENTI=0
 psi_full_avg10() {
   local line tok i f
   PSI_TEXT=0; PSI_CENTI=0
+  # `[ -r ]` is a builtin, so this costs no fork on the detection path (see
+  # THE FORK BUDGET in cgroup-governor.sh). The `2>/dev/null` on the loop is
+  # still load-bearing: the file can vanish between this test and the open.
+  [ -r "$1" ] || return 1
   while read -r line; do
     case "$line" in full\ *) ;; *) continue ;; esac
     for tok in $line; do
@@ -84,7 +105,7 @@ psi_full_avg10() {
           ;;
       esac
     done
-  done < "$1" 2>/dev/null
+  done 2>/dev/null < "$1"
   return 0
 }
 

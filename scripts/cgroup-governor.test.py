@@ -57,6 +57,19 @@ def sh(script, body):
     return p.stdout, p.returncode
 
 
+def sh_stderr(script, body):
+    """As sh(), but returns STDERR -- for asserting that a read failure on the
+    detection path stays silent rather than logging once per tick."""
+    env = dict(os.environ)
+    env["CGGOV_OUTDIR"] = str(OUT)
+    env["CGPM_OUTDIR"] = str(OUT)
+    p = subprocess.run(
+        [BASH, "-c", f'. "{script}" && {body}'],
+        env=env, capture_output=True, text=True,
+    )
+    return p.stderr.strip()
+
+
 # ---------------------------------------------------------------------------
 # 1. list_build_scopes against a synthetic pool.
 #
@@ -165,9 +178,29 @@ for idx, (content, want_text, want_centi) in enumerate(psi_cases):
         check(f"{label} psi[{idx}] avg10={want_text}", out,
               f"{want_text} {want_centi}")
 
+# A missing file keeps failing OPEN in the globals -- an absent pool cgroup has
+# no tasks to brake, and every caller threshold is ">=", so 0 trips nothing.
 out, _ = sh(GOV, f'psi_full_avg10 "{BASE}/no-such-file"; '
                  'printf "%s %s" "$PSI_TEXT" "$PSI_CENTI"')
 check("psi parser fails open (0) on a missing file", out, "0 0")
+
+# ...but the RETURN CODE distinguishes "could not read" from "calm", which the
+# globals cannot. The governor's pool_blind warn-once is built on this.
+_, rc = sh(GOV, f'psi_full_avg10 "{BASE}/no-such-file"')
+check("psi parser returns 1 on a missing file", str(rc), "1")
+_, rc = sh(GOV, f'psi_full_avg10 "{BASE}/psi0"')
+check("psi parser returns 0 on a readable file", str(rc), "0")
+# A `full`-less file is READ successfully -- 0% with rc=0, not a read failure.
+_, rc = sh(GOV, f'psi_full_avg10 "{BASE}/psi{len(psi_cases) - 1}"')
+check("psi parser returns 0 on a readable file with no `full` line", str(rc), "0")
+
+# THE 2026-08-17 REGRESSION GUARD. `2>/dev/null` must sit AFTER the `< "$1"` in
+# source order so bash has already redirected stderr when the input open fails;
+# written the other way it printed a redirect error per tick for as long as the
+# pool slice was absent (190 lines in 16 minutes). Assert on actual stderr, not
+# on the source text, so any future rewrite that reintroduces the noise fails.
+err = sh_stderr(GOV, f'psi_full_avg10 "{BASE}/no-such-file"')
+check("psi parser is silent on a missing file", err, "")
 
 # The threshold the parser's centi values are compared against: "15.00" >= 15
 # must fire and "14.99" >= 15 must not, which the pre-scaled THRESH_CENTI
