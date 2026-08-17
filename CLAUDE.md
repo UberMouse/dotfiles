@@ -214,6 +214,27 @@ Traps when diagnosing it:
   admissions read it, so at cap new browsers queue while builds are untouched.
   Without the cap, enough browsers make every slot keeper-held and every build
   runs ungated after its timeout.
+- **The predictive tighten measures the BUILD BUDGET, not the pool.** The pool
+  holds the agents fleet (`worktrees-agents.slice`, re-homed there by
+  `claude-agents-reattach`) alongside the builds, and the fleet takes no slots
+  — measured 2026-08-17 at 4.4–13.2G of an 18G pool. Tightening `allowed`
+  cannot reclaim a byte of it, so `high_frac` subtracts the fleet from BOTH the
+  usage and the ceiling: it asks "how much of the memory available to builds are
+  builds using". Reading the logs: `build=NN% (fleet N.NG)` is that corrected
+  fraction, `high=NN%` is the old whole-pool one and means
+  `worktrees-agents.slice` was unreadable (`read_untracked_mem` → None, which
+  falls back deliberately — it reads the pool as fuller, so it errs toward
+  tightening early). The LOAD TEST is deliberately NOT corrected this way:
+  its headroom is `high - current`, and subtracting the same bytes from both
+  terms cancels. Free bytes are free bytes no matter who is not using them.
+- **A `bg-spare` in an argv does NOT mean an idle process.** It says how the
+  process started; the claim socket is unlinked once a session takes it, and
+  the spare becomes a live agent session. On 2026-08-17 nine `bg-spare`
+  processes held 2.85G and exactly ONE (95 MB) was unclaimed standby — the
+  rest sat in worktrees with 233–1298s of CPU each. Counting them by argv
+  reads ~2.7G of real work as reclaimable slack. Check `/proc/<pid>/cwd`: a
+  genuine idle spare is still inside the cc-daemon's spare directory, while a
+  claimed one has moved to the worktree it is working in.
 
 Three files have to agree on residency — `kx-build-slot.sh` (keeper + marker),
 `packages/playwright-cli/package.nix` (`--resident-probe`; its build ASSERTS

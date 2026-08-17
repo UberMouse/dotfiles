@@ -483,6 +483,34 @@ def read_pool_mem(path):
         return None
 
 
+# The pool subpath holding tenants that take no slots. Overridable for the
+# same reason every other path here is (KX_SEM_POOL points the tests at a
+# synthetic tree); an empty value disables the correction entirely.
+UNTRACKED_SUBPATH = os.environ.get("KX_SEM_UNTRACKED", "worktrees-agents.slice")
+
+
+def read_untracked_mem(path):
+    """Bytes held inside the pool by tenants that TAKE NO SLOTS, or None.
+
+    Today that is the Claude agents fleet: the cc-daemon, its workers, their
+    MCP servers and the pty hosts, all re-homed into worktrees-agents.slice by
+    claude-agents-reattach. They live in the pool by design -- so their memory
+    is budgeted -- but they never call kx-build-slot, so no amount of tightening
+    `allowed` persuades them to give a byte back.
+
+    None means "no signal", which restores the pre-2026-08-17 behaviour of
+    measuring against the whole pool. That is the safe direction: it reads the
+    pool as FULLER than it is, so the predictive tighten fires earlier, never
+    later.
+    """
+    if not UNTRACKED_SUBPATH:
+        return None
+    try:
+        return int((path / UNTRACKED_SUBPATH / "memory.current").read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
 def locked_inodes():
     """{(major, minor, inode)} for every flock HOLDER on the machine, or None.
 
@@ -809,9 +837,11 @@ State = collections.namedtuple(
 # timestamp; `psi10`/`psi60` are PSI percentages or None for "no signal";
 # `pool_mem` is (current, high) bytes or None; `occupied` is how many slots
 # jobs hold in total (residents included) or None when /proc/locks is
-# unreadable; `resident` is the live-keeper count.
+# unreadable; `resident` is the live-keeper count; `untracked` is bytes held
+# inside the pool by tenants that take no slots (the agents fleet), or None
+# for no signal -- see the BUILD BUDGET note on high_frac in decide().
 Inputs = collections.namedtuple(
-    "Inputs", "now psi10 psi60 pool_mem occupied resident"
+    "Inputs", "now psi10 psi60 pool_mem occupied resident untracked"
 )
 
 # One capacity transition. `tag` is the branch that fired (TIGHTEN / LOOSEN /
@@ -855,11 +885,56 @@ def decide(state, inputs, cfg):
     pool_mem = inputs.pool_mem
     occupied = inputs.occupied
     resident = inputs.resident
+    untracked = inputs.untracked
 
     reasons = []
     notes = []
 
-    high_frac = None if pool_mem is None else pool_mem[0] / pool_mem[1]
+    # THE BUILD BUDGET. high_frac drives the PREDICTIVE tighten, and a control
+    # signal is only worth acting on if the actuator can move it. `allowed`
+    # moves builds and nothing else, so the fraction is measured over the part
+    # of the pool builds actually own: subtract the untracked tenants from BOTH
+    # the usage and the ceiling, and what remains is "how much of the memory
+    # available to builds are builds using".
+    #
+    # Measured 2026-08-17: worktrees-agents.slice/fleet ran 103 processes at
+    # 4.4-11.8G of an 18G pool -- 9 `claude bg-spare` at 2.85G, 11
+    # `bg-pty-host` at 0.95G, 2 FleetView at 0.45G, plus MCP servers and a
+    # postgres. Against the whole pool that reads as 65-90% full and tightens
+    # on every tick; against the build budget it reads as whatever the BUILDS
+    # are doing, which is the only thing tightening can change. The comment on
+    # the tighten branch below has described this limitation since the fleet was
+    # 2-3G and worked around it with soft_floor; the fleet has since grown past
+    # the point where a workaround suffices.
+    #
+    # And it is NOT reclaimable slack, which is the reason a workaround is not
+    # enough. Of those 9 spares exactly ONE (95 MB) was unclaimed standby; the
+    # other 8 had been claimed and were live agent sessions sitting in worktrees
+    # with 233-1298 s of CPU each. A `bg-spare` in the argv says how the process
+    # STARTED, not that it is idle -- the claim socket is unlinked once a
+    # session takes it. Counting spares by argv reads ~3.5G of the user's actual
+    # work as free memory waiting to be reclaimed; there is no such memory.
+    #
+    # The LOAD TEST is deliberately NOT rewritten this way: its `headroom` is
+    # (high - current), and subtracting the same untracked bytes from both terms
+    # cancels exactly. Free bytes are free bytes no matter who is not using
+    # them, so that gate was already right.
+    high_frac = None
+    if pool_mem is not None:
+        pool_cur, pool_high = pool_mem
+        if untracked is None:
+            high_frac = pool_cur / pool_high
+        else:
+            budget = pool_high - untracked
+            # The fleet alone at or over memory.high leaves builds no budget at
+            # all. That is maximally hot, not a divide-by-zero and not (via a
+            # negative denominator) a soothing small number.
+            if budget <= 0:
+                high_frac = 1.0
+            else:
+                # current and untracked are two reads of a live tree, so a
+                # shrinking fleet can make this negative by a hair. Clamp.
+                high_frac = max(0.0, (pool_cur - untracked) / budget)
 
     # RESIDENT TENANTS SHIFT EVERY BOUND, so that `allowed - resident`
     # keeps exactly the meaning `allowed` had before residency existed:
@@ -992,16 +1067,22 @@ def decide(state, inputs, cfg):
         # floor. WHY: memory.current is the WHOLE pool, but this
         # controller only governs the part that takes slots. The agents
         # fleet and its MCP servers sit in the same pool and ask for
-        # nothing -- measured at 2-3 GB of a 9-16 GB pool. (Resident
-        # browsers WERE in that list until 2026-08-07; they now hold a
-        # slot for their lifetime and are counted, which is what
-        # `resident` above is for. The rest of the untracked set is
-        # still real, so this reasoning still stands.) If those tenants
+        # nothing -- 2-3 GB of a 9-16 GB pool when this was written, 4.4-11.8
+        # GB of an 18 GB pool by 2026-08-17. (Resident browsers WERE in that
+        # list until 2026-08-07; they now hold a slot for their lifetime and
+        # are counted, which is what `resident` above is for.) If those tenants
         # alone hold the pool above
         # tighten_high_frac (and the baseline says the pool exceeds 14G,
         # 87.5% of high, 28% of the time) then a high-frac-only rule
         # would floor the semaphore permanently, serialising every build
         # to reclaim memory that was never the builds' to give back.
+        #
+        # high_frac is now measured against the BUILD BUDGET (see its
+        # computation above), which removes most of that error at the source --
+        # the fleet's bytes no longer masquerade as build pressure. This soft
+        # floor STAYS anyway, as the belt to that braces: the correction needs
+        # worktrees-agents.slice to be readable, and read_untracked_mem returns
+        # None (i.e. the old whole-pool fraction) whenever it is not.
         #
         # So high-frac is treated as what it is -- an EARLY WARNING that
         # buys a head start on a burst -- and is allowed to take capacity
@@ -1026,7 +1107,16 @@ def decide(state, inputs, cfg):
         if hot_psi:
             bits.append(f"psi10={psi10:.1f}%")
         if hot_high:
-            bits.append(f"high={high_frac * 100:.0f}%")
+            # Label it "build=" when the figure is a build-budget fraction, so
+            # a log line can never be mistaken for the whole-pool number the
+            # older logs (and every analysis of them) recorded under "high=".
+            if untracked is None:
+                bits.append(f"high={high_frac * 100:.0f}%")
+            else:
+                bits.append(
+                    f"build={high_frac * 100:.0f}% "
+                    f"(fleet {untracked / 2**30:.1f}G)"
+                )
         if not hot_psi:
             bits.append(f"[predictive, soft floor {limit}]")
         # Appended even when the clamp did not move `allowed` (before ==
@@ -1178,6 +1268,7 @@ def main(sleep=time.sleep):
         f"START dir={SEM_DIR} pool={POOL} max={CFG.max_slots} "
         f"ceil={CFG.ceil} floor={CFG.floor} soft_floor={CFG.soft_floor} "
         f"tighten>{CFG.tighten_psi}% high>{CFG.tighten_high_frac * 100:.0f}% "
+        f"untracked={UNTRACKED_SUBPATH or '(off)'} "
         f"loosen<{CFG.loosen_psi}% step-{CFG.step_down}/+{CFG.step_up} "
         f"dwell={CFG.dwell}s interval={CFG.interval}s "
         f"grow+{CFG.grow_step} every>={CFG.grant_every}s free<={CFG.burst} "
@@ -1201,6 +1292,7 @@ def main(sleep=time.sleep):
         while not stop["now"]:
             psi10, psi60 = read_psi(POOL, "full")
             pool_mem = read_pool_mem(POOL)
+            untracked = read_untracked_mem(POOL)
             occupied = sem.occupancy()
             resident = sem.resident()
             now = time.monotonic()
@@ -1209,7 +1301,7 @@ def main(sleep=time.sleep):
                 state,
                 Inputs(
                     now=now, psi10=psi10, psi60=psi60, pool_mem=pool_mem,
-                    occupied=occupied, resident=resident,
+                    occupied=occupied, resident=resident, untracked=untracked,
                 ),
                 CFG,
             )

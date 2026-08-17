@@ -47,14 +47,20 @@ def st(allowed=4, mark=0, last_up=0.0, last_growth=0.0,
 
 
 def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
-        occupied=0, resident=0):
+        occupied=0, resident=0, fleet=None):
     """Inputs with pool sizes in GiB; pool=False means the pool is unreadable.
 
     NOTE the default `now` of 1000.0 against the default clocks of 0.0: dwell
     (60) and spacing (15) both read as long elapsed unless a test pins them.
+
+    `fleet` is GiB held by pool tenants that take no slots, or None for "no
+    signal" -- which is the default precisely so that every pre-existing case
+    below still measures high_frac over the whole pool, as it was written to.
     """
     pool_mem = (int(cur * GIB), int(high * GIB)) if pool else None
-    return bsc.Inputs(now, psi10, psi60, pool_mem, occupied, resident)
+    untracked = None if fleet is None else int(fleet * GIB)
+    return bsc.Inputs(now, psi10, psi60, pool_mem, occupied, resident,
+                      untracked)
 
 
 def tags(d):
@@ -92,6 +98,63 @@ d = bsc.decide(st(allowed=1), inp(cur=15.0, occupied=1), CFG)
 check("tighten never raises", d.state.allowed, 1)
 check("no-op tighten still records its branch", len(d.reasons), 1)
 check("no-op tighten span is flat", span(d.reasons[0]), (1, 1))
+
+# --- The BUILD BUDGET: untracked tenants must not read as build pressure ----
+#
+# The whole point of subtracting the fleet: `allowed` actuates builds only, so
+# the predictive signal has to be about builds only. Same 15/16G pool as the
+# case above -- 93.75% and firmly hot -- but 11G of it is the agents fleet, so
+# builds hold 4G of the 5G available to them. That is 80%, under the 90%
+# threshold, and tightening would reclaim nothing a build owns.
+d = bsc.decide(st(allowed=8), inp(cur=15.0, occupied=8, fleet=11.0), CFG)
+check("fleet memory does not trigger a predictive tighten",
+      d.state.allowed, 8)
+check("...and records no tighten at all", tags(d), [])
+
+# The correction must not blind the signal: with a small fleet, builds really
+# are the ones filling the pool, and the tighten still fires.
+d = bsc.decide(st(allowed=8), inp(cur=15.0, occupied=8, fleet=1.0), CFG)
+check("builds filling the pool still tighten", d.state.allowed, 6)
+check("the log line names the build fraction and the fleet",
+      "build=93%" in d.reasons[0].detail
+      and "fleet 1.0G" in d.reasons[0].detail, True)
+
+# A fleet at or over memory.high leaves builds no budget whatever. That is the
+# hottest possible reading -- NOT a divide-by-zero, and NOT a negative
+# denominator quietly producing a reassuring small fraction.
+d = bsc.decide(st(allowed=8), inp(cur=17.0, high=16.0, occupied=8, fleet=16.0),
+               CFG)
+check("fleet at the ceiling reads as maximally hot", d.state.allowed, 6)
+d = bsc.decide(st(allowed=8), inp(cur=20.0, high=16.0, occupied=8, fleet=18.0),
+               CFG)
+check("fleet over the ceiling reads as maximally hot too", d.state.allowed, 6)
+
+# Sampling skew: memory.current and the fleet's memory.current are two reads of
+# a live tree, so a shrinking fleet can make the difference negative. Clamp to
+# 0 rather than letting a negative fraction wander below the loosen threshold.
+d = bsc.decide(st(allowed=8), inp(cur=5.0, high=16.0, occupied=8, fleet=6.0),
+               CFG)
+check("negative build usage clamps to 0, not a nonsense fraction",
+      tags(d), [])
+
+# No signal (worktrees-agents.slice unreadable) must restore the old whole-pool
+# behaviour exactly -- the safe direction, since it reads the pool as fuller.
+d = bsc.decide(st(allowed=8), inp(cur=15.0, occupied=8, fleet=None), CFG)
+check("no fleet signal falls back to the whole-pool fraction",
+      d.state.allowed, 6)
+check("...and logs the whole-pool label", "high=94%" in d.reasons[0].detail,
+      True)
+
+# THE LOAD TEST IS UNCHANGED BY ANY OF THIS. Subtracting the same bytes from
+# both terms of (high - current) cancels, so free bytes stay free bytes no
+# matter who is not using them. A pool with 1G free fails the 2-job headroom
+# test whether or not the fleet is what filled it.
+big, small = inp(cur=15.0, occupied=1, fleet=11.0), inp(cur=15.0, occupied=1)
+check("headroom verdict ignores the fleet correction",
+      bsc.decide(st(allowed=4), big, CFG).healthy,
+      bsc.decide(st(allowed=4), small, CFG).healthy)
+check("...and that shared verdict is 'not healthy' at 1G free",
+      bsc.decide(st(allowed=4), big, CFG).healthy, False)
 
 # --- Loosening -------------------------------------------------------------
 
