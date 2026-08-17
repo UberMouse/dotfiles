@@ -89,6 +89,13 @@ only the custom/overlaid packages (and playwright, whose flake follows
 stable) resolve from it. A non-custom package taken from unstable needs a
 recorded reason, or it's drift.
 
+**Not part of the flake:** `userscripts/` holds browser userscripts, kept here
+only so a userscript manager can `@updateURL` them from raw.githubusercontent
+(the repo is public, default branch `master` — that URL is the contract, so
+moving or renaming a file there breaks every install silently). No Nix
+imports them and no lint covers them; they are not built or installed by a
+switch. Don't audit them for drift against the system config.
+
 ## Docs Layout
 
 - `CLAUDE.md` — standing rules and traps an agent needs on every task.
