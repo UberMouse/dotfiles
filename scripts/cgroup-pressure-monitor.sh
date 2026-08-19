@@ -127,6 +127,8 @@ CRUCIAL: this monitor triggers on the DESKTOP session scope's OWN PSI (the 'desk
 
 Known dynamics: (a) MEMORY-FREEZE — global reclaim swaps out the desktop despite memory.min; shown by DESKTOP memory.pressure high AND on-disk swap (dm-*/partition, not zram) climbing. (b) IO-CONTENTION — builds saturate the virtual disk faster than io.max throttles, or io.latency fails to prioritise the desktop; shown by DESKTOP io.pressure high. (c) CPU is essentially never the cause (cpu full ~= 0).
 
+TRAP — do NOT recommend reclaiming the agents fleet on argv alone. A process whose command line contains 'bg-spare' is NOT necessarily idle: that string records how it STARTED, and once a session claims the spare it becomes a live agent doing real work while the argv is unchanged. The only way to tell them apart is the process cwd (a genuine idle spare is still inside the cc-daemon spare directory; a claimed one has moved into the worktree it is working in), and the snapshot does NOT contain cwd. Measured 2026-08-19: of 14 bg-spare processes only 7 were truly idle (~571MB); the rest were claimed sessions holding ~2.3GB of real work. So you MUST NOT present the fleet's total RSS as reclaimable slack. If the fleet looks large, say only that its idle fraction is unknown from this snapshot and must be checked with cwd before any reaping.
+
 From the snapshot, produce a SHORT markdown report:
 1. Which resource stalled the DESKTOP (memory / io / cpu) — cite the DESKTOP-section 'full' avg figures, plus pool + system figures for context.
 2. Did the protections hold? Compare desktop vs pool vs system pressure and state whether io.max / io.latency / memory.min did their job (or say the desktop was collateral and which one failed).
