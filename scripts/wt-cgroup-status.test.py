@@ -22,6 +22,10 @@ Covers the spots the audit flagged as silently load-bearing:
   - the WT_CG_SAMPLE integer-division guard, and the new -w interval guard
     that mirrors it (a junk interval used to turn the watch loop into a
     tight clear/snapshot spin);
+  - the SEM line: the published fields land where the controller's FIELDS
+    tuple says, a dead controller reads as STALE rather than as a healthy
+    idle, and the queue count follows the marker LOCK rather than the marker
+    file (a job SIGKILLed mid-wait must not haunt the queue);
   - the `-t 0` exit-status regression (an `&&` would have made a good run
     report failure) and the nounset watch-loop regression: the pool
     legitimately vanishes and returns mid-watch, and the loop must survive
@@ -33,11 +37,13 @@ the two samples straddle a real sleep over static fixtures, so the delta
 arithmetic is pinned at the print_top level with hand-seeded T0 baselines
 instead.
 """
+import fcntl
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -435,5 +441,110 @@ check("watch: no nounset death across the whole session",
       "unbound variable" in err, False)
 check("watch: no /proc or cpu.max redirect errors leaked",
       "No such file" in err, False)
+
+# ---------------------------------------------------------------------------
+# 12. THE SEM LINE. Everything above is the cgroup pool; this is the build
+#     semaphore beside it. Three states have to stay distinguishable -- absent,
+#     STALE (a controller that died and left its last line standing in tmpfs),
+#     and live -- because the whole reason this repo splits "off" from "idle"
+#     in the bar is that a component silently doing nothing otherwise looks
+#     exactly like a healthy quiet one.
+SEM = BASE / "sem"
+
+
+def sem_sh(body, sem_dir=None):
+    return sh(body, extra={"KX_BUILD_SEM_DIR": str(sem_dir or SEM)})
+
+
+def sem_out(sem_dir=None):
+    return sem_sh("sem_line", sem_dir).stdout.strip()
+
+
+p = sem_out(BASE / "no-such-sem")
+check("absent semaphore says so, and names the path it looked at",
+      "not running" in p and "no-such-sem" in p, True)
+
+SEM.mkdir()
+check("semaphore dir with no published state is called out",
+      "no published state" in sem_out(), True)
+
+# FIELD ORDER IS THE CONTROLLER'S, not this script's guess: allowed effective
+# max_slots occupied target mark resident healthy.
+(SEM / "allowed").write_text("4 6 16 2 5 3 1 1\n")
+live = sem_out()
+for label, value in (("allowed", "4/16"), ("effective", "6"),
+                     ("occupied", "2"), ("resident", "1"), ("target", "5"),
+                     ("mark", "3"), ("healthy", "1")):
+    check(f"SEM line reads {label} off the published tuple",
+          f"{label} {value}" in live, True)
+
+# A short line from an older controller mid-deploy: dashes, not an unbound
+# variable death (this runs under nounset, like the wrapper).
+(SEM / "allowed").write_text("4 6 16\n")
+short = sem_sh("sem_line")
+check("short state line degrades to dashes", "resident -" in short.stdout, True)
+check("short state line is not a nounset death",
+      "unbound variable" in short.stderr, False)
+
+# THE QUEUE. A waiting job holds an exclusive flock on waiting/<pid> for as
+# long as it waits; a marker with no lock is a job that was SIGKILLed mid-wait
+# and must count for nothing, or it haunts the queue until some later job
+# inherits its pid.
+(SEM / "allowed").write_text("4 6 16 2 5 3 1 1\n")
+check("no waiting dir -> waiting 0", "waiting 0" in sem_out(), True)
+(SEM / "waiting").mkdir()
+(SEM / "waiting" / "4242").write_text("")
+check("unlocked marker counts for nothing", "waiting 0" in sem_out(), True)
+
+queued = []
+for name in ("111", "222", "333"):
+    fh = open(SEM / "waiting" / name, "w")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    queued.append(fh)
+check("locked markers are the queue", "waiting 3" in sem_out(), True)
+queued.pop().close()
+check("a job leaving the queue is visible immediately",
+      "waiting 2" in sem_out(), True)
+
+# PROBING A MARKER MUST NOT DESTROY IT. sem_waiting tests each marker with
+# `flock -n`, which is safe on a marker and never is on a slot -- but only if
+# the probe releases and leaves the file alone. Reading the machine must not
+# change it.
+before = sorted(f.name for f in (SEM / "waiting").iterdir())
+sem_out()
+check("probing left every marker file in place",
+      sorted(f.name for f in (SEM / "waiting").iterdir()), before)
+check("probing did not steal a live job's lock", "waiting 2" in sem_out(),
+      True)
+for fh in queued:
+    fh.close()
+
+# STALENESS. The controller re-publishes every tick precisely so the file's
+# mtime is a heartbeat; an aged file means nobody is publishing and every job
+# on the machine is running ungated. Aged with utime rather than by sleeping.
+old = time.time() - 1000
+os.utime(SEM / "allowed", (old, old))
+stale = sem_out()
+check("a dead controller reads as STALE, not as a healthy idle",
+      "STALE" in stale, True)
+check("STALE says what it means for jobs", "ungated" in stale, True)
+check("STALE suppresses the field dump", "occupied" in stale, False)
+# The AGE is the signal, not the content: the same bytes, freshly written.
+(SEM / "allowed").write_text("4 6 16 2 5 3 1 1\n")
+check("a fresh rewrite brings it back", "occupied 2" in sem_out(), True)
+
+# The SEM line survives the pool being gone -- it is a separate subsystem, and
+# a queue behind a wedged controller is exactly what a pool-less tick hides.
+shutil.rmtree(POOL, ignore_errors=True)
+POOL.mkdir()
+(POOL / "cpu.max").write_text("max 100000\n")
+gone = subprocess.run(
+    [BASH, "-o", "nounset", str(SCRIPT), "-t", "0"],
+    env=base_env({"WT_CG_SAMPLE": "1", "KX_BUILD_SEM_DIR": str(SEM)}),
+    capture_output=True, text=True, timeout=30)
+check("SEM line prints in a full run too", "SEM   build semaphore" in
+      gone.stdout, True)
+check("SEM line prints above the pool", gone.stdout.index("SEM") <
+      gone.stdout.index("POOL"), True)
 
 summary(cleanup_dir=BASE)

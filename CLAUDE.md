@@ -236,6 +236,28 @@ Traps when diagnosing it:
   genuine idle spare is still inside the cc-daemon's spare directory, while a
   claimed one has moved to the worktree it is working in.
 
+- **Demand is invisible unless the waiting job says so.** A held slot is a lock
+  in `/proc/locks`; a job WAITING for one touches nothing, because
+  `kx-build-slot` polls with `flock -n` and sleeps. So do not try to read queue
+  depth from the `->` rows in `/proc/locks` — the client never blocks in the
+  kernel and never creates one (those rows exist only for a future caller using
+  a blocking `flock`, and both readers skip them so a queue cannot inflate
+  occupancy). A waiting job instead holds an exclusive flock on
+  `$XDG_RUNTIME_DIR/kx-build-sem/waiting/<pid>` for exactly as long as it waits.
+  THE LOCK IS THE CONTRACT, not the file: an unlocked marker is a job that was
+  SIGKILLed mid-wait and counts for nothing, which is what makes the queue
+  self-cleaning with no reaper (same argument as the slots themselves). Marker
+  files are pid-named, so the litter is reused rather than accumulated, and
+  nothing sweeps it. The marker is taken lazily (only once a job has actually
+  failed a pass, so the common case pays nothing) and dropped BEFORE `run_child`
+  and before every `exec "$@"` — fds survive fork and exec, so a marker left
+  open would be inherited by the very build it was counting the wait for.
+  Readers: the `⧗` field in `scriptBins/bins/wt-cgroup-i3status.py` and the SEM
+  line in `scriptBins/bins/wt-cgroup-status.sh`. Unlike a slot, a MARKER is safe
+  to probe with `flock` (it reserves nothing, so a test-and-release denies no
+  job and restarts no grant clock) — which is why the bash reader may probe
+  while the Python one reads `/proc/locks`.
+
 Three files have to agree on residency — `kx-build-slot.sh` (keeper + marker),
 `packages/playwright-cli/package.nix` (`--resident-probe`; its build ASSERTS
 the probe's cliDaemon.js path still exists so a playwright bump can't silently

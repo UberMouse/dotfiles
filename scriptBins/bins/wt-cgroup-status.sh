@@ -21,14 +21,29 @@
 #   wt-cgroup-status -t N         show N processes per bucket (default 3, 0 off)
 #   wt-cgroup-status -s cpu|mem   rank those processes by CPU% or RSS (default mem)
 #
+# The SEM line above the pool is the build semaphore's own published state,
+# printed as raw fields rather than re-derived: the bar (wt-cgroup-i3status.py)
+# is the place that interprets them into builds-vs-capacity, and a second
+# interpretation here is a second thing to keep in step. The one field that is
+# NOT published is `waiting`, which is counted live from the marker locks --
+# see QUEUE DEPTH in kx-build-slot.sh. So `occupied` is up to one control
+# interval old while `waiting` is now.
+#
 # Env: WT_CG_SAMPLE=<secs> — gap between the two CPU samples (default 1).
+#      KX_BUILD_SEM_DIR — semaphore directory (default $XDG_RUNTIME_DIR/kx-build-sem).
 
 # SIBLING FILE: wt-cgroup-i3status.py reads the same cgroup fields
-# (cpu.stat usage_usec, memory.current/high, cpu.max, pids.current) in
-# Python for the bar. A cgroup-v2 layout change needs both; their humanizers
+# (cpu.stat usage_usec, memory.current/high, cpu.max, pids.current) AND the
+# same semaphore state in Python for the bar. A cgroup-v2 layout change needs
+# both, as does a change to the published FIELDS order; their humanizers
 # already deliberately differ (numfmt's iec "4.2GB" here vs "4.2G" there).
 U=$(id -u)
 POOL="${KX_POOL:-/sys/fs/cgroup/user.slice/user-$U.slice/user@$U.service/worktrees.slice}"
+SEM_DIR="${KX_BUILD_SEM_DIR:-${XDG_RUNTIME_DIR:-/run/user/$U}/kx-build-sem}"
+# Same heartbeat threshold every other reader uses: the controller re-publishes
+# `allowed` every tick precisely so its mtime is a liveness signal, and ~3 of
+# its 5 s intervals is a dead controller rather than a slow one.
+SEM_STALE_AFTER="${KX_SEM_STALE_AFTER:-15}"
 SAMPLE="${WT_CG_SAMPLE:-1}"
 # Whole positive seconds only. The usage line says "secs" and `sleep` would
 # happily take 0.5 -- but the CPU%/delta arithmetic below divides by $SAMPLE
@@ -107,6 +122,64 @@ human()   { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${
 cpuusec() { awk '/^usage_usec/{print $2}' "$1/cpu.stat" 2>/dev/null || echo 0; }
 psi10()   { awk -F'[= ]' '/^some/{print $3}' "$1/cpu.pressure"    2>/dev/null || echo "-"; }
 mpsi10()  { awk -F'[= ]' '/^some/{print $3}' "$1/memory.pressure" 2>/dev/null || echo "-"; }
+
+sem_waiting() {
+  # How many jobs are queued for a build slot. A waiting job holds an exclusive
+  # flock on $SEM_DIR/waiting/<pid> for exactly as long as it waits (QUEUE DEPTH
+  # in kx-build-slot.sh); an unlocked marker is a job that was SIGKILLed
+  # mid-wait and counts for nothing.
+  #
+  # PROBING A MARKER WITH flock IS SAFE, and that is worth stating plainly
+  # because probing a SLOT is the standing trap in this subsystem: a slot is a
+  # resource, so a test-and-release can deny a job reaching for it in the same
+  # instant and reads to the controller as an admission. A marker reserves
+  # nothing -- it is a flag, and the only cost of touching one is that the
+  # waiter which happened to be creating it right then retries a marker it
+  # already knows how to retry (its take is idempotent and runs every poll).
+  #
+  # Nothing is deleted here. This is a REPORT; sweeping the litter would make
+  # reading the machine change it, and the markers are pid-named, so the next
+  # job to inherit that pid reuses the file rather than adding one.
+  local n=0 f
+  for f in "$SEM_DIR"/waiting/*; do
+    [ -e "$f" ] || continue
+    flock -n "$f" -c true 2>/dev/null || n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+sem_line() {
+  # RAW published fields, deliberately not re-derived into builds-vs-capacity:
+  # the bar does that, and one interpretation is enough to keep correct.
+  local mtime now a e m o t k r h
+  if [ ! -d "$SEM_DIR" ]; then
+    printf '  SEM   %-24s  not running (no %s)\n' "build semaphore" "$SEM_DIR"
+    return
+  fi
+  if ! mtime=$(stat -c %Y "$SEM_DIR/allowed" 2>/dev/null); then
+    printf '  SEM   %-24s  no published state (controller has never run)\n' \
+      "build semaphore"
+    return
+  fi
+  now=$(date +%s)
+  if [ $((now - mtime)) -gt "$SEM_STALE_AFTER" ]; then
+    # The same distinction the bar draws between "off" and "idle": slot files
+    # and the last state line live in tmpfs and outlive the controller, so a
+    # crashed one would otherwise read as a perfectly healthy idle forever.
+    printf '  SEM   %-24s  STALE (%ss old) — controller not publishing; jobs run ungated\n' \
+      "build semaphore" "$((now - mtime))"
+    return
+  fi
+  # Field order is the controller's FIELDS tuple (allowed effective max_slots
+  # occupied target mark resident healthy), append-only. A short line from an
+  # older controller mid-deploy leaves the tail empty rather than unset.
+  read -r a e m o t k r h < "$SEM_DIR/allowed" 2>/dev/null || true
+  # ALL of them, including target and mark: this is the diagnostic dump, and
+  # those two are what answer "why is allowed 1" without opening the log.
+  printf '  SEM   %-24s  allowed %s/%s  effective %s  occupied %s  resident %s  waiting %s  target %s  mark %s  healthy %s\n' \
+    "build semaphore" "${a:--}" "${m:--}" "${e:--}" "${o:--}" "${r:--}" \
+    "$(sem_waiting)" "${t:--}" "${k:--}" "${h:--}"
+}
 
 # The process helpers below all return via a global rather than by echoing into
 # $(...): a bucket can hold ~100 pids and each of these runs twice per refresh,
@@ -205,6 +278,11 @@ print_top() {
 
 snapshot() {
   local quota period cap mhigh mhigh_h
+  # Printed BEFORE the pool check: the semaphore is a separate subsystem and is
+  # worth seeing even on a tick where the pool has gone empty (systemd removes
+  # the slice whenever it does), which is exactly when a queue behind a wedged
+  # controller would otherwise be invisible.
+  sem_line
   # Re-checked EVERY snapshot, not only at startup: in watch mode the pool
   # legitimately vanishes while idle (see the startup check's comment), and
   # the bare `read < $POOL/cpu.max` below then failed its redirect, left

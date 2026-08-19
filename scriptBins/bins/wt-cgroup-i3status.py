@@ -19,6 +19,21 @@
 #            the two numbers is the burst window, and watching it stay small is
 #            watching the ramp work.
 #
+#   ◱ 1/1 ⧗3  the same block with a QUEUE: three jobs are waiting for a slot.
+#            Shown only when the queue is non-empty, the rule the ◐resident
+#            field already follows. Occupancy alone cannot tell a cap that is
+#            merely full from one that ten jobs are backed up behind, and those
+#            are very different machines to be sitting in front of -- 1/1 is the
+#            ordinary reading for both. Demand leaves no trace of its own here
+#            (kx-build-slot polls with `flock -n` and sleeps, so a waiting job
+#            touches nothing), so each waiting job holds a lock on
+#            $SEM_DIR/waiting/<pid> for exactly as long as it waits and this
+#            counts the locked ones -- see QUEUE DEPTH in
+#            scriptBins/bins/kx-build-slot.sh for the contract. The queue does
+#            NOT enter the colour: at the cap a queue is the designed
+#            behaviour, so colouring it would pin the block at its warning
+#            shade for the whole of every healthy burst.
+#
 #   ⚙ 2.4/12c 4.2G/18G 3wt   worktrees.slice: cores/cap, mem/cap, active
 #            buckets, coloured by peak CPU-or-mem utilisation; "⚙ idle" dimmed
 #            when the pool is absent or below the CPU floor. (Sample caps are
@@ -133,46 +148,29 @@ except ValueError:
     SEM_STALE_AFTER = 15.0
 
 
-def held_slots():
-    """{slot_index: holder_pid} for every flock'd slot, read from /proc/locks.
+def lock_holders():
+    """{(major, minor, inode): pid} for every flock HOLDER, or None on error.
 
     Deliberately NOT probed with flock. Taking even a momentary LOCK_NB on a
     free slot would make a real job's acquire fail spuriously -- the status bar
     would be competing with the builds it is reporting on. /proc/locks is
-    read-only, cannot interfere, and is one small read (~112 lines here) plus a
-    stat per slot.
+    read-only, cannot interfere, and is one small read (~112 lines here).
 
-    The key is the full (major, minor, inode), not the inode alone. Slot files
-    sit on tmpfs and carry very low inode numbers -- 58-73 as measured -- which
-    collide freely with inodes on any other small filesystem, and an inode-only
-    match would report an unrelated lock elsewhere on the machine as a busy build
-    slot. Silently, and only sometimes, which is the worst way for a status
-    readout to be wrong.
+    Read ONCE per tick and handed to both readers below, so adding the waiter
+    count costs no extra syscall.
     """
-    inodes = {}
-    try:
-        for name in os.listdir(SEM_DIR):
-            if not name.startswith("slot."):
-                continue
-            try:
-                st = os.stat(os.path.join(SEM_DIR, name))
-                key = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
-                inodes[key] = int(name.split(".")[-1])
-            except (OSError, ValueError):
-                continue
-    except OSError:
-        return None  # no semaphore directory at all
-    if not inodes:
-        return None  # directory exists but holds no slots
-    held = {}
+    holders = {}
     try:
         with open("/proc/locks") as f:
             for line in f:
                 if "FLOCK" not in line:
                     continue
-                # Rows containing '->' are blocked WAITERS, not holders, and
+                # Rows containing '->' are blocked WAITERS in the kernel's
+                # sense -- a process asleep inside a BLOCKING flock -- and
                 # counting them would over-report occupancy exactly when the
-                # semaphore is contended.
+                # semaphore is contended. They are NOT the ⧗ queue: this
+                # client polls, so its waiting jobs hold their own marker lock
+                # and appear here as ordinary holders of a waiting/ file.
                 if "->" in line:
                     continue
                 fields = line.split()
@@ -185,17 +183,81 @@ def held_slots():
                         key = (int(parts[0], 16), int(parts[1], 16), int(parts[2]))
                     except ValueError:
                         continue
-                    if key in inodes:
-                        # The pid column sits immediately before the
-                        # major:minor:inode column in every /proc/locks row.
-                        try:
-                            held[inodes[key]] = int(fields[idx - 1])
-                        except (ValueError, IndexError):
-                            held[inodes[key]] = -1
+                    # The pid column sits immediately before the
+                    # major:minor:inode column in every /proc/locks row.
+                    try:
+                        holders[key] = int(fields[idx - 1])
+                    except (ValueError, IndexError):
+                        holders[key] = -1
                     break
     except OSError:
         return None
+    return holders
+
+
+def inode_map(directory, prefix=None):
+    """{(major, minor, inode): name} for the files in `directory`.
+
+    The key is the full (major, minor, inode), not the inode alone. These files
+    sit on tmpfs and carry very low inode numbers -- 58-73 as measured -- which
+    collide freely with inodes on any other small filesystem, and an inode-only
+    match would report an unrelated lock elsewhere on the machine as a busy
+    build slot. Silently, and only sometimes, which is the worst way for a
+    status readout to be wrong.
+    """
+    out = {}
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return None
+    for name in names:
+        if prefix is not None and not name.startswith(prefix):
+            continue
+        try:
+            st = os.stat(os.path.join(directory, name))
+        except OSError:
+            continue
+        out[(os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)] = name
+    return out
+
+
+def held_slots(holders):
+    """{slot_index: holder_pid} for every flock'd slot, or None if there is no
+    semaphore to read at all."""
+    inodes = inode_map(SEM_DIR, prefix="slot.")
+    if not inodes:
+        # None: no semaphore directory. Empty: the directory exists but holds
+        # no slots (the controller's startup window). Both mean nothing is
+        # being gated, which is what "off" says.
+        return None
+    if holders is None:
+        return None
+    held = {}
+    for key, name in inodes.items():
+        if key not in holders:
+            continue
+        try:
+            held[int(name.split(".")[-1])] = holders[key]
+        except ValueError:
+            continue
     return held
+
+
+def waiting_count(holders):
+    """How many jobs are queued for a slot right now.
+
+    A waiting job holds an exclusive flock on $SEM_DIR/waiting/<pid> for
+    exactly as long as it waits (QUEUE DEPTH in kx-build-slot.sh). THE LOCK IS
+    THE CONTRACT: an unlocked marker is a job that was SIGKILLed mid-wait, and
+    counting the file rather than the lock would leave a phantom in the queue
+    until some later job happened to inherit its pid.
+    """
+    if holders is None:
+        return 0
+    inodes = inode_map(os.path.join(SEM_DIR, "waiting"))
+    if not inodes:
+        return 0
+    return sum(1 for key in inodes if key in holders)
 
 
 @functools.lru_cache(maxsize=64)
@@ -220,7 +282,11 @@ def is_controller(pid):
 
 
 def sem_block():
-    held = held_slots()
+    # ONE /proc/locks read for both readings below. The queue count is not an
+    # extra syscall, which is what makes it affordable on a 5 s bar tick.
+    holders = lock_holders()
+    held = held_slots(holders)
+    waiting = waiting_count(holders)
     if held is None:
         # Controller not running. Distinct from "idle" on purpose: an absent
         # semaphore means nothing is being gated at all, which is exactly the
@@ -261,15 +327,21 @@ def sem_block():
     # would now read 4/5 on an idle box with no build running at all. Neither is
     # what someone glancing at a bar wants to know, which is how much BUILD
     # capacity is left.
-    holders = sum(1 for pid in held.values() if not is_controller(pid))
-    used = max(0, holders - resident)
+    job_holders = sum(1 for pid in held.values() if not is_controller(pid))
+    used = max(0, job_holders - resident)
     build_effective = max(0, effective - resident)
+    # THE QUEUE IS SHOWN EVEN WHEN NOTHING IS RUNNING, and that is not a
+    # contradiction: a resident job waits on the load test rather than on a free
+    # slot, so a box with no build at all can legitimately have browsers queued
+    # behind an unhealthy pool. An "idle" block with a ⧗ beside it is precisely
+    # the state worth being able to see -- capacity free, nobody being let in.
+    queue = f" ⧗{waiting}" if waiting else ""
     if used == 0 and resident == 0:
-        return block("◱ idle", DIM, name="buildsem")
+        return block(f"◱ idle{queue}", DIM, name="buildsem")
     if used == 0:
         # Nothing building, but the browsers are still costing capacity and are
         # the reason `allowed` is not what it would otherwise be. Worth seeing.
-        return block(f"◱ idle ◐{resident}", DIM, name="buildsem")
+        return block(f"◱ idle ◐{resident}{queue}", DIM, name="buildsem")
 
     # THE NUMBER IS AVAILABILITY, THE COLOUR IS THROTTLING, and they are drawn
     # from different denominators on purpose.
@@ -295,7 +367,8 @@ def sem_block():
     u = used / build_allowed if build_allowed > 0 else 1.0
     color = GREEN if u < 0.5 else (YELLOW if u < 1.0 else RED)
     tail = f" ◐{resident}" if resident else ""
-    return block(f"◱ {used}/{build_effective}{tail}", color, name="buildsem")
+    return block(f"◱ {used}/{build_effective}{tail}{queue}", color,
+                 name="buildsem")
 
 prev_usage = None
 prev_t = None

@@ -18,6 +18,7 @@ Covers the client half: the resident gate, the keeper's lifetime, and the three
 fail-open paths. The controller half has its own suites (policy + machinery).
 """
 
+import fcntl
 import importlib.util
 import os
 import shutil
@@ -151,6 +152,43 @@ def reap():
 def markers():
     d = SEM / "resident"
     return sorted(p.name for p in d.iterdir()) if d.is_dir() else []
+
+
+def waiters():
+    """The waiting/ markers that are actually flock'd -- the queue as the bar
+    counts it. Probing a MARKER with flock is safe in a way probing a SLOT
+    never is: a marker reserves nothing, so a test-and-release denies no job
+    and restarts no grant clock."""
+    d = SEM / "waiting"
+    if not d.is_dir():
+        return []
+    return sorted(
+        f.name for f in d.iterdir()
+        if subprocess.run(["flock", "-n", str(f), "-c", "true"],
+                          capture_output=True).returncode != 0
+    )
+
+
+def spawn(*args, timeout="30"):
+    """run(), but without waiting for it -- the queue is only observable while
+    a job is still in it."""
+    env = dict(os.environ)
+    env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME), KX_KEEPER_POLL="0.2")
+    env.pop("KX_BUILD_SLOT_HELD", None)
+    return subprocess.Popen(
+        ["bash", "-o", "nounset", str(SLOT), "--timeout", timeout, *args],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+
+
+# Prints every fd this process holds. Used to prove the waiting marker is
+# CLOSED before the gated command exists: fds survive both fork and exec.
+FDS = BASE / "fds.sh"
+# `exit 0` because readlink on the glob's own (already closed) fd fails, and a
+# nonzero rc here would read as the gated command failing.
+FDS.write_text(
+    f"#!{BASH}\nfor f in /proc/self/fd/*; do readlink \"$f\"; done\nexit 0\n")
+FDS.chmod(0o755)
 
 
 # 1. THE RESIDENT GATE. A build takes the slot the floor keeps free however
@@ -441,4 +479,96 @@ check("real publish() at capacity blocks a build", "CAP-WAIT" in log_text(),
       True)
 
 reap()
+# 12. THE QUEUE MARKER. Occupancy is observable from outside -- a held slot is
+#     a lock in /proc/locks -- but DEMAND is not: this client polls with
+#     `flock -n` and sleeps, so ten jobs backed up behind a cap of one look
+#     exactly like one job from every readout on the machine. A waiting job
+#     therefore holds a lock on waiting/<pid> for as long as it waits, and the
+#     bar's ⧗ field counts the locked ones (waiting_count in
+#     scriptBins/bins/wt-cgroup-i3status.py).
+slots()
+publish(allowed=1, occupied=1, healthy=1)
+q = spawn("--label", "queued", "--", "true")
+check("a blocked job announces itself in the queue",
+      bool(wait_for(lambda: waiters())), True)
+check("the marker is named for the waiting job's pid", waiters(), [str(q.pid)])
+
+# THE LOCK IS THE CONTRACT, and the kernel is what enforces it: a job killed
+# outright leaves the file but not the lock, so the queue empties on its own
+# with no reaper anywhere. This is the same argument the slots themselves rest
+# on -- and the reason the marker is a lock rather than a pid file.
+q.kill()
+q.wait()
+check("the kernel empties the queue when a job is killed",
+      wait_for(lambda: not waiters(), timeout=10) is None
+      or waiters() == [], True)
+check("the killed job's marker file is left behind, merely unlocked",
+      (SEM / "waiting" / str(q.pid)).exists(), True)
+
+# A job that gets a slot on its first pass never queues at all: the marker
+# costs nothing in the common case, exactly like slotlog.
+slots()
+publish(allowed=4, occupied=0, healthy=1)
+run("--label", "instant", "--", "true")
+check("an admitted job never enters the queue", waiters(), [])
+
+# THE MARKER MUST BE CLOSED BEFORE THE COMMAND EXISTS. fds survive fork and
+# exec, so a marker still open here would be inherited by the very build it
+# was counting the wait for -- and that job would report itself as queued for
+# its whole runtime, which on a typecheck is exactly the burst being watched.
+# Blocked first, then released, so the drop happens on the ACQUIRE path.
+slots()
+publish(allowed=1, occupied=1, healthy=1)
+q = spawn("--label", "acquires", "--", str(FDS))
+wait_for(lambda: waiters())
+publish(allowed=4, occupied=0, healthy=1)
+out, _ = q.communicate(timeout=30)
+check("the gated command ran after queueing", q.returncode, 0)
+# Asserted non-empty first: with no output at all, "no marker in the fds"
+# would pass for the wrong reason.
+check("the fd probe actually listed fds", "/dev/null" in out or "/" in out,
+      True)
+check("no waiting marker among the command's fds",
+      "/waiting/" in out, False)
+check("acquiring a slot leaves the queue", waiters(), [])
+
+# ALL THREE WAITS COUNT, not just the cap. A job blocked on the published cap,
+# one blocked on a full slot scan, and a --resident job blocked on the load
+# test are all queued from the user's point of view -- a ⧗ that only counted
+# one of them would read as an empty queue on exactly the box where the other
+# two are what is happening.
+slots(2)
+publish(allowed=8, occupied=0, healthy=1)
+busy = [open(SEM / f"slot.{i:02d}", "w") for i in range(2)]
+for fh in busy:
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+q = spawn("--label", "allbusy", "--", str(FDS))
+check("a job waiting on a full slot scan is queued",
+      bool(wait_for(lambda: waiters() == [str(q.pid)])), True)
+for fh in busy:
+    fh.close()
+out, _ = q.communicate(timeout=30)
+check("no marker among its fds once a slot frees", "/waiting/" in out, False)
+check("the slot-scan waiter leaves the queue", waiters(), [])
+
+slots()
+publish(allowed=8, occupied=0, healthy=0)
+q = spawn("--label", "resqueue", "--resident", "--", "true")
+check("a resident job waiting on the load test is queued",
+      bool(wait_for(lambda: waiters() == [str(q.pid)])), True)
+q.kill()
+q.wait()
+wait_for(lambda: not waiters())
+
+# Same for the FAIL-OPEN path, where the command replaces this shell entirely:
+# `exec` keeps every open fd, so the drop has to happen before it, not after.
+slots()
+publish(allowed=1, occupied=1, healthy=1)
+log_text()
+p_out, _ = run("--label", "failopen", "--", str(FDS), timeout="1")
+check("timed-out job failed open", "UNGATED" in log_text(), True)
+check("no waiting marker among the exec'd command's fds",
+      "/waiting/" in p_out.stdout, False)
+check("failing open leaves the queue", waiters(), [])
+
 summary(cleanup_dir=BASE)

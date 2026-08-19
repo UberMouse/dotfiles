@@ -76,6 +76,29 @@
 #
 # The fail-open paths do NOT start a keeper: with no semaphore, or on a timeout,
 # there is no slot to hold, and the job was not gated in the first place.
+#
+# QUEUE DEPTH (waiting/). Occupancy is observable from outside -- a held slot is
+# a lock in /proc/locks -- but DEMAND is not: this client polls with `flock -n`
+# and sleeps, so a job waiting for a slot touches nothing and appears nowhere.
+# Ten jobs queued behind a cap of one and one job queued behind it are the same
+# picture from every readout on the machine, which is exactly the number worth
+# seeing when the bar says 1/1.
+#
+# So a waiting job announces itself: it opens $SEM_DIR/waiting/<pid> and holds
+# an exclusive flock on it for as long as it is waiting. THE LOCK IS THE
+# CONTRACT -- a marker that is flock'd is a live waiter, and an unlocked one is
+# a dead job's litter that counts for nothing. Same reasoning as the slots
+# themselves: the lock lives on the open file description, so the kernel drops
+# it however the job died, and no reaper is needed for a number nobody would
+# notice going stale.
+#
+# Taken LAZILY (only once a job has actually failed a pass) and dropped the
+# instant it acquires a slot or fails open, so the common case -- a free slot on
+# the first scan -- pays nothing, exactly like slotlog. The drop before
+# run_child and before every `exec "$@"` is load-bearing rather than tidiness:
+# fds survive both fork and exec, so a marker left open would be inherited by
+# the very build it was counting the wait for, and the job would report itself
+# as queued for its whole runtime.
 
 label=""
 timeout_s="${KX_BUILD_SLOT_TIMEOUT:-600}"
@@ -159,6 +182,54 @@ slotlog() {
   # nothing in the common case of a slot being free immediately.
   mkdir -p "$LOG_DIR" 2>/dev/null || true
   printf '%s  BUILDSEM|%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >> "$LOG" 2>/dev/null || true
+}
+
+# Queue-depth markers (see QUEUE DEPTH in the header). Readers: the ⧗ field in
+# scriptBins/bins/wt-cgroup-i3status.py and the SEM line in
+# scriptBins/bins/wt-cgroup-status.sh.
+WAIT_DIR="$SEM_DIR/waiting"
+wait_fd=""
+wait_marker=""
+
+wait_marker_take() {
+  # Idempotent: called once per poll pass, and a no-op while the marker is
+  # already held. Every failure path here leaves the job WAITING NORMALLY and
+  # merely uncounted -- this is a readout, and nothing about it may be able to
+  # stall a build (the header's whole fail-open argument applies to accounting
+  # code with even less room for doubt than to the gate itself).
+  [ -z "$wait_fd" ] || return 0
+  if ! mkdir -p "$WAIT_DIR" 2>/dev/null; then
+    if [ -z "${wait_marker_warned:-}" ]; then
+      wait_marker_warned=1
+      slotlog "WAIT-MARKER-FAILED cannot mkdir $WAIT_DIR - this job queues uncounted"
+    fi
+    return 0
+  fi
+  # Named for the pid, which is unique among LIVE processes -- the only ones
+  # that can hold a lock. A marker left behind by a SIGKILL is reopened and
+  # re-locked by whichever job next gets that pid, so the directory does not
+  # grow without bound, and until then it sits there unlocked and uncounted.
+  wait_marker="$WAIT_DIR/$$"
+  if ! exec {wait_fd}>"$wait_marker" 2>/dev/null; then
+    wait_fd=""
+    return 0
+  fi
+  if ! flock -n "$wait_fd"; then
+    # Only reachable against a reader probing a stale marker in the same
+    # instant (wt-cgroup-status tests markers with `flock -n`, which is safe on
+    # a marker precisely because a marker reserves nothing). Drop it and let the
+    # next pass retry -- wait_fd stays empty, so this self-heals within one
+    # poll interval.
+    exec {wait_fd}>&-
+    wait_fd=""
+  fi
+}
+
+wait_marker_drop() {
+  [ -n "$wait_fd" ] || return 0
+  rm -f "$wait_marker" 2>/dev/null || true
+  exec {wait_fd}>&-
+  wait_fd=""
 }
 
 # Fail-open 1 and 2: nothing to coordinate with, or we already hold a slot.
@@ -431,10 +502,12 @@ while :; do
       resident_wait_logged=1
       slotlog "RESIDENT-WAIT $label load test shut, not taking the floor slot"
     fi
+    wait_marker_take
     now=$(date +%s)
     waited=$((now - start))
     if [ "$waited" -ge "$timeout_s" ]; then
       slotlog "TIMEOUT $label waited ${waited}s unhealthy, running UNGATED"
+      wait_marker_drop
       exec "$@"
     fi
     jitter_sleep
@@ -470,10 +543,12 @@ while :; do
       cap_wait_logged=1
       slotlog "CAP-WAIT $label at published cap, waiting"
     fi
+    wait_marker_take
     now=$(date +%s)
     waited=$((now - start))
     if [ "$waited" -ge "$timeout_s" ]; then
       slotlog "TIMEOUT $label waited ${waited}s at cap, running UNGATED"
+      wait_marker_drop
       exec "$@"
     fi
     jitter_sleep
@@ -485,6 +560,10 @@ while :; do
     exec {fd}>"$slot" || continue
     if flock -n "$fd"; then
       [ "$waited" -gt 0 ] && slotlog "ACQUIRED $label after ${waited}s ($(basename "$slot"))"
+      # Before run_child, not after: the child inherits every open fd, so a
+      # marker still held here would count this job as queued for as long as
+      # the build it is no longer queued for takes to run.
+      wait_marker_drop
       run_child "$@"
       rc=$?
       if [ -n "$resident_new" ]; then
@@ -506,11 +585,14 @@ while :; do
     exec {fd}>&-
   done
 
+  # Every slot was busy: this job is now genuinely queued, so say so.
+  wait_marker_take
   now=$(date +%s)
   waited=$((now - start))
   if [ "$waited" -ge "$timeout_s" ]; then
     # Fail-open 3.
     slotlog "TIMEOUT $label waited ${waited}s, running UNGATED"
+    wait_marker_drop
     exec "$@"
   fi
 

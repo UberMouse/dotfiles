@@ -291,6 +291,11 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       runtimeInputs = [
         pkgs.gawk
         pkgs.coreutils
+        # flock: the SEM line counts queued jobs by probing their queue
+        # markers, which is safe on a marker in a way it never is on a slot
+        # (sem_waiting says why). Undeclared, the probe would die inside its
+        # own `2>/dev/null` and every queue would read as empty.
+        pkgs.util-linux
       ];
       bashOptions = [ "nounset" ];
     })
