@@ -383,6 +383,47 @@ else:
           "(export KX_TEST_HOST_ONLY=1 to run it)")
 
 
+# --- read_untracked_mem: only UNRECLAIMABLE bytes count ---------------------
+# The fleet's memory.current is mostly page cache, which the kernel reclaims
+# without the fleet's cooperation. Charging it to the build budget pinned the
+# real semaphore at allowed=1 with the desktop at 0.00% pressure (2026-08-19),
+# so this asserts the split rather than the total.
+UNT = BASE / "untracked-pool"
+(UNT / bsc.UNTRACKED_SUBPATH).mkdir(parents=True)
+(UNT / bsc.UNTRACKED_SUBPATH / "memory.stat").write_text(
+    f"anon {4 * GIB}\n"
+    f"file {6 * GIB}\n"
+    f"inactive_file {5 * GIB}\n"
+    f"active_file {1 * GIB}\n"
+    f"shmem {1 * GIB}\n"
+    f"slab {512 * 2**20}\n"
+)
+# memory.current would read 11G+; only anon + shmem are the fleet's to hold.
+check("untracked counts anon + shmem, not page cache",
+      bsc.read_untracked_mem(UNT), 5 * GIB)
+
+# An unreadable subtree is NO SIGNAL, which makes the caller measure against
+# the whole pool -- the direction that tightens early rather than late.
+check("missing memory.stat reads as no signal",
+      bsc.read_untracked_mem(BASE / "nonexistent-pool"), None)
+
+# A memory.stat with neither key is malformed, not a fleet using zero bytes;
+# returning 0 would report the pool as emptier than it is.
+(UNT / "empty").mkdir()
+(UNT / "empty" / bsc.UNTRACKED_SUBPATH).mkdir(parents=True)
+(UNT / "empty" / bsc.UNTRACKED_SUBPATH / "memory.stat").write_text("slab 123\n")
+check("memory.stat without anon/shmem reads as no signal",
+      bsc.read_untracked_mem(UNT / "empty"), None)
+
+# The correction is disableable, and disabling it must not fall back to a
+# partial read.
+_saved_subpath = bsc.UNTRACKED_SUBPATH
+bsc.UNTRACKED_SUBPATH = ""
+check("empty KX_SEM_UNTRACKED disables the correction",
+      bsc.read_untracked_mem(UNT), None)
+bsc.UNTRACKED_SUBPATH = _saved_subpath
+
+
 def dump_log():
     print("\n--- controller log ---")
     try:

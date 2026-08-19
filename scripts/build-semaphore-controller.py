@@ -489,14 +489,31 @@ def read_pool_mem(path):
 UNTRACKED_SUBPATH = os.environ.get("KX_SEM_UNTRACKED", "worktrees-agents.slice")
 
 
+# The memory.stat keys that are genuinely UNRECLAIMABLE without the holder's
+# cooperation: anonymous pages (need swap or exit) and tmpfs pages (shmem is
+# accounted under `file` in cgroup v2 but is NOT droppable -- it also needs
+# swap). Everything else under `file` is page cache the kernel reclaims on its
+# own, so it must not be charged against the build budget.
+UNTRACKED_KEYS = ("anon", "shmem")
+
+
 def read_untracked_mem(path):
-    """Bytes held inside the pool by tenants that TAKE NO SLOTS, or None.
+    """UNRECLAIMABLE bytes held inside the pool by tenants that TAKE NO SLOTS.
 
     Today that is the Claude agents fleet: the cc-daemon, its workers, their
     MCP servers and the pty hosts, all re-homed into worktrees-agents.slice by
     claude-agents-reattach. They live in the pool by design -- so their memory
     is budgeted -- but they never call kx-build-slot, so no amount of tightening
     `allowed` persuades them to give a byte back.
+
+    That last sentence is true of ANON, and false of PAGE CACHE, which is why
+    this reads memory.stat and not memory.current. Measured 2026-08-19: the
+    fleet's memory.current was 12.2G, of which only 4.7G was anon -- 6.7G was
+    file cache (5.7G of it inactive). Charging the cache to the fleet made the
+    build budget read 1.8G of a 14G pool when the unreclaimable figure left
+    9.3G, and the semaphore sat at allowed=1 refusing builds while the desktop
+    was at 0.00% pressure. The kernel reclaims that cache without asking the
+    fleet for anything, so it is not the fleet's to hold against builds.
 
     None means "no signal", which restores the pre-2026-08-17 behaviour of
     measuring against the whole pool. That is the safe direction: it reads the
@@ -506,9 +523,21 @@ def read_untracked_mem(path):
     if not UNTRACKED_SUBPATH:
         return None
     try:
-        return int((path / UNTRACKED_SUBPATH / "memory.current").read_text().strip())
-    except (OSError, ValueError):
+        text = (path / UNTRACKED_SUBPATH / "memory.stat").read_text()
+    except OSError:
         return None
+    total = None
+    for line in text.splitlines():
+        key, _, val = line.partition(" ")
+        if key in UNTRACKED_KEYS:
+            try:
+                total = int(val) + (total or 0)
+            except ValueError:
+                return None
+    # A memory.stat with no anon key at all is a malformed read, not a fleet
+    # using zero bytes -- fall back to "no signal" rather than reporting the
+    # pool as emptier than it is.
+    return total
 
 
 def locked_inodes():
