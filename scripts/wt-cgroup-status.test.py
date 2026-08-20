@@ -38,6 +38,7 @@ arithmetic is pinned at the print_top level with hand-seeded T0 baselines
 instead.
 """
 import fcntl
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -546,5 +547,61 @@ check("SEM line prints in a full run too", "SEM   build semaphore" in
       gone.stdout, True)
 check("SEM line prints above the pool", gone.stdout.index("SEM") <
       gone.stdout.index("POOL"), True)
+
+# --- mem_inuse: the bash port must agree with scripts/cgroup-mem.py ---------
+# The correction now has TWO implementations -- Python for the i3 bar and the
+# build-semaphore controller, this shell one for the diagnostic -- and a
+# diagnostic that disagrees with the bar is worse than no diagnostic at all,
+# because it reads as evidence. So the contract is asserted rather than
+# commented, the same way the three-file residency contract is: the fixtures
+# below run through BOTH and the answers must be identical.
+_spec = importlib.util.spec_from_file_location("cgmem", HERE / "cgroup-mem.py")
+cgmem = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cgmem)
+
+GIB = 1024 ** 3
+MEMCASES = {
+    # name: (memory.current, memory.stat text or None)
+    "cache dominates the charge": (
+        15 * GIB,
+        f"anon {7 * GIB}\nfile {6 * GIB}\nshmem 4096\n"
+        f"slab_reclaimable {1 * GIB}\nslab_unreclaimable {10 * 2**20}\n",
+    ),
+    "tmpfs is not reclaimable": (
+        10 * GIB, f"anon {1 * GIB}\nfile {8 * GIB}\nshmem {4 * GIB}\n"),
+    "mlocked pages are not reclaimable": (
+        10 * GIB, f"file {6 * GIB}\nunevictable {2 * GIB}\n"),
+    "no cache at all": (4 * GIB, f"anon {4 * GIB}\nfile 0\n"),
+    # shmem briefly exceeding file is reachable from two reads of a live tree.
+    "shmem over file clamps rather than inflating": (
+        8 * GIB,
+        f"file {1 * GIB}\nshmem {5 * GIB}\nslab_reclaimable {2 * GIB}\n"),
+    # A stat with no `file` key is malformed: fall back to the RAW charge.
+    "no file key falls back to the raw charge": (
+        9 * GIB, f"anon {5 * GIB}\nslab 123\n"),
+    "cache larger than the charge clamps at zero": (
+        1 * GIB, f"file {5 * GIB}\n"),
+    "missing memory.stat falls back to the raw charge": (7 * GIB, None),
+}
+
+MEMDIR = BASE / "meminuse"
+for _name, (_cur, _stat) in MEMCASES.items():
+    d = MEMDIR / _name.replace(" ", "_")
+    d.mkdir(parents=True)
+    (d / "memory.current").write_text(str(_cur))
+    if _stat is not None:
+        (d / "memory.stat").write_text(_stat)
+    want = cgmem.in_use(_cur, cgmem.read_stat(d))
+    # None from the module is "no signal", which BOTH sides render as the raw
+    # charge; comparing against that keeps the fallback itself under test.
+    want = _cur if want is None else want
+    got = sh(f'mem_inuse "{d}"')
+    check(f"mem_inuse agrees with cgroup-mem.py: {_name}",
+          got.stdout.strip(), str(want))
+
+# An absent cgroup must not emit an empty field into the printf (nounset and
+# the %9s column both depend on this being a number).
+check("mem_inuse on a missing cgroup reads 0",
+      sh(f'mem_inuse "{BASE / "no-such-cgroup"}"').stdout.strip(), "0")
 
 summary(cleanup_dir=BASE)

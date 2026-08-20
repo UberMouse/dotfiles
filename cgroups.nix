@@ -442,6 +442,11 @@ in
       # comments); if either is re-measured, update this derivation with it.
       Environment = [
         "KX_SEM_CEIL=${toString ((memory.poolHighG - 3) * 2 / 3)}"
+        # THE page-cache correction, shared with the i3 bar (which gets the
+        # same file via a @memlib@ substitution in scriptBins/default.nix).
+        # Passed as a store path for the same reason CGLIB is above: the
+        # controller ships as a lone file, so there is no sibling to import.
+        "KX_CGROUP_MEM_LIB=${./scripts/cgroup-mem.py}"
       ];
       ExecStartPre = rotateLog "build-semaphore.log";
       ExecStart = "${pkgs.python313}/bin/python3 ${./scripts/build-semaphore-controller.py}";

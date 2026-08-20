@@ -432,4 +432,57 @@ def dump_log():
         pass
 
 
+# --- read_pool_mem: the POOL's own page cache is not memory in use ----------
+# Same misreading as read_untracked_mem above, one level up. It survived the
+# 2026-08-19 fix because the argument that retired it there (the fleet's bytes
+# cancel between usage and ceiling) is FALSE of cache: memory.high has no cache
+# term to cancel against. Left uncorrected it published healthy=0 and logged
+# HOLD free=0.2G<3.0G against a pool at 0.00% pressure.
+PM = BASE / "poolmem"
+PM.mkdir()
+(PM / "memory.current").write_text(str(12 * GIB))
+(PM / "memory.high").write_text(str(16 * GIB))
+(PM / "memory.stat").write_text(
+    f"anon {5 * GIB}\n"
+    f"file {6 * GIB}\n"
+    f"shmem {1 * GIB}\n"
+    f"slab_reclaimable {1 * GIB}\n"
+    f"slab_unreclaimable {64 * 2**20}\n"
+)
+# cache = (6G file - 1G shmem) + 1G reclaimable slab = 6G, so 12G - 6G = 6G.
+_pm = bsc.read_pool_mem(PM)
+check("pool current is net of reclaimable cache", _pm[0], 6 * GIB)
+check("pool high is untouched by the correction", _pm[1], 16 * GIB)
+check("the cache term is reported for the log", _pm[2], 6 * GIB)
+
+# THE SHAPE CONTRACT. decide() unpacks `pool_mem` (pool_cur, pool_high =
+# pool_mem) and the policy suite builds it as a plain 2-tuple, so main() must
+# split the third element off. Widening the value that reaches decide() raises
+# ValueError inside the tick thread -- the control loop dies while the state
+# file keeps publishing its last plausible value, which is precisely the
+# silent-death shape this repo keeps getting caught by. Asserted, not trusted.
+_cur, _high = (_pm[0], _pm[1])
+check("pool_mem as decide() consumes it is exactly two wide",
+      len((_cur, _high)), 2)
+
+# No memory.stat is NO SIGNAL: fall back to the RAW charge, which reads the
+# pool as fuller than it is and tightens early rather than late.
+PMR = BASE / "poolmem-raw"
+PMR.mkdir()
+(PMR / "memory.current").write_text(str(12 * GIB))
+(PMR / "memory.high").write_text(str(16 * GIB))
+check("no memory.stat falls back to the raw charge",
+      bsc.read_pool_mem(PMR)[0], 12 * GIB)
+check("no memory.stat reports no cache term",
+      bsc.read_pool_mem(PMR)[2], None)
+
+# memory.high unset still disables both signals outright.
+PMU = BASE / "poolmem-unset"
+PMU.mkdir()
+(PMU / "memory.current").write_text(str(12 * GIB))
+(PMU / "memory.high").write_text("max")
+check("memory.high=max is still no pool signal at all",
+      bsc.read_pool_mem(PMU), None)
+
+
 summary(cleanup_dir=BASE, extra_on_fail=dump_log)

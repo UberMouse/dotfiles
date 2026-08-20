@@ -210,11 +210,39 @@ import collections
 import dataclasses
 import errno
 import fcntl
+import importlib.util
 import os
 import signal
 import sys
 import time
 from pathlib import Path
+
+
+def _load_cgroup_mem():
+    """Load THE page-cache correction (scripts/cgroup-mem.py).
+
+    By path, not by name: this script ships to the store as a lone file, so
+    there is no importable sibling. The unit passes KX_CGROUP_MEM_LIB; the
+    default is the repo checkout, which is what the test suite loads.
+
+    A missing lib is FATAL rather than a silent fallback to the raw charge.
+    Falling back would restore the very misreading the module exists to fix --
+    a semaphore refusing builds at 0.00% pressure -- while every log line kept
+    claiming health, which is the failure shape this repo keeps getting bitten
+    by. Better to not start.
+    """
+    path = os.environ.get(
+        "KX_CGROUP_MEM_LIB", str(Path(__file__).resolve().parent / "cgroup-mem.py")
+    )
+    spec = importlib.util.spec_from_file_location("kx_cgroup_mem", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"build-semaphore-controller: cannot load {path}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+cgmem = _load_cgroup_mem()
 
 RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
 SEM_DIR = Path(os.environ.get("KX_BUILD_SEM_DIR", f"{RUNTIME}/kx-build-sem"))
@@ -465,22 +493,45 @@ def read_psi(path, field="full"):
 
 
 def read_pool_mem(path):
-    """(current, high) bytes for the pool, or None when unavailable.
+    """(current, high, cache) bytes for the pool, or None when unavailable.
 
-    Both numbers come from one pass because both signals below are derived from
+    THE THIRD ELEMENT NEVER REACHES decide(). main() splits it off and passes
+    (current, high) as `pool_mem`, because decide() UNPACKS that value --
+    `pool_cur, pool_high = pool_mem` -- and the policy suite constructs it as a
+    plain 2-tuple. Widening it in place raises ValueError inside the control
+    loop, which kills the tick thread while the published state file goes on
+    looking plausible; caught here only because the machinery suite asserts on
+    startup capacity. Keep `pool_mem` two-wide.
+
+    `cur` is the pool's charge MINUS what the kernel can reclaim on its own --
+    see cgroup-mem.py for why the raw `memory.current` is the wrong number for
+    every decision below. Briefly: it counts page cache, so a pool half full of
+    cold `inactive_file` reads as full, and both signals derived here then fire
+    on memory nobody has to give back.
+
+    Both numbers still come from one pass because both signals are derived from
     them: the FRACTION drives the predictive tighten, and the absolute HEADROOM
     drives the memory gate. Reading the pair together keeps the two decisions
-    made from a single consistent sample.
+    made from a single consistent sample -- and memory.stat is now read in the
+    same pass, for the same reason.
+
+    A memory.stat that yields no correction is NO SIGNAL, and falls back to the
+    raw charge: that reads the pool as fuller than it is, so the gate tightens
+    early rather than late.
     """
     try:
-        cur = int((path / "memory.current").read_text().strip())
+        raw_cur = int((path / "memory.current").read_text().strip())
         raw = (path / "memory.high").read_text().strip()
         if raw == "max":
             return None
         high = int(raw)
-        return (cur, high) if high > 0 else None
+        if high <= 0:
+            return None
     except (OSError, ValueError):
         return None
+    cache = cgmem.reclaimable(cgmem.read_stat(path))
+    cur = raw_cur if cache is None else max(0, raw_cur - cache)
+    return (cur, high, cache)
 
 
 # The pool subpath holding tenants that take no slots. Overridable for the
@@ -869,8 +920,14 @@ State = collections.namedtuple(
 # unreadable; `resident` is the live-keeper count; `untracked` is bytes held
 # inside the pool by tenants that take no slots (the agents fleet), or None
 # for no signal -- see the BUILD BUDGET note on high_frac in decide().
+# `pool_cache` is DIAGNOSTIC ONLY -- it shapes no decision, it just lets the
+# HOLD line say how much reclaimable memory the gate is (correctly) refusing to
+# count. It carries a default so the policy suite keeps constructing Inputs
+# without it, and so a new field can never silently become load-bearing: any
+# branch that started reading it would be reading None in every unit test.
 Inputs = collections.namedtuple(
-    "Inputs", "now psi10 psi60 pool_mem occupied resident untracked"
+    "Inputs", "now psi10 psi60 pool_mem occupied resident untracked pool_cache",
+    defaults=(None,),
 )
 
 # One capacity transition. `tag` is the branch that fired (TIGHTEN / LOOSEN /
@@ -947,7 +1004,15 @@ def decide(state, inputs, cfg):
     # The LOAD TEST is deliberately NOT rewritten this way: its `headroom` is
     # (high - current), and subtracting the same untracked bytes from both terms
     # cancels exactly. Free bytes are free bytes no matter who is not using
-    # them, so that gate was already right.
+    # them, so that gate was already right ABOUT THE FLEET.
+    #
+    # It was not right about PAGE CACHE, and the cancellation argument above is
+    # exactly why the distinction matters: the fleet's bytes appear on both
+    # sides and cancel, while cache appears on the usage side ONLY -- memory.high
+    # has no cache term to cancel against. So that correction does not vanish
+    # here, it just belongs upstream: `current` arrives from read_pool_mem
+    # already net of reclaimable cache, which fixes the fraction and the
+    # headroom together and leaves this arithmetic untouched.
     high_frac = None
     if pool_mem is not None:
         pool_cur, pool_high = pool_mem
@@ -1233,6 +1298,15 @@ def decide(state, inputs, cfg):
             bits.append(
                 f"free={headroom / 2**30:.1f}G<{need / 2**30:.1f}G"
             )
+            # The reclaimable cache this gate is (correctly) NOT counting.
+            # Logged because its absence is what made the old HOLD lines
+            # unreadable: `free=0.2G` beside a systemctl showing 15.4G/16G and
+            # a pool at 0.00% pressure looked like a contradiction for as long
+            # as the cache term was invisible. It defaults to None (the
+            # policy suite never sets it), and is simply absent from the line
+            # then rather than printing a fabricated zero.
+            if inputs.pool_cache:
+                bits.append(f"(cache {inputs.pool_cache / 2**30:.1f}G excl)")
         if not psi_ok:
             bits.append(f"psi10={psi10:.1f}%")
         hold = f"HOLD {' '.join(bits)} occupied={occupied} allowed={allowed}"
@@ -1320,7 +1394,11 @@ def main(sleep=time.sleep):
     try:
         while not stop["now"]:
             psi10, psi60 = read_psi(POOL, "full")
-            pool_mem = read_pool_mem(POOL)
+            pool_raw = read_pool_mem(POOL)
+            # Split here, not in decide(): see read_pool_mem's docstring for
+            # why `pool_mem` has to stay exactly two elements wide.
+            pool_mem = None if pool_raw is None else (pool_raw[0], pool_raw[1])
+            pool_cache = None if pool_raw is None else pool_raw[2]
             untracked = read_untracked_mem(POOL)
             occupied = sem.occupancy()
             resident = sem.resident()
@@ -1331,6 +1409,7 @@ def main(sleep=time.sleep):
                 Inputs(
                     now=now, psi10=psi10, psi60=psi60, pool_mem=pool_mem,
                     occupied=occupied, resident=resident, untracked=untracked,
+                    pool_cache=pool_cache,
                 ),
                 CFG,
             )

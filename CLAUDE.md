@@ -160,6 +160,39 @@ two lines.
 
 Traps when diagnosing it:
 
+- **`memory.current` IS NOT MEMORY IN USE — it counts page cache.** `free`
+  files that same cache under `buff/cache`, not `used`, so a pool reading
+  16G/16G beside a machine reporting far less in use is not a contradiction:
+  the two never measured the same thing. This pool does tens of GB of file IO,
+  so the gap is routinely HALF the charge (measured 2026-08-20: 15.2G charged,
+  7.36G anon, 7.27G reclaimable — 5.6G of it cold `inactive_file`). Every
+  consumer therefore reads the charge NET of what the kernel reclaims unasked,
+  via `scripts/cgroup-mem.py` — the i3 bar and `build-semaphore-controller.py`
+  import it (as a store path: `@memlib@` in `scriptBins/default.nix`,
+  `KX_CGROUP_MEM_LIB` in `cgroups.nix`), and `wt-cgroup-status.sh` mirrors it
+  in awk with the two implementations asserted equal in
+  `wt-cgroup-status.test.py`. Change one, change the other.
+  - The correction is a DENYLIST (subtract `file` − `shmem` − `unevictable`,
+    plus `slab_reclaimable`) so an unfamiliar kernel key stays counted as used
+    and the pool reads FULLER than it is. No signal falls back to the raw
+    charge for the same reason: tighten early, never late.
+  - `memory.high` is NOT corrected to match — it is a limit on the raw charge,
+    and inflating the ceiling would give back the optimism the numerator exists
+    to remove.
+  - This is the same misreading commit d17dc8b fixed for the FLEET term, and it
+    survived on the pool side because the argument that retired it there —
+    subtracting the same bytes from usage and ceiling cancels — is true of the
+    fleet and FALSE of cache, which appears on the usage side only. Uncorrected
+    it published `healthy=0` and logged `HOLD free=0.2G<3.0G` at 0.00% memory
+    pressure while `allowed` walked 5 → 1.
+  - **`pool_mem` must stay exactly two elements wide.** `decide()` unpacks it
+    (`pool_cur, pool_high = pool_mem`) and the policy suite builds it as a plain
+    2-tuple, so `read_pool_mem` returns its third (cache) element for the LOG
+    and `main()` splits it off. Widening the value that reaches `decide()`
+    raises ValueError inside the tick thread — the control loop dies while the
+    state file goes on publishing its last plausible value. Asserted in
+    `build-semaphore-controller.test.py`.
+
 - **Held-back ≠ in-use.** A slot the controller is withholding and a slot a job
   occupies are both just `flock` failures — indistinguishable from outside. Do
   NOT probe with `flock` and conclude anything; probing also corrupts a running
@@ -227,6 +260,9 @@ Traps when diagnosing it:
   tightening early). The LOAD TEST is deliberately NOT corrected this way:
   its headroom is `high - current`, and subtracting the same bytes from both
   terms cancels. Free bytes are free bytes no matter who is not using them.
+  That reasoning covers the FLEET only — both signals now take a `current`
+  that is already net of reclaimable page cache (see the `memory.current` trap
+  above), because cache has no matching term in the ceiling to cancel against.
 - **A `bg-spare` in an argv does NOT mean an idle process.** It says how the
   process started; the claim socket is unlinked once a session takes it, and
   the spare becomes a live agent session. On 2026-08-17 nine `bg-spare`

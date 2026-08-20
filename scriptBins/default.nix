@@ -371,6 +371,13 @@ assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opToo
       python3 = "${pkgs.python313}/bin/python3";
       i3status = "${pkgs.i3status}/bin/i3status";
       i3statusConf = "${i3statusConf}";
+      # THE page-cache correction (scripts/cgroup-mem.py), shared with the
+      # build-semaphore controller, which gets the same file as
+      # KX_CGROUP_MEM_LIB in cgroups.nix. The bar and the semaphore MUST agree
+      # on what "pool memory in use" means -- they disagreed for as long as
+      # both read memory.current raw, and the bar showing a full pool while
+      # builds were being refused is what that looked like from outside.
+      memlib = "${../scripts/cgroup-mem.py}";
     })
   ]
   ++ lib.mapAttrsToList opWrapper opTools;

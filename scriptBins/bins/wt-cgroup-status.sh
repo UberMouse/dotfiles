@@ -10,9 +10,14 @@
 # this script: cgroups.nix derives it as (cpuCores - 4) * 100% from
 # host-facts.nix, so read the number off the POOL line, not out of a comment.
 #
+# MEMORY COLUMNS ARE NOT memory.current. They are the charge minus what the
+# kernel reclaims unasked (page cache, reclaimable slab) -- see mem_inuse below
+# and scripts/cgroup-mem.py, which the i3 bar and the build semaphore read too,
+# so all three agree on what "in use" means.
+#
 # Process rows are ranked by RSS, which double-counts pages shared between
 # processes (every node fork maps the same binary), so they deliberately do NOT
-# sum to the bucket's memory.current. They answer "who is the hog", not "where
+# sum to the bucket's memory figure. They answer "who is the hog", not "where
 # did the bytes go".
 #
 # Usage:
@@ -122,6 +127,45 @@ human()   { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${
 cpuusec() { awk '/^usage_usec/{print $2}' "$1/cpu.stat" 2>/dev/null || echo 0; }
 psi10()   { awk -F'[= ]' '/^some/{print $3}' "$1/cpu.pressure"    2>/dev/null || echo "-"; }
 mpsi10()  { awk -F'[= ]' '/^some/{print $3}' "$1/memory.pressure" 2>/dev/null || echo "-"; }
+
+# THE PAGE-CACHE CORRECTION, in bash. This MIRRORS scripts/cgroup-mem.py and
+# must keep mirroring it: wt-cgroup-status.test.py asserts the two agree
+# byte-for-byte over a table of fixtures, for the same reason the residency
+# contract is asserted across its three files. Change one, change the other.
+#
+# WHY NOT memory.current. It counts page cache, which the kernel reclaims on
+# its own, and this pool does tens of GB of file IO -- so the raw charge shows
+# a half-idle pool as full. It also reconciles against nothing the reader can
+# check: `free` files that same cache under buff/cache, not used, so the pool
+# line and the machine appeared to disagree by several GB. Measured 2026-08-20:
+# 15.2G charged, 7.3G of it reclaimable cache. The identical misreading had the
+# build semaphore refusing work at 0.00% memory pressure.
+#
+# `file` minus `shmem`/`unevictable` (tmpfs and mlocked pages need swap exactly
+# like anon, so they are not free for the taking), plus `slab_reclaimable` (the
+# dentry/inode cache behind the file IO -- 1.77G of 1.78G of slab in that
+# measurement). A DENYLIST: a key this does not know about stays counted as
+# used, so an unfamiliar kernel reads the pool as fuller, never emptier.
+#
+# No memory.stat, or a memory.stat with no `file` key, is NO SIGNAL and falls
+# back to the raw charge -- pessimistic, which is the safe direction.
+mem_inuse() {
+  local cur
+  cur=$(cat "$1/memory.current" 2>/dev/null) || cur=""
+  [ -n "$cur" ] || { echo 0; return; }
+  awk -v cur="$cur" '
+    { s[$1] = $2 }
+    END {
+      if (!("file" in s)) { printf "%d\n", cur; exit }
+      cache = s["file"] - s["shmem"] - s["unevictable"]
+      if (cache < 0) cache = 0
+      slab = s["slab_reclaimable"]
+      if (slab < 0) slab = 0
+      v = cur - cache - slab
+      if (v < 0) v = 0
+      printf "%d\n", v
+    }' "$1/memory.stat" 2>/dev/null || printf '%s\n' "$cur"
+}
 
 sem_waiting() {
   # How many jobs are queued for a build slot. A waiting job holds an exclusive
@@ -317,7 +361,7 @@ snapshot() {
 
   # Pool line (second sample).
   local u1 pct pmem
-  u1=$(cpuusec "$POOL"); pmem=$(cat "$POOL/memory.current" 2>/dev/null)
+  u1=$(cpuusec "$POOL"); pmem=$(mem_inuse "$POOL")
   pct=$(( (u1 - u0[__pool__]) / 10000 / SAMPLE ))
   printf '  POOL  %-24s  CPU %5s%% / %-9s  mem %9s / %-9s  psi cpu:%s mem:%s\n' \
     "worktrees.slice" "$pct" "$cap" "$(human "$pmem")" "$mhigh_h" "$(psi10 "$POOL")" "$(mpsi10 "$POOL")"
@@ -336,7 +380,7 @@ snapshot() {
     b=$(basename "$d"); b=${b%.slice}; b=${b#worktrees-}
     u1b=$(cpuusec "$d")
     pctb=$(( (u1b - ${u0[$d]:-0}) / 10000 / SAMPLE ))
-    mem=$(cat "$d/memory.current" 2>/dev/null)
+    mem=$(mem_inuse "$d")
     tasks=$(cat "$d/pids.current" 2>/dev/null || echo "?")
     printf '  %-40.40s %6s%% %11s %6s %9s\n' "$(unesc "$b")" "$pctb" "$(human "$mem")" "$tasks" "$(psi10 "$d")"
     # An `&&` here would make a false test the loop's — and so the script's —

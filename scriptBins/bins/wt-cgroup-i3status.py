@@ -40,6 +40,16 @@
 #            illustrative -- the real ones are read live from the cgroup;
 #            policy numbers live in memory-policy.nix.)
 #
+#            MEM IS NOT memory.current. It is the charge minus what the kernel
+#            reclaims on its own (page cache, reclaimable slab) -- see
+#            scripts/cgroup-mem.py. This pool does tens of GB of file IO, so
+#            the raw charge routinely renders a half-idle pool as full and RED,
+#            and reconciles against nothing the user can see: `free` files that
+#            same cache under buff/cache, not used. The denominator stays
+#            memory.high, which is a limit on the RAW charge -- deliberately,
+#            because inflating the ceiling to match would just restore the
+#            optimism the numerator exists to remove.
+#
 # CPU% is the pool's usage_usec delta averaged over each i3status tick (~5s),
 # so no extra sampling sleep is needed. cgtop convention: 100% == one core.
 #
@@ -56,6 +66,37 @@ import json
 import time
 import subprocess
 import signal
+import importlib.util
+
+
+def _load_cgroup_mem():
+    """THE page-cache correction (scripts/cgroup-mem.py), or None.
+
+    By path, because this script ships to the store as a lone substituted file
+    with no importable sibling -- @memlib@ is the store path, and the repo
+    checkout is the fallback so the unsubstituted source still loads under the
+    test suite.
+
+    Unlike the controller, a failure here is NOT fatal: killing the i3 bar is a
+    worse outcome than one imprecise field, so a None falls back to the raw
+    charge. In production the path is a Nix path and the build fails if the
+    file is missing, so the fallback only ever covers the test load.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in ("@memlib@", os.path.join(here, "..", "..", "scripts", "cgroup-mem.py")):
+        try:
+            spec = importlib.util.spec_from_file_location("kx_cgroup_mem", cand)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+        except (OSError, ImportError, SyntaxError, ValueError):
+            continue
+    return None
+
+
+cgmem = _load_cgroup_mem()
 
 I3STATUS = "@i3status@"
 
@@ -94,6 +135,23 @@ def cap_cores():
         return None if quota == "max" else int(quota) / int(period)
     except (OSError, ValueError):
         return None
+
+def mem_in_use():
+    """Pool memory the kernel CANNOT reclaim on its own, or the raw charge.
+
+    NOT `memory.current`. That counts page cache, and this pool does enough
+    file IO to sit half full of cold `inactive_file` -- which rendered a
+    half-idle pool as full and RED, and was the visible half of a bug whose
+    expensive half was the semaphore refusing builds at 0.00% pressure. See
+    scripts/cgroup-mem.py. Falling back to the raw charge on no signal keeps
+    the bar pessimistic rather than blank.
+    """
+    cur = read_int(POOL + "/memory.current")
+    if cur is None or cgmem is None:
+        return cur
+    corrected = cgmem.in_use(cur, cgmem.read_stat(POOL))
+    return cur if corrected is None else corrected
+
 
 def mem_high():
     try:
@@ -390,7 +448,7 @@ def worktree_block():
         return block("⚙ idle", DIM)
 
     cap = cap_cores()
-    mem = read_int(POOL + "/memory.current")
+    mem = mem_in_use()
     memhigh = mem_high()
     nwt = active_buckets()
 
