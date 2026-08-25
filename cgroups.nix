@@ -258,6 +258,7 @@ in
             pkgs.systemd
             pkgs.libnotify
             pkgs.git
+            pkgs.python313
             unstable-pkgs.claude-code
           ]
         }"
@@ -269,6 +270,12 @@ in
         # store file, so `dirname $0` has no siblings -- the lib's path must
         # travel separately.
         "CGLIB=${./scripts/cgroup-lib.sh}"
+        # THE net-of-cache definition, shared with the semaphore controller and
+        # the i3 bar rather than reimplemented here -- same single-file store
+        # path reasoning as CGLIB above. Without it the snapshot still captures,
+        # but every memory figure in it is the RAW charge, and the inlined
+        # diagnosis prompt is told to reason only from the snapshot.
+        "KX_CGROUP_MEM_LIB=${./scripts/cgroup-mem.py}"
       ];
       ExecStartPre = rotateLog "events.log";
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";

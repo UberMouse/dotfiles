@@ -103,3 +103,45 @@ def read_stat(path):
             return parse_stat(f.read())
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# CLI. Exists so the pressure monitor -- bash, and the one consumer of this
+# correction that is not Python -- can reuse THIS definition instead of growing
+# a fourth implementation of it. `wt-cgroup-status.sh` already mirrors the
+# arithmetic in awk and pays for that with an equality assertion in
+# wt-cgroup-status.test.py; a snapshot writer that forked a third dialect would
+# owe the same debt forever. Forking a subprocess is affordable at the only
+# call site: snapshots are cooldown-limited and rare, and that path already
+# forks freely by design.
+#
+# Prints one TSV row per argument -- path, raw charge, reclaimable, in-use --
+# with `-` for any cgroup whose memory.stat could not be read, so a caller
+# formatting the output never has to distinguish "zero" from "no signal".
+def _main(argv):
+    import os
+
+    for path in argv:
+        stat = read_stat(path)
+        try:
+            with open(os.path.join(path, "memory.current")) as f:
+                current = int(f.read().strip())
+        except (OSError, ValueError):
+            current = None
+        used = in_use(current, stat)
+        recl = reclaimable(stat) if stat is not None else None
+        cells = [
+            path,
+            *(
+                "-" if v is None else str(v)
+                for v in (current, recl, used)
+            ),
+        ]
+        print("\t".join(cells))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(_main(sys.argv[1:]))

@@ -34,6 +34,8 @@
 #   CGPM_CLAUDE               claude binary (default: claude on PATH)
 #   CGPM_MODEL                model for the diagnosis                (default opus)
 #   CGPM_INVESTIGATE_COOLDOWN min seconds between diagnoses         (default 1800)
+#   KX_CGROUP_MEM_LIB         path to cgroup-mem.py (net-of-cache correction)
+#   CGPM_PYTHON               python3 for the above          (default python3 on PATH)
 set -u
 
 OUTDIR="${CGPM_OUTDIR:-$HOME/.local/state/cgroup-pressure}"
@@ -43,6 +45,13 @@ COOLDOWN="${CGPM_COOLDOWN:-120}"
 CLAUDE_BIN="${CGPM_CLAUDE:-claude}"
 MODEL="${CGPM_MODEL:-opus}"
 INV_COOLDOWN="${CGPM_INVESTIGATE_COOLDOWN:-1800}"
+# The net-of-cache correction (see mem_net). Both are OPTIONAL on purpose: a
+# snapshot missing its net column is degraded but still a snapshot, whereas a
+# monitor that refused to capture because an interpreter was missing would
+# destroy the only record of the stall it exists to record. mem_net returns
+# non-zero when either is absent and the caller falls back to raw, saying so.
+MEMLIB="${KX_CGROUP_MEM_LIB:-$(dirname "${BASH_SOURCE[0]}")/cgroup-mem.py}"
+PYTHON="${CGPM_PYTHON:-$(command -v python3 2>/dev/null)}"
 # Fail LOUDLY if the output directory cannot exist. Unchecked (as this was
 # until 2026-08-07), a failed mkdir meant every event append and snapshot below
 # went nowhere, forever, silently -- a monitor whose whole job is to leave a
@@ -77,6 +86,39 @@ human() {
     '' | *[!0-9]*) echo "${1:-?}" ;;
     *) numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B" ;;
   esac
+}
+
+# NET-OF-CACHE memory for a set of cgroups, via THE shared definition in
+# cgroup-mem.py rather than a private reimplementation -- see that file's CLI
+# note. Emits "<raw> (net <in-use>, <n>% cache)" per path, or the raw charge
+# alone when the correction has no signal, so the snapshot never silently
+# downgrades to the uncorrected number without saying so.
+#
+# WHY THE SNAPSHOT NEEDS THIS AT ALL. `memory.current` counts page cache, and
+# every snapshot before 2026-08-25 printed only that -- while the inlined
+# diagnosis prompt below orders the model to reason ONLY from the snapshot. So
+# the forensic record structurally could not support the correction that
+# CLAUDE.md, cgroup-mem.py and three other consumers all treat as mandatory,
+# and the diagnoses followed it straight into the trap: the 15:37 analysis that
+# day read a 14G pool charge as 14G in use and recommended cutting MemoryHigh
+# 16G -> 11G, when 52% of that charge was reclaimable cache and the cut would
+# have converted a memory stall into the cache thrash that produced the SAME
+# day's two io-mode stalls. A trap the prompt cannot see past is a trap in the
+# capture, not in the model.
+mem_net() {
+  [ -n "${MEMLIB:-}" ] && [ -x "${PYTHON:-}" ] || return 1
+  "$PYTHON" "$MEMLIB" "$@" 2>/dev/null | while IFS=$(printf '\t') read -r path cur recl use; do
+    # Two-step trim: pool-relative where that applies (matching the top-cgroups
+    # section below), else cgroup-root-relative (matching the desktop section
+    # above). The desktop scope and user@ itself are not under $USERAT, and
+    # printing their absolute paths broke the column alignment for every row.
+    label="${path#"$USERAT"/}"; label="${label#/sys/fs/cgroup}"
+    case "$cur/$use" in
+      */-|-/*) printf '  %-46s %s\n' "$label" "$(human "$cur") (net: NO SIGNAL, memory.stat unreadable)" ;;
+      *) printf '  %-46s %s (net %s, %d%% cache)\n' "$label" \
+           "$(human "$cur")" "$(human "$use")" "$(( cur > 0 ? recl * 100 / cur : 0 ))" ;;
+    esac
+  done
 }
 
 # resolve_desktop comes from cgroup-lib.sh; the monitor probes io.pressure
@@ -126,6 +168,8 @@ Machine: ${ncpu}-core / ${mem_gib} GiB NixOS host (ubermouse). Parallel git-work
 CRUCIAL: this monitor triggers on the DESKTOP session scope's OWN PSI (the 'desktop' section of the snapshot), NOT system-wide. The pool's io.max deliberately CONCENTRATES build stall inside the pool, so 'pool io.pressure' running HIGHER than 'system io PSI' is EXPECTED and means the cap is WORKING — that alone is NOT the problem and needs no fix. The problem is ONLY whatever pushed the DESKTOP scope's own io/memory pressure over ~15%. If desktop pressure is low despite high pool/system pressure, the protections HELD and you should say so plainly.
 
 Known dynamics: (a) MEMORY-FREEZE — global reclaim swaps out the desktop despite memory.min; shown by DESKTOP memory.pressure high AND on-disk swap (dm-*/partition, not zram) climbing. (b) IO-CONTENTION — builds saturate the virtual disk faster than io.max throttles, or io.latency fails to prioritise the desktop; shown by DESKTOP io.pressure high. (c) CPU is essentially never the cause (cpu full ~= 0).
+
+TRAP — memory.current IS NOT MEMORY IN USE. It counts PAGE CACHE, which the kernel takes back unasked and which free(1) files under buff/cache rather than used. A pool reading 16G against a 16G memory.high beside a machine reporting far less in use is NOT a contradiction and NOT a bug: the two numbers never measured the same thing. This pool does tens of GB of file IO, so the gap is routinely HALF the charge (measured 2026-08-25: 52% of the pool charge and 47% of the fleet's was reclaimable cache; 2026-08-20: 15.2G charged, 7.36G anon). The snapshot's 'memory IN USE, net of reclaimable page cache' section is the number to reason from — every 'memory.current' line elsewhere in it is RAW and overstates real usage. You MUST NOT compute a shortfall, a percentage-of-ceiling, or a MemoryHigh recommendation from a raw charge when the net column is present. Doing exactly that on 2026-08-25 produced a recommendation to cut the pool from 16G to 11G on the strength of a 14G charge that was mostly cache — a cut that would have starved the pool of page cache and converted a memory stall into an IO stall, which is the OTHER failure mode seen the same day. If the net section says NO SIGNAL or is unavailable, say so explicitly and treat every memory figure as an upper bound rather than quietly reasoning from it. NOTE the asymmetry: memory.high is a limit on the RAW charge, so do not 'correct' the ceiling to match the net usage — the correction applies to the usage side only.
 
 TRAP — do NOT recommend reclaiming the agents fleet on argv alone. A process whose command line contains 'bg-spare' is NOT necessarily idle: that string records how it STARTED, and once a session claims the spare it becomes a live agent doing real work while the argv is unchanged. The only way to tell them apart is the process cwd (a genuine idle spare is still inside the cc-daemon spare directory; a claimed one has moved into the worktree it is working in), and the snapshot does NOT contain cwd. Measured 2026-08-19: of 14 bg-spare processes only 7 were truly idle (~571MB); the rest were claimed sessions holding ~2.3GB of real work. So you MUST NOT present the fleet's total RSS as reclaimable slack. If the fleet looks large, say only that its idle fraction is unknown from this snapshot and must be checked with cwd before any reaping.
 
@@ -205,7 +249,16 @@ snapshot() {
       echo "  (desktop session scope not resolved)"
     fi
     echo
-    echo "----- top cgroups by memory.current (under user@) -----"
+    echo "----- memory IN USE, net of reclaimable page cache -----"
+    echo "  (memory.current counts page cache; free(1) files that same cache under"
+    echo "   buff/cache, NOT used. These two never measured the same thing. Read the"
+    echo "   NET column as 'in use'; the raw charge overstates it, routinely by half.)"
+    if mem_net "$POOL" ${DESKTOP:+"$DESKTOP"} "$USERAT"; then :; else
+      echo "  (unavailable: no python3 or cgroup-mem.py -- every memory.current"
+      echo "   printed in this snapshot is therefore RAW and includes page cache)"
+    fi
+    echo
+    echo "----- top cgroups by memory.current (RAW -- includes page cache) -----"
     find "$USERAT" -name memory.current 2>/dev/null | while read -r f; do
       v=$(cat "$f" 2>/dev/null); [ -n "$v" ] && [ "$v" -gt 0 ] 2>/dev/null && \
         printf '%s\t%s\n' "$v" "${f%/memory.current}"

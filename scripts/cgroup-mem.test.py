@@ -13,6 +13,7 @@ Pure arithmetic over literal memory.stat text -- no cgroups, no root, instant
 and sandbox-safe.
 """
 import importlib.util
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -95,5 +96,57 @@ check("read_stat accepts a str path", cgmem.read_stat(str(TMP))["anon"], 1 * G)
 check("missing memory.stat is no signal", cgmem.read_stat(TMP / "nope"), None)
 check("unreadable tree is no signal, end to end",
       cgmem.in_use(9 * G, cgmem.read_stat(TMP / "nope")), None)
+
+# ----------------------------------------------------------------- the CLI
+# The CLI is the seam the pressure monitor (bash) reads this correction
+# through, so it is the ONLY thing standing between the snapshot and a fourth
+# reimplementation of the arithmetic. What matters is the contract the bash
+# formatter depends on: four tab-separated cells per input path, always, in
+# argument order, with "-" for no-signal rather than a zero or a short row.
+# A silently shortened row would leave the caller's `read` binding cells to the
+# wrong variables and print a cache percentage computed from a path.
+CLI = [sys.executable, str(HERE / "cgroup-mem.py")]
+GOOD = TMP / "good"
+GOOD.mkdir()
+(GOOD / "memory.stat").write_text(stat(anon=3 * G, file=2 * G))
+(GOOD / "memory.current").write_text(f"{5 * G}\n")
+
+out = subprocess.run(CLI + [str(GOOD)], capture_output=True, text=True, check=True)
+row = out.stdout.rstrip("\n").split("\t")
+check("CLI emits four cells", len(row), 4)
+check("CLI cell 0 is the path back", row[0], str(GOOD))
+check("CLI reports the raw charge", row[1], str(5 * G))
+check("CLI reports reclaimable", row[2], str(2 * G))
+check("CLI reports in-use net of cache", row[3], str(3 * G))
+
+# No memory.stat at all: the correction has no signal. The row must still be
+# four cells wide so the caller can detect it positionally.
+BARE = TMP / "bare"
+BARE.mkdir()
+(BARE / "memory.current").write_text(f"{7 * G}\n")
+row = subprocess.run(CLI + [str(BARE)], capture_output=True, text=True,
+                     check=True).stdout.rstrip("\n").split("\t")
+check("no-signal row is still four cells", len(row), 4)
+check("no-signal keeps the raw charge readable", row[1], str(7 * G))
+check("no-signal reclaimable is a dash, not a zero", row[2], "-")
+check("no-signal in-use is a dash, not a zero", row[3], "-")
+
+# A path that does not exist at all must not crash the snapshot writer, and
+# must not be silently dropped -- a missing row would shift every later line.
+row = subprocess.run(CLI + [str(TMP / "nope")], capture_output=True, text=True,
+                     check=True).stdout.rstrip("\n").split("\t")
+check("absent cgroup still emits a row", len(row), 4)
+check("absent cgroup charge is a dash", row[1], "-")
+
+# Argument order is the contract: the monitor labels rows by position.
+multi = subprocess.run(CLI + [str(BARE), str(GOOD)], capture_output=True,
+                       text=True, check=True).stdout.strip().split("\n")
+check("CLI emits one row per argument", len(multi), 2)
+check("CLI preserves argument order", multi[0].split("\t")[0], str(BARE))
+check("CLI exits zero even when every path fails",
+      subprocess.run(CLI + [str(TMP / "a"), str(TMP / "b")],
+                     capture_output=True).returncode, 0)
+check("CLI with no arguments is a no-op, not an error",
+      subprocess.run(CLI, capture_output=True, text=True).stdout, "")
 
 summary(cleanup_dir=TMP)
