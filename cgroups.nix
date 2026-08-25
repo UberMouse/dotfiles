@@ -225,6 +225,21 @@ in
     };
   };
 
+  # The fourth link in the control plane's memory.min chain (user.slice ->
+  # user-<uid>.slice -> user@<uid>.service -> HERE -> the two services below).
+  # app.slice is where systemd puts user services by default, so it has to pass
+  # the reservation through; a floor granted at the leaf but broken anywhere
+  # above it is silently zero. The value is the whole control-plane budget, not
+  # a share of it: siblings that claim nothing cost nothing, and the two
+  # claimants below are bounded by their own MemoryHigh anyway.
+  systemd.user.slices.app = {
+    Unit.Description = "User application slice (carries the control-plane memory.min)";
+    Slice = {
+      MemoryAccounting = true;
+      MemoryMin = memory.controlPlaneMin;
+    };
+  };
+
   # Memory/IO pressure monitor. Watches system PSI and, whenever the machine
   # actually stalls (full-avg10 >= 20%), captures a forensic snapshot (per-cgroup
   # memory, top procs by RSS, pool stats, swap) + a desktop alert so a transient
@@ -397,6 +412,18 @@ in
       # should never hold more than a few MB.
       MemoryAccounting = true;
       MemoryHigh = "256M";
+      # ...and floored, which is the other half and was missing until
+      # 2026-08-25. MemoryHigh only ever bounded this loop from ABOVE; nothing
+      # stopped the kernel swapping its 2.5M working set to zram under the very
+      # pressure it exists to relieve, and then charging it a decompression
+      # refault on every tick. That is what a LAG line is: 117 of them on
+      # record, 87% within 120s of a desktop stall -- and while the tick
+      # overran, detection was blind AND the stall brake's thaw deadline (
+      # enforced once per tick) could not be enforced, so a frozen 4-6G build
+      # scope stayed frozen 15-17s against a 3s deadline. Nice=0 above buys CPU
+      # priority and could never fix a memory stall. Effective only because the
+      # whole ancestor chain grants it too -- see memory-policy.nix.
+      MemoryMin = memory.controlPlaneMin;
     };
   };
 
@@ -465,6 +492,13 @@ in
       # Self-bound (see the monitor's note); a long-lived Python loop.
       MemoryAccounting = true;
       MemoryHigh = "256M";
+      # Floored for the same reason as the governor above: it has to keep
+      # publishing `allowed` during the pressure it exists to relieve, and a
+      # controller whose pages went to zram publishes late. Readers treat an
+      # `allowed` file older than KX_SEM_STALE_AFTER as controller-dead and fail
+      # OPEN -- so a stalled controller does not merely decide slowly, it hands
+      # the whole fleet an unthrottled semaphore at the worst possible moment.
+      MemoryMin = memory.controlPlaneMin;
       # No ExecStopPost cleanup is needed, and that is a property of the design
       # rather than an omission: the controller restricts capacity by HOLDING
       # flocks, and the kernel drops every flock when the process dies. However

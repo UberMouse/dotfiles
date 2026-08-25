@@ -52,6 +52,30 @@ let
   # MemTotal as the box actually reports it (29.19 GiB → floor to be safe).
   # If the VM's RAM allocation changes, update this and re-check the margin.
   memTotalG = 29;
+  # THE CONTROL PLANE's memory guarantee, in MiB rather than GiB because that is
+  # the honest size of it: the governor is a bash loop measured at 2.5M resident
+  # (5.5M peak) and the semaphore controller a Python loop at 2.8M (18M peak).
+  #
+  # It is carved from the MARGIN above, deliberately, and so does NOT appear in
+  # the GiB partition assertion below: 64M is ~2% of that 3G and the margin's
+  # whole job is to cover what no cgroup budget names. Adding a fifth GiB-scale
+  # term for it would force poolHighG down a whole gigabyte to keep the
+  # assertion balanced -- a build-capacity cut two orders of magnitude larger
+  # than the need.
+  #
+  # WHY IT EXISTS. `memory.min` is only effective if the WHOLE ancestor chain
+  # grants it, and user@1000.service claimed 0 -- so the governor and the
+  # semaphore controller, which run under it in app.slice, had no protection at
+  # all while holding MemoryHigh=256M self-caps that only ever bounded them from
+  # above. Their pages were swapped to zram under exactly the pressure they
+  # exist to relieve: measured 2026-08-25, 117 governor LAG events of which 87%
+  # fell within 120s of a desktop stall, three of them today at 15s, 17s and 48s
+  # against a 5s tick -- the watchdog blind in the window it was built to watch.
+  #
+  # This is added ON TOP of desktopMinG at user.slice/user-<uid>.slice (see
+  # userSliceMin below) rather than shared with it, so the desktop's 8G floor is
+  # not diluted to pay for it; the cost lands on the margin, where it belongs.
+  controlPlaneM = 64;
 in
 assert
   poolHighG + desktopMinG + userOtherG + marginG <= memTotalG
@@ -68,6 +92,16 @@ assert
   || throw "memory-policy: pool MemoryMax + desktop MemoryMin must fit under MemTotal";
 {
   desktopMin = "${toString desktopMinG}G";
+  # What user.slice and user-<uid>.slice must grant: the desktop floor PLUS the
+  # control plane's reservation. The session scope still claims only desktopMin,
+  # so this extra is what app.slice's watchdogs claim through user@<uid>.service
+  # without taking a byte from the desktop's guarantee. Consumed by nixos.nix.
+  userSliceMin = "${toString (desktopMinG * 1024 + controlPlaneM)}M";
+  # The per-service floor for the governor and the semaphore controller, and the
+  # matching claim for the two ancestors they sit under (user@<uid>.service and
+  # its app.slice). One number, four sites: a floor granted at the leaf but not
+  # at every ancestor is silently zero, which is the bug this whole term fixes.
+  controlPlaneMin = "${toString controlPlaneM}M";
   poolHigh = "${toString poolHighG}G";
   poolMax = "${toString poolMaxG}G";
   # Raw integers, for consumers that DERIVE from the policy instead of
@@ -81,5 +115,6 @@ assert
     poolMaxG
     userOtherG
     memTotalG
+    controlPlaneM
     ;
 }

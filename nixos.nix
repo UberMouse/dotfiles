@@ -425,13 +425,35 @@ in
   # all reclaim to zram. Surgical: does NOT throttle pool builds (memory.high stays
   # 16G); costs the pool ~2G of box headroom before it becomes the sole reclaim
   # target. Tune further from the next (harder) desktop event.
+  #
+  # These two grant desktopMin PLUS the control plane's reservation
+  # (memory.userSliceMin), not desktopMin alone. The session scope below still
+  # claims only desktopMin; the extra exists so the governor and the semaphore
+  # controller -- which live under user@<uid>.service, a SIBLING of the session
+  # scope -- can claim a floor of their own without scaling the desktop's down.
+  # Granting only desktopMin here would make those two claims sum to more than
+  # the parent grants, and the kernel would divide the shortfall across both:
+  # the desktop would quietly pay for the watchdogs. See memory-policy.nix.
   systemd.slices.user.sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = memory.desktopMin;
+    MemoryMin = memory.userSliceMin;
   };
   systemd.slices."user-".sliceConfig = {
     MemoryAccounting = true;
-    MemoryMin = memory.desktopMin;
+    MemoryMin = memory.userSliceMin;
+  };
+
+  # The third link in the control plane's chain. user@<uid>.service deliberately
+  # claimed memory.min=0 so the whole user.slice guarantee flowed to the session
+  # scope -- correct while nothing under it needed protecting, and the reason a
+  # MemoryMin set on cgroup-governor.service alone was worth exactly nothing
+  # (measured 2026-08-25: min=0 at this link, so the leaf's floor never bound).
+  # It now claims the control-plane reservation and no more. worktrees.slice
+  # still claims 0 beneath it, so the pool remains the reclaim target as
+  # designed; only app.slice's watchdogs draw on this.
+  systemd.services."user@".serviceConfig = {
+    MemoryAccounting = true;
+    MemoryMin = memory.controlPlaneMin;
   };
 
   # The graphical session lives in a TRANSIENT session-<N>.scope (system-owned,
@@ -463,7 +485,20 @@ in
         # The policy floor (memory-policy.nix; 6G->8G 2026-07-17) keeps the
         # whole desktop working set under the untouchable band so global
         # reclaim from a bloated pool can't brush it.
-        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=${memory.desktopMin} 2>/dev/null || true
+        #
+        # TWO DIFFERENT NUMBERS, deliberately. The SLICE grants userSliceMin --
+        # the desktop floor PLUS the control plane's reservation -- because the
+        # session scope is not its only child that claims protection:
+        # user@<uid>.service claims controlPlaneMin beneath it for the governor
+        # and the semaphore controller. The SCOPE still claims desktopMin and no
+        # more. Granting desktopMin at both levels (as this did until
+        # 2026-08-25) makes the children's claims sum to more than the parent
+        # grants, and the kernel then scales BOTH down proportionally -- so the
+        # desktop quietly stops getting the whole floor this line exists to give
+        # it. This --runtime assignment also OVERRIDES the static
+        # systemd.slices."user-" config above, so fixing that alone was not
+        # enough: verified live, the slice still read 8G until this line changed.
+        [ -n "$uid" ] && systemctl set-property --runtime "user-$uid.slice" MemoryMin=${memory.userSliceMin} 2>/dev/null || true
         systemctl set-property --runtime "session-$s.scope" MemoryMin=${memory.desktopMin} 2>/dev/null || true
         # io.latency: Xorg's disk I/O jumps the queue -- when the session's I/O
         # latency exceeds 50ms the kernel throttles the competing build pool, so a
