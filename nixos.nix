@@ -130,6 +130,30 @@ in
   services.displayManager.gdm.enable = true;
   # services.xserver.desktopManager.gnome.enable = true; # Disabled - using i3 only
 
+  # A switch must NEVER take the desktop with it. Without this, restarting
+  # display-manager.service tears down Xorg, and with it i3 and every open
+  # window: measured 2026-08-25 16:02:51, a switch logged the session out
+  # ("Server terminated successfully (0)", then gdm-autologin closing taylorl's
+  # session) and dropped the machine to a greeter with a browser and a chat
+  # client's worth of state gone.
+  #
+  # The trigger is not the switch that carries a gdm change -- it is ANY switch
+  # once the booted generation has fallen behind the flake, because the whole
+  # backlog lands at once. That day's booted system was nixpkgs 20260814 against
+  # a tree at 20260823: nine days of accumulated changes, including an X update,
+  # applied by a switch whose actual subject was a cgroup memory floor.
+  #
+  # THE COST, deliberately accepted: gdm now keeps running its old store path
+  # until something restarts it, so a gdm or X update does not take effect at
+  # switch time. That is the right trade here -- the greeter is not where this
+  # machine's work lives, and a reboot (or an explicit `systemctl restart
+  # display-manager`) picks it up at a moment of the user's choosing rather than
+  # in the middle of a background agent's rebuild. It also means the desktop's
+  # memory.min chain survives a switch intact: desktop-memory-protect asserts
+  # that against a LIVE session scope, and a session that dies mid-switch takes
+  # the assertion's target with it.
+  systemd.services.display-manager.restartIfChanged = false;
+
   # Configure keymap in X11
   services.xserver.xkb = {
     layout = "nz";
