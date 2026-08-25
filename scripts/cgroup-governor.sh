@@ -912,7 +912,22 @@ while :; do
     fi
   done
   if brake_release_due "$brake_scope" "$brake_until" "$now"; then
-    thaw_scope "$brake_scope" "brake released after $(( now - brake_until + FREEZE_SECS ))s (deadline ${FREEZE_SECS}s)"
+    # Held time vs what this loop can actually deliver. A brake armed with
+    # FREEZE_SECS below INTERVAL ALWAYS rounds up to the next tick (see the
+    # note above) -- so a 3 s deadline releasing at 5-6 s is the design working,
+    # not a fault, and saying only "deadline 3s" invited every reader to score
+    # it as an overshoot. Anything beyond one whole tick past the deadline is a
+    # different animal: the tick itself overran, the loop was blind for that
+    # window (its own LAG line says so), and a live build scope stayed frozen
+    # for it. Tag that case so it greps apart from the benign rounding instead
+    # of hiding among it -- measured 2026-08-25: eight releases, six of them
+    # ordinary rounding at 5-6 s and two genuine overruns at 15 s and 17 s.
+    brake_held=$(( now - brake_until + FREEZE_SECS ))
+    if [ "$brake_held" -gt "$(( FREEZE_SECS + INTERVAL ))" ]; then
+      thaw_scope "$brake_scope" "OVERRUN brake held ${brake_held}s (deadline ${FREEZE_SECS}s, tick overran ${INTERVAL}s interval)"
+    else
+      thaw_scope "$brake_scope" "brake released after ${brake_held}s (deadline ${FREEZE_SECS}s, rounded up to one ${INTERVAL}s tick)"
+    fi
     brake_scope=""
     brake_until=0
   fi
