@@ -179,6 +179,42 @@ Traps when diagnosing it:
   - `memory.high` is NOT corrected to match — it is a limit on the raw charge,
     and inflating the ceiling would give back the optimism the numerator exists
     to remove.
+  - **That uncorrected ceiling comes back as PSI.** The kernel enforces
+    `memory.high` against the RAW charge, so a pool doing heavy file IO pins the
+    charge at the ceiling and pays reclaim throttling — and that throttling IS
+    memory pressure. Every FRACTION here is corrected for cache; PSI cannot be,
+    because it is a MEASURED STALL rather than a computed ratio. The stall
+    genuinely happened; it just says nothing about what builds hold. Measured
+    2026-08-27: net in-use 4.9G of a 16G high (31%), desktop session at 0.00%
+    pressure, 11.8G MemAvailable — while `memory.events:high` climbed in
+    hundreds per tick and psi10 spiked to 39%. All 28 tightens in two hours were
+    `psi10=`, the predictive signal never fired once, and `allowed` averaged
+    3.25 while spending 29% of its time at 1–2: builds serialised to relieve
+    pressure the ceiling was manufacturing against their own page cache. So
+    `decide()` CROSS-CHECKS — a PSI tighten holding several jobs' worth of net
+    pool headroom AND ample machine-wide `MemAvailable` is SELF-INFLICTED and
+    may only reach `soft_floor`, never `floor`. Both terms are required (the
+    pool-local one alone would dismiss real scarcity on a globally starved box,
+    where global reclaim lands on the pool) and each reads no-signal as NOT
+    self-inflicted, so an unreadable input keeps the full floor — tighten early,
+    never late. It is deliberately NOT a suppression of `hot_psi`: with the
+    signal off entirely, LOOSEN would ratchet to `ceil` straight through an
+    episode of thrash, which PSI is the only signal positioned to catch. Log
+    tag: `[self-inflicted, soft floor N]`.
+  - **The LOOSEN gate needed the same exemption, and bounding only the descent
+    fixes half a sawtooth.** `psi60` is the raw stall average too, so the same
+    cache reclaim keeps it over `loosen_psi` for as long as the pool does file
+    IO — and every recovery step is gated on it. Measured 2026-08-27 with the
+    tighten half already shipped: minutes at `allowed=2` with `psi10` at 0.00%
+    and 18 jobs queued, because `psi60` sat at 4.4% against a 3.0% gate while
+    the pool was 40% full with 9.6G of headroom. So a self-inflicted window
+    passes the gate as well (log tag `[self-inflicted]` on the LOOSEN line).
+    Safe because `allowed` is a CAP, not an admission — every start is still
+    gated tick-by-tick by the load test, which is deliberately NOT exempted —
+    and self-limiting, because the exemption needs several jobs' worth of net
+    headroom and so withdraws itself as builds genuinely fill the pool. The
+    other loosen guards (`cap_saturated`, dwell, ceiling) are untouched and
+    asserted against.
   - This is the same misreading commit d17dc8b fixed for the FLEET term, and it
     survived on the pool side because the argument that retired it there —
     subtracting the same bytes from usage and ceiling cancels — is true of the

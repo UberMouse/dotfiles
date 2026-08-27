@@ -337,6 +337,20 @@ class Config:
     # memory.high, before PSI has had time to register. Reclaim latency is the
     # symptom; approaching the ceiling is the cause, and it is visible earlier.
     tighten_high_frac: float = 0.90
+    # SELF-INFLICTED STALL DETECTION, part one: how many jobs' worth of NET
+    # headroom the pool must hold before a PSI spike is read as its own cache
+    # reclaim rather than as scarcity. Deliberately well above
+    # grant_headroom_jobs, which asks "is there room for one more"; this asks
+    # the stronger question "is there so much room that a stall cannot
+    # plausibly be about builds at all". See the self-inflicted note in
+    # decide().
+    self_inflicted_headroom_jobs: float = 4.0
+    # Part two: the MACHINE's own slack. Both halves must hold -- the
+    # pool-local term alone would ignore genuine scarcity on a globally
+    # starved box, where global reclaim lands on the pool and the resulting
+    # PSI is emphatically not ours to dismiss. 4 GiB is the point below which
+    # there is no room outside the pool for its cache to have lived anyway.
+    self_inflicted_avail: int = 4 * 1024**3
     # Slots surrendered per tightening tick (multiplicative-ish decrease).
     step_down: int = 2
     # Slots regained per loosening tick (additive increase).
@@ -546,6 +560,29 @@ UNTRACKED_SUBPATH = os.environ.get("KX_SEM_UNTRACKED", "worktrees-agents.slice")
 # swap). Everything else under `file` is page cache the kernel reclaims on its
 # own, so it must not be charged against the build budget.
 UNTRACKED_KEYS = ("anon", "shmem")
+
+
+def read_mem_available(path="/proc/meminfo"):
+    """MemAvailable bytes for the WHOLE MACHINE, or None for no signal.
+
+    The second half of the self-inflicted-stall test in decide(); the first
+    half is pool-local headroom. MemAvailable rather than MemFree because
+    reclaimable cache is precisely what is in question here -- MemFree would
+    report a box doing healthy file IO as though it were full, which is the
+    same misreading of cache this controller already corrects on the pool
+    side (see cgroup-mem.py).
+    """
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("MemAvailable:"):
+            try:
+                return int(line.split()[1]) * 1024
+            except (IndexError, ValueError):
+                return None
+    return None
 
 
 def read_untracked_mem(path):
@@ -920,14 +957,18 @@ State = collections.namedtuple(
 # unreadable; `resident` is the live-keeper count; `untracked` is bytes held
 # inside the pool by tenants that take no slots (the agents fleet), or None
 # for no signal -- see the BUILD BUDGET note on high_frac in decide().
+# `mem_available` is the MACHINE's MemAvailable in bytes (or None), the
+# non-pool half of the self-inflicted-stall test in decide().
 # `pool_cache` is DIAGNOSTIC ONLY -- it shapes no decision, it just lets the
 # HOLD line say how much reclaimable memory the gate is (correctly) refusing to
 # count. It carries a default so the policy suite keeps constructing Inputs
 # without it, and so a new field can never silently become load-bearing: any
 # branch that started reading it would be reading None in every unit test.
 Inputs = collections.namedtuple(
-    "Inputs", "now psi10 psi60 pool_mem occupied resident untracked pool_cache",
-    defaults=(None,),
+    "Inputs",
+    "now psi10 psi60 pool_mem occupied resident untracked pool_cache "
+    "mem_available",
+    defaults=(None, None),
 )
 
 # One capacity transition. `tag` is the branch that fired (TIGHTEN / LOOSEN /
@@ -972,6 +1013,7 @@ def decide(state, inputs, cfg):
     occupied = inputs.occupied
     resident = inputs.resident
     untracked = inputs.untracked
+    mem_available = inputs.mem_available
 
     reasons = []
     notes = []
@@ -1151,6 +1193,48 @@ def decide(state, inputs, cfg):
     # alone.
     cap_saturated = occupied is None or occupied >= allowed
 
+    # IS THE STALL SELF-INFLICTED? `memory.high` is enforced by the KERNEL
+    # against the RAW charge, which counts page cache. Every signal in this
+    # controller reads that charge NET of what the kernel reclaims unasked
+    # (see read_pool_mem and cgroup-mem.py). Those two facts pull apart
+    # exactly when the pool does heavy file IO: the raw charge rides the
+    # ceiling, the kernel throttles allocations to hold it there, and the net
+    # figure -- the memory builds would actually give back -- sits far below.
+    #
+    # That throttling IS memory PSI. So psi10 reports a stall no amount of
+    # tightening can relieve: the bytes at the ceiling are cache the builds do
+    # not hold and the kernel drops without being asked.
+    #
+    # This is the one signal the 2026-08-19 cache correction could not reach.
+    # The FRACTIONS were fixed at the source by subtracting reclaimable bytes;
+    # PSI is a MEASURED STALL, so there is nothing to subtract -- the stall
+    # genuinely happened. It can only be cross-checked against the conditions
+    # that would make it meaningful.
+    #
+    # Measured 2026-08-27: net in-use 4.9G of a 16G high (31%), build-budget
+    # fraction 14%, desktop session at 0.00% pressure and 12.6G MemAvailable --
+    # while memory.events:high climbed in hundreds per tick and psi10 spiked to
+    # 39%. Every one of 28 tightens in two hours was psi10; the predictive
+    # signal never fired once. `allowed` averaged 3.25 and spent 29% of its
+    # time at 1-2, throttling builds to relieve pressure the ceiling was
+    # manufacturing against their own cache.
+    #
+    # BOTH terms are required, and each is "no signal -> not self-inflicted"
+    # so that an unreadable input leaves the full floor available: tighten
+    # early, never late, the same direction every other fallback here takes.
+    # The headroom term says the POOL has room measured in the units this
+    # controller governs. The MemAvailable term says the MACHINE has room,
+    # which is what separates "our own ceiling is squeezing our own cache"
+    # from "global reclaim is landing on us because the box is full". Drop
+    # the second term and a genuinely starved box with a cache-heavy pool
+    # would dismiss real scarcity as its own doing.
+    self_inflicted = (
+        headroom is not None
+        and headroom >= cfg.self_inflicted_headroom_jobs * cfg.job_bytes
+        and mem_available is not None
+        and mem_available >= cfg.self_inflicted_avail
+    )
+
     hot_psi = psi10 is not None and psi10 > cfg.tighten_psi
     hot_high = (
         high_frac is not None and high_frac > cfg.tighten_high_frac
@@ -1184,7 +1268,25 @@ def decide(state, inputs, cfg):
         # psi10, i.e. evidence that something is actually stalling. That
         # keeps the aggressive state reserved for demonstrated harm
         # rather than for a threshold this box crosses routinely.
-        limit = floor_dyn if hot_psi else max(floor_dyn, soft_floor_dyn)
+        # A SELF-INFLICTED stall is demoted to the predictive signal's
+        # authority. It still tightens -- cache thrash is real (7397 file
+        # refaults/s when this was measured), and more concurrent builds make
+        # more of it -- but it may not drive to the absolute floor, because
+        # the evidence it rests on is not evidence that BUILDS are holding the
+        # memory. Reaching floor still requires a stall the pool cannot
+        # explain away as reclaim of its own cache, which is exactly the
+        # "demonstrated harm" bar the soft floor was introduced to protect.
+        #
+        # Deliberately NOT a suppression of hot_psi. Suppressing it entirely
+        # would leave the LOOSEN branch free to ratchet to ceil through an
+        # episode of thrash, since the memory gate reads the same roomy net
+        # headroom that makes the stall self-inflicted in the first place --
+        # the runaway that PSI is the only signal positioned to catch.
+        limit = (
+            floor_dyn
+            if (hot_psi and not self_inflicted)
+            else max(floor_dyn, soft_floor_dyn)
+        )
         # The outer min() is load-bearing: a tighten must NEVER raise
         # capacity. Without it, `max(limit, allowed - step_down)` reads
         # max(4, -1) = 4 once PSI has already driven allowed to 1, so a
@@ -1211,6 +1313,11 @@ def decide(state, inputs, cfg):
                     f"build={high_frac * 100:.0f}% "
                     f"(fleet {untracked / 2**30:.1f}G)"
                 )
+        if hot_psi and self_inflicted:
+            # Named in the log because the number that explains it is one the
+            # line does NOT carry: psi10 is high while the net charge is low,
+            # and without this tag the pair reads as a contradiction.
+            bits.append(f"[self-inflicted, soft floor {limit}]")
         if not hot_psi:
             bits.append(f"[predictive, soft floor {limit}]")
         # Appended even when the clamp did not move `allowed` (before ==
@@ -1220,7 +1327,28 @@ def decide(state, inputs, cfg):
         reasons.append(Reason("TIGHTEN", " ".join(bits), before, allowed))
     elif (
         psi60 is not None
-        and psi60 < cfg.loosen_psi
+        # THE RECOVERY SIDE OF THE SAME CORRECTION. psi60 is the raw stall
+        # average, so the cache-reclaim throttling described at
+        # `self_inflicted` above keeps it elevated for exactly as long as the
+        # pool does file IO -- and every recovery step is gated on it. Bounding
+        # the DESCENT while leaving the ASCENT blocked by the same uncorrected
+        # signal fixes half a sawtooth: measured 2026-08-27, minutes at
+        # allowed=2 with psi10 at 0.00% and 18 jobs queued, because psi60 sat
+        # at 4.4% against a 3.0% gate while the pool was 40% full with 9.6G of
+        # headroom and the machine had 9.9G available.
+        #
+        # Safe because `allowed` is a CAP, not an admission: every actual
+        # start is still gated tick-by-tick by the load test (mem_ok AND
+        # psi10 <= grant_psi), which is untouched here. Raising the cap during
+        # thrash therefore admits nothing by itself -- it only stops the cap
+        # from being the reason a calm box refuses work it has room for.
+        #
+        # And it is self-limiting: self_inflicted requires several jobs' worth
+        # of net headroom, so as builds actually fill the pool the exemption
+        # withdraws itself and psi60 becomes binding again. The idle-ratchet
+        # guard below (cap_saturated) is what keeps this from growing capacity
+        # nobody asked for.
+        and (psi60 < cfg.loosen_psi or self_inflicted)
         # Only grow capacity that is actually being USED. A quiet PSI on
         # an idle box is not evidence that a larger `allowed` is safe --
         # it is the absence of evidence, measured on a machine doing
@@ -1237,7 +1365,13 @@ def decide(state, inputs, cfg):
         before = allowed
         allowed = min(ceil_dyn, allowed + cfg.step_up)
         last_up = now
-        reasons.append(Reason("LOOSEN", f"psi60={psi60:.1f}%", before, allowed))
+        # Tagged when the gate was passed on the exemption rather than on a
+        # quiet window, so a LOOSEN at psi60=4.4% against a 3.0% threshold
+        # cannot read as a broken comparison.
+        detail = f"psi60={psi60:.1f}%"
+        if psi60 >= cfg.loosen_psi:
+            detail += " [self-inflicted]"
+        reasons.append(Reason("LOOSEN", detail, before, allowed))
 
     # HOW MANY SLOTS TO OFFER, given the capacity just settled on. This was
     # a closure (admit_target) that mixed default-argument capture with
@@ -1400,6 +1534,7 @@ def main(sleep=time.sleep):
             pool_mem = None if pool_raw is None else (pool_raw[0], pool_raw[1])
             pool_cache = None if pool_raw is None else pool_raw[2]
             untracked = read_untracked_mem(POOL)
+            mem_available = read_mem_available()
             occupied = sem.occupancy()
             resident = sem.resident()
             now = time.monotonic()
@@ -1409,7 +1544,7 @@ def main(sleep=time.sleep):
                 Inputs(
                     now=now, psi10=psi10, psi60=psi60, pool_mem=pool_mem,
                     occupied=occupied, resident=resident, untracked=untracked,
-                    pool_cache=pool_cache,
+                    pool_cache=pool_cache, mem_available=mem_available,
                 ),
                 CFG,
             )

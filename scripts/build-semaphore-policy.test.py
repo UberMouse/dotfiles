@@ -47,7 +47,7 @@ def st(allowed=4, mark=0, last_up=0.0, last_growth=0.0,
 
 
 def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
-        occupied=0, resident=0, fleet=None):
+        occupied=0, resident=0, fleet=None, avail=None):
     """Inputs with pool sizes in GiB; pool=False means the pool is unreadable.
 
     NOTE the default `now` of 1000.0 against the default clocks of 0.0: dwell
@@ -56,11 +56,16 @@ def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
     `fleet` is GiB held by pool tenants that take no slots, or None for "no
     signal" -- which is the default precisely so that every pre-existing case
     below still measures high_frac over the whole pool, as it was written to.
+
+    `avail` is the MACHINE's MemAvailable in GiB, or None for "no signal" --
+    the default, so that every case written before the self-inflicted test
+    existed still gets the full floor, which is what those cases assert.
     """
     pool_mem = (int(cur * GIB), int(high * GIB)) if pool else None
     untracked = None if fleet is None else int(fleet * GIB)
+    mem_available = None if avail is None else int(avail * GIB)
     return bsc.Inputs(now, psi10, psi60, pool_mem, occupied, resident,
-                      untracked)
+                      untracked, mem_available=mem_available)
 
 
 def tags(d):
@@ -98,6 +103,68 @@ d = bsc.decide(st(allowed=1), inp(cur=15.0, occupied=1), CFG)
 check("tighten never raises", d.state.allowed, 1)
 check("no-op tighten still records its branch", len(d.reasons), 1)
 check("no-op tighten span is flat", span(d.reasons[0]), (1, 1))
+
+# --- SELF-INFLICTED STALLS: our own ceiling squeezing our own cache ---------
+#
+# memory.high is enforced against the RAW charge, cache included, while every
+# figure here is net of reclaimable cache. A pool doing heavy file IO therefore
+# pins the raw charge at the ceiling and pays reclaim throttling -- which IS
+# memory PSI -- with the net charge nowhere near the limit. Measured 2026-08-27:
+# psi10 spiking to 39% against net in-use of 4.9G in a 16G pool, desktop at
+# 0.00% pressure, 12.6G MemAvailable; 28 of 28 tightens in two hours were psi10
+# and `allowed` spent 29% of its time at 1-2 for nothing.
+#
+# Such a stall is demoted to the predictive signal's authority: still a tighten,
+# but bounded by the soft floor.
+d = bsc.decide(st(allowed=8), inp(psi10=50.0, occupied=8, avail=12.0), CFG)
+check("self-inflicted psi still steps down", d.state.allowed, 6)
+check("self-inflicted psi is still a tighten", tags(d), ["TIGHTEN"])
+d = bsc.decide(st(allowed=5), inp(psi10=50.0, occupied=5, avail=12.0), CFG)
+check("self-inflicted psi stops at the soft floor", d.state.allowed, 4)
+check("self-inflicted reason says so",
+      "[self-inflicted" in d.reasons[0].detail, True)
+check("...and still reports the stall it is discounting",
+      "psi10=50.0%" in d.reasons[0].detail, True)
+
+# BOTH halves of the test are load-bearing, and each failing alone must restore
+# the full floor.
+#
+# A globally starved box: global reclaim lands on the pool and the PSI is not
+# ours to dismiss, however roomy the pool's own net headroom looks.
+d = bsc.decide(st(allowed=2), inp(psi10=50.0, occupied=2, avail=2.0), CFG)
+check("a starved machine still reaches the floor", d.state.allowed, 1)
+
+# A pool genuinely close to its own ceiling: 13/16G leaves 3G, under the 4-job
+# (6G) bar, and 81% keeps the predictive signal out of it so psi is isolated.
+d = bsc.decide(st(allowed=2),
+               inp(psi10=50.0, cur=13.0, occupied=2, avail=12.0), CFG)
+check("a genuinely tight pool still reaches the floor", d.state.allowed, 1)
+
+# NO SIGNAL is not a licence to discount: an unreadable /proc/meminfo leaves the
+# full floor available, the same tighten-early-never-late direction every other
+# fallback in decide() takes. (This is the default `avail`, which is why every
+# pre-existing case above keeps its meaning.)
+d = bsc.decide(st(allowed=2), inp(psi10=50.0, occupied=2), CFG)
+check("no MemAvailable signal still reaches the floor", d.state.allowed, 1)
+
+# THE TIGHTEN-NEVER-RAISES min() again, on this path: PSI has already driven
+# allowed to 1 and the stall now reads as self-inflicted, which lifts `limit` to
+# the soft floor. max(4, -1) is 4, so without the outer min() this tick would
+# RAISE 1 -> 4 -- the same loosen-wearing-a-TIGHTEN-label ring the predictive
+# case above guards against, reached through a different door.
+d = bsc.decide(st(allowed=1), inp(psi10=50.0, occupied=1, avail=12.0), CFG)
+check("self-inflicted tighten never raises", d.state.allowed, 1)
+check("self-inflicted no-op still records its branch", len(d.reasons), 1)
+check("self-inflicted no-op span is flat", span(d.reasons[0]), (1, 1))
+
+# A REAL stall on a roomy box must still be able to reach the floor once the
+# machine's slack is gone -- the transition, not just the endpoints.
+d = bsc.decide(st(allowed=4), inp(psi10=50.0, occupied=4, avail=12.0), CFG)
+check("self-inflicted holds at the soft floor", d.state.allowed, 4)
+d = bsc.decide(st(allowed=4), inp(psi10=50.0, occupied=4, avail=1.0), CFG)
+check("...and drops through it the moment the box is genuinely short",
+      d.state.allowed, 2)
+
 
 # --- The BUILD BUDGET: untracked tenants must not read as build pressure ----
 #
@@ -189,6 +256,53 @@ check("no loosen while psi60 busy", d.state.allowed, 4)
 d = bsc.decide(st(allowed=2, mark=2), inp(now=100.0, psi10=10.0, occupied=1),
                CFG)
 check("no loosen behind a closed gate", d.state.allowed, 2)
+
+# ...unless that busy long window is the pool's OWN cache reclaim. psi60 is
+# the raw stall average, so the throttling described in the self-inflicted
+# block above keeps it elevated for as long as the pool does file IO -- and
+# every recovery step is gated on it. Bounding the descent while leaving the
+# ascent blocked by the same uncorrected signal fixes half a sawtooth:
+# measured 2026-08-27, minutes at allowed=2 with psi10 at 0.00% and 18 jobs
+# queued, psi60 stuck at 4.4% against the 3.0% gate while the pool was 40%
+# full and the machine had 9.9G available.
+d = bsc.decide(st(allowed=4, mark=4),
+               inp(now=100.0, psi60=5.0, occupied=4, avail=12.0), CFG)
+check("self-inflicted psi60 does not block recovery", d.state.allowed, 5)
+check("self-inflicted loosen is tagged",
+      "[self-inflicted]" in d.reasons[0].detail, True)
+check("...and still reports the window it is discounting",
+      "psi60=5.0%" in d.reasons[0].detail, True)
+
+# A loosen on a genuinely quiet window must NOT wear the tag -- it did not use
+# the exemption, and a reader has to be able to tell the two apart.
+d = bsc.decide(st(allowed=4, mark=4), inp(now=100.0, occupied=4, avail=12.0),
+               CFG)
+check("a quiet loosen carries no tag",
+      "[self-inflicted]" in d.reasons[0].detail, False)
+
+# The exemption relaxes ONLY the psi60 gate. Every other guard on the loosen
+# still stands, and each is asserted here because the whole risk of this
+# change is that it becomes a licence to grow.
+d = bsc.decide(st(allowed=4), inp(now=100.0, psi60=5.0, occupied=0,
+                                  avail=12.0), CFG)
+check("self-inflicted does not defeat the idle ratchet", d.state.allowed, 4)
+d = bsc.decide(st(allowed=4, mark=4, last_up=90.0),
+               inp(now=100.0, psi60=5.0, occupied=4, avail=12.0), CFG)
+check("self-inflicted does not defeat dwell", d.state.allowed, 4)
+d = bsc.decide(st(allowed=8, mark=8),
+               inp(now=100.0, psi60=5.0, occupied=8, avail=12.0), CFG)
+check("self-inflicted does not defeat the ceiling", d.state.allowed, 8)
+
+# A REAL busy window on a genuinely full pool still blocks recovery: 13/16G
+# leaves 3G, under the 4-job (6G) bar, so the exemption withdraws itself
+# exactly as builds fill the pool. This is what makes the change self-limiting.
+d = bsc.decide(st(allowed=4, mark=4),
+               inp(now=100.0, psi60=5.0, cur=13.0, occupied=4, avail=12.0),
+               CFG)
+check("a genuinely full pool still blocks recovery", d.state.allowed, 4)
+d = bsc.decide(st(allowed=4, mark=4),
+               inp(now=100.0, psi60=5.0, occupied=4, avail=1.0), CFG)
+check("a starved machine still blocks recovery", d.state.allowed, 4)
 
 # At the ceiling there is nothing left to grant.
 d = bsc.decide(st(allowed=8, mark=8), inp(now=100.0, occupied=8), CFG)
