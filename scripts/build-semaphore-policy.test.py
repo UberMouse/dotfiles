@@ -47,7 +47,7 @@ def st(allowed=4, mark=0, last_up=0.0, last_growth=0.0,
 
 
 def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
-        occupied=0, resident=0, fleet=None, avail=None):
+        occupied=0, resident=0, fleet=None, avail=None, desk=0.0):
     """Inputs with pool sizes in GiB; pool=False means the pool is unreadable.
 
     NOTE the default `now` of 1000.0 against the default clocks of 0.0: dwell
@@ -60,12 +60,21 @@ def inp(now=1000.0, psi10=0.0, psi60=0.0, cur=1.0, high=16.0, pool=True,
     `avail` is the MACHINE's MemAvailable in GiB, or None for "no signal" --
     the default, so that every case written before the self-inflicted test
     existed still gets the full floor, which is what those cases assert.
+
+    `desk` is the DESKTOP scope's full-avg10 memory PSI, or None for "no
+    signal". Unlike `avail` it defaults to 0.0 (quiet) rather than to None,
+    because the self-inflicted cases predate this term and were all written
+    under the 2026-08-27 scenario, whose stated conditions included "desktop
+    session at 0.00% pressure". Defaulting it quiet preserves exactly what
+    those cases were written to measure; the no-signal direction is asserted
+    explicitly below instead of being carried by the default.
     """
     pool_mem = (int(cur * GIB), int(high * GIB)) if pool else None
     untracked = None if fleet is None else int(fleet * GIB)
     mem_available = None if avail is None else int(avail * GIB)
     return bsc.Inputs(now, psi10, psi60, pool_mem, occupied, resident,
-                      untracked, mem_available=mem_available)
+                      untracked, mem_available=mem_available,
+                      desktop_psi10=desk)
 
 
 def tags(d):
@@ -126,8 +135,8 @@ check("self-inflicted reason says so",
 check("...and still reports the stall it is discounting",
       "psi10=50.0%" in d.reasons[0].detail, True)
 
-# BOTH halves of the test are load-bearing, and each failing alone must restore
-# the full floor.
+# ALL THREE terms are load-bearing, and each failing alone must restore the
+# full floor.
 #
 # A globally starved box: global reclaim lands on the pool and the PSI is not
 # ours to dismiss, however roomy the pool's own net headroom looks.
@@ -146,6 +155,38 @@ check("a genuinely tight pool still reaches the floor", d.state.allowed, 1)
 # pre-existing case above keeps its meaning.)
 d = bsc.decide(st(allowed=2), inp(psi10=50.0, occupied=2), CFG)
 check("no MemAvailable signal still reaches the floor", d.state.allowed, 1)
+
+# THE DESKTOP TERM (2026-09-04). A pool holding net headroom against its own
+# ceiling on a box that still reports MemAvailable is EXACTLY the shape of a
+# genuine machine-wide squeeze, because the partition in memory-policy.nix
+# balances at exact equality (16+8+2+3 = 29): "room under the pool ceiling"
+# and "no room on the machine" are simultaneously true, and MemAvailable does
+# not separate them -- it counts the reclaimable cache whose reclaim IS the
+# stall. Measured 2026-09-04 12:04: desktop at 47.96% memory PSI with 6.5G
+# MemAvailable, comfortably past the 4G gate, while the pressure monitor
+# logged its third desktop stall of the day.
+d = bsc.decide(st(allowed=5),
+               inp(psi10=50.0, occupied=5, avail=12.0, desk=33.8), CFG)
+check("a stalling desktop defeats the exemption", d.state.allowed, 3)
+check("...and the reason drops the self-inflicted tag",
+      "[self-inflicted" in d.reasons[0].detail, False)
+
+# The boundary is the threshold itself, not a hand-picked pair of values.
+d = bsc.decide(st(allowed=5),
+               inp(psi10=50.0, occupied=5, avail=12.0,
+                   desk=CFG.desktop_quiet_psi - 0.1), CFG)
+check("a desktop just under the bar is still quiet", d.state.allowed, 4)
+d = bsc.decide(st(allowed=5),
+               inp(psi10=50.0, occupied=5, avail=12.0,
+                   desk=CFG.desktop_quiet_psi), CFG)
+check("a desktop AT the bar is not quiet", d.state.allowed, 3)
+
+# NO SIGNAL, same direction as the other two terms: an unresolvable session
+# scope (no graphical session, or a display-manager restart mid-tick) must not
+# hand out an exemption it cannot justify.
+d = bsc.decide(st(allowed=2),
+               inp(psi10=50.0, occupied=2, avail=12.0, desk=None), CFG)
+check("no desktop signal still reaches the floor", d.state.allowed, 1)
 
 # THE TIGHTEN-NEVER-RAISES min() again, on this path: PSI has already driven
 # allowed to 1 and the stall now reads as self-inflicted, which lifts `limit` to
@@ -279,6 +320,20 @@ d = bsc.decide(st(allowed=4, mark=4), inp(now=100.0, occupied=4, avail=12.0),
                CFG)
 check("a quiet loosen carries no tag",
       "[self-inflicted]" in d.reasons[0].detail, False)
+
+# ...and the DESKTOP term withdraws the loosen exemption too. This is the half
+# with real teeth: a tighten that stops at the soft floor still tightens,
+# whereas an exempted LOOSEN re-opens admission into a box that has no room.
+# Measured 2026-09-04, the exemption fired on 42 of 112 loosens at psi60 up to
+# 44.3% against the 3.0% gate -- 14x over -- across a day in which the desktop
+# stalled twelve times, the most since the pre-tuning era. At 15:43 a tighten
+# to allowed=1 at psi10=45.2% was undone fifteen seconds later by an exempted
+# loosen at psi60=26.1%, with a 32.39% desktop stall logged between them.
+d = bsc.decide(st(allowed=4, mark=4),
+               inp(now=100.0, psi60=5.0, occupied=4, avail=12.0, desk=33.8),
+               CFG)
+check("a stalling desktop blocks the exempted loosen", d.state.allowed, 4)
+check("...and no LOOSEN is recorded at all", tags(d), [])
 
 # The exemption relaxes ONLY the psi60 gate. Every other guard on the loosen
 # still stands, and each is asserted here because the whole risk of this

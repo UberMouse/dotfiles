@@ -29,6 +29,7 @@ Every check runs and all failures are reported together at the end.
 import fcntl
 import importlib.util
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -382,6 +383,50 @@ else:
     print("SKIP  host-only SIGTERM/process-death check "
           "(export KX_TEST_HOST_ONLY=1 to run it)")
 
+
+# --- resolve_desktop: the third term's input has to survive a session ------
+# The DESKTOP term of the self-inflicted test (2026-09-04) is only as good as
+# its resolution, and a graphical session is not a fixture: a display-manager
+# restart takes the scope with it and a new one appears under a new number.
+# Resolution is pure filesystem (cgroup-lib.sh's most-PIDs fallback, no
+# loginctl subprocess in a 5s control loop), and every failure mode here must
+# end at None -- which decide() reads as NOT self-inflicted, keeping the full
+# floor.
+DESK = BASE / "userslice"
+for _name, _pids, _psi in (("session-2.scope", 5, 33.8),
+                           ("session-9.scope", 1, 0.0)):
+    _d = DESK / _name
+    _d.mkdir(parents=True)
+    (_d / "memory.pressure").write_text(
+        f"some avg10=0 avg60=0 avg300=0 total=0\n"
+        f"full avg10={_psi} avg60=0 avg300=0 total=0\n"
+    )
+    (_d / "cgroup.procs").write_text("".join(f"{i}\n" for i in range(_pids)))
+
+bsc.USER_SLICE = DESK
+bsc._desktop_cache = None
+check("the graphical session is the one with the most PIDs",
+      bsc.resolve_desktop().name, "session-2.scope")
+check("...and its PSI is what the third term reads",
+      bsc.read_psi(bsc.resolve_desktop(), "full")[0], 33.8)
+
+# A cached path that stops being readable must not be served forever: the
+# session died and a different scope is now the desktop.
+shutil.rmtree(DESK / "session-2.scope")
+check("a vanished session is re-resolved, not cached",
+      bsc.resolve_desktop().name, "session-9.scope")
+
+# No graphical session at all (headless boot, or mid-restart) is NO SIGNAL.
+shutil.rmtree(DESK / "session-9.scope")
+check("no session scope at all reads as no signal", bsc.resolve_desktop(), None)
+
+# A scope with no memory.pressure is not a candidate -- picking it would make
+# the term silently unreadable while looking resolved.
+(DESK / "session-3.scope").mkdir(parents=True)
+(DESK / "session-3.scope" / "cgroup.procs").write_text("1\n2\n3\n")
+bsc._desktop_cache = None
+check("a scope without memory.pressure is not the desktop",
+      bsc.resolve_desktop(), None)
 
 # --- read_untracked_mem: only UNRECLAIMABLE bytes count ---------------------
 # The fleet's memory.current is mostly page cache, which the kernel reclaims

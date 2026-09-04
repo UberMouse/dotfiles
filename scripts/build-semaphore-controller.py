@@ -274,6 +274,54 @@ POOL = Path(
     )
 )
 
+# The graphical session scope, for the DESKTOP term of the self-inflicted test.
+# Overridable exactly like POOL so the policy can be exercised against a
+# synthetic memory.pressure; when the override is set it is used verbatim,
+# with no resolution.
+DESKTOP_OVERRIDE = os.environ.get("KX_SEM_DESKTOP")
+USER_SLICE = Path(f"/sys/fs/cgroup/user.slice/user-{UID}.slice")
+
+# Resolution is deliberately PURE FILESYSTEM -- no loginctl subprocess in a 5 s
+# control loop. cgroup-lib.sh's resolve_desktop() prefers loginctl and falls
+# back to "the session-*.scope with the most PIDs is the graphical one";
+# this keeps only the fallback, because the cost of getting it wrong here is
+# bounded in the safe direction. An unresolved or misresolved desktop yields
+# no PSI signal, and no signal means NOT self-inflicted (see decide()), which
+# leaves the full floor available -- tighten early, never late, the same
+# direction every other fallback in this file takes.
+_desktop_cache = None
+
+
+def resolve_desktop():
+    """Path to the graphical session scope, or None when it cannot be found.
+
+    Re-resolves whenever the cached path stops being readable, so a session
+    that dies and comes back (a display-manager restart takes the scope with
+    it) is picked up without restarting the controller.
+    """
+    global _desktop_cache
+    if DESKTOP_OVERRIDE:
+        return Path(DESKTOP_OVERRIDE)
+    if _desktop_cache is not None and (_desktop_cache / "memory.pressure").is_file():
+        return _desktop_cache
+    _desktop_cache = None
+    best, best_n = None, 0
+    try:
+        candidates = sorted(USER_SLICE.glob("session-*.scope"))
+    except OSError:
+        return None
+    for d in candidates:
+        if not (d / "memory.pressure").is_file():
+            continue
+        try:
+            n = len((d / "cgroup.procs").read_text().split())
+        except OSError:
+            continue
+        if n > best_n:
+            best, best_n = d, n
+    _desktop_cache = best
+    return best
+
 
 def _int(name, default):
     try:
@@ -351,6 +399,31 @@ class Config:
     # PSI is emphatically not ours to dismiss. 4 GiB is the point below which
     # there is no room outside the pool for its cache to have lived anyway.
     self_inflicted_avail: int = 4 * 1024**3
+    # Part three: the DESKTOP must actually be quiet. The 2026-08-27 evidence
+    # that justified this whole test cited "desktop session at 0.00% pressure"
+    # as one of its conditions, but that observation was never encoded -- so
+    # the exemption went on firing once the premise expired. Measured
+    # 2026-09-04, with the pool at 17% cache (August: 40-52%) and the stalls
+    # therefore GENUINE: the LOOSEN exemption fired on 42 of 112 loosens at
+    # psi60 up to 44.3% against a 3.0% gate (9 of 61 tightens were softened to
+    # soft_floor), while session-2.scope stalled at 33-48% and the pressure
+    # monitor logged TWELVE desktop stalls -- the most since the pre-tuning era.
+    # The loosen half is the one with teeth: a softened tighten still tightens,
+    # an exempted loosen re-opens admission. Caught live at 15:43 -- tighten to
+    # allowed=1 at psi10=45.2%, then fifteen seconds later an exempted loosen
+    # back to 2 at psi60=26.1%, with a 32.39% desktop stall logged between them.
+    #
+    # 5% sits well above idle noise and well below the pressure monitor's own
+    # 15% stall threshold, so the exemption withdraws BEFORE the desktop
+    # crosses into what that monitor is willing to call a stall.
+    #
+    # This is the term the MemAvailable one cannot supply. MemAvailable counts
+    # reclaimable page cache, and reclaiming that cache IS the desktop's stall:
+    # at 12:04 today the desktop sat at 47.96% memory PSI with 6.5 GiB
+    # "available", comfortably past the 4 GiB gate. Only the desktop's own PSI
+    # distinguishes "our ceiling is squeezing our own cache" from "the squeeze
+    # has reached the thing all of this exists to protect".
+    desktop_quiet_psi: float = 5.0
     # Slots surrendered per tightening tick (multiplicative-ish decrease).
     step_down: int = 2
     # Slots regained per loosening tick (additive increase).
@@ -958,7 +1031,10 @@ State = collections.namedtuple(
 # inside the pool by tenants that take no slots (the agents fleet), or None
 # for no signal -- see the BUILD BUDGET note on high_frac in decide().
 # `mem_available` is the MACHINE's MemAvailable in bytes (or None), the
-# non-pool half of the self-inflicted-stall test in decide().
+# second term of the self-inflicted-stall test in decide(); `desktop_psi10`
+# is the graphical session scope's full-avg10 memory PSI (or None), its third.
+# Both read no-signal as NOT self-inflicted, so an unreadable input keeps the
+# full floor.
 # `pool_cache` is DIAGNOSTIC ONLY -- it shapes no decision, it just lets the
 # HOLD line say how much reclaimable memory the gate is (correctly) refusing to
 # count. It carries a default so the policy suite keeps constructing Inputs
@@ -967,8 +1043,8 @@ State = collections.namedtuple(
 Inputs = collections.namedtuple(
     "Inputs",
     "now psi10 psi60 pool_mem occupied resident untracked pool_cache "
-    "mem_available",
-    defaults=(None, None),
+    "mem_available desktop_psi10",
+    defaults=(None, None, None),
 )
 
 # One capacity transition. `tag` is the branch that fired (TIGHTEN / LOOSEN /
@@ -1014,6 +1090,7 @@ def decide(state, inputs, cfg):
     resident = inputs.resident
     untracked = inputs.untracked
     mem_available = inputs.mem_available
+    desktop_psi10 = inputs.desktop_psi10
 
     reasons = []
     notes = []
@@ -1219,20 +1296,31 @@ def decide(state, inputs, cfg):
     # time at 1-2, throttling builds to relieve pressure the ceiling was
     # manufacturing against their own cache.
     #
-    # BOTH terms are required, and each is "no signal -> not self-inflicted"
-    # so that an unreadable input leaves the full floor available: tighten
-    # early, never late, the same direction every other fallback here takes.
+    # ALL THREE terms are required, and each is "no signal -> not
+    # self-inflicted" so that an unreadable input leaves the full floor
+    # available: tighten early, never late, the same direction every other
+    # fallback here takes.
     # The headroom term says the POOL has room measured in the units this
     # controller governs. The MemAvailable term says the MACHINE has room,
     # which is what separates "our own ceiling is squeezing our own cache"
     # from "global reclaim is landing on us because the box is full". Drop
     # the second term and a genuinely starved box with a cache-heavy pool
     # would dismiss real scarcity as its own doing.
+    # The DESKTOP term (added 2026-09-04) says the squeeze has not reached
+    # what all of this exists to protect. It is not redundant with the other
+    # two: the pool can hold headroom against its own 16G ceiling while the
+    # box is out of RAM, because the partition in memory-policy.nix balances
+    # at exact equality -- "room under the ceiling" and "no room on the
+    # machine" are simultaneously true there, and MemAvailable does not
+    # separate them because the cache it counts is the cache whose reclaim is
+    # the stall. See docs/notes/2026-09-04-desktop-memory-stalls.md.
     self_inflicted = (
         headroom is not None
         and headroom >= cfg.self_inflicted_headroom_jobs * cfg.job_bytes
         and mem_available is not None
         and mem_available >= cfg.self_inflicted_avail
+        and desktop_psi10 is not None
+        and desktop_psi10 < cfg.desktop_quiet_psi
     )
 
     hot_psi = psi10 is not None and psi10 > cfg.tighten_psi
@@ -1511,6 +1599,7 @@ def main(sleep=time.sleep):
         f"grow+{CFG.grow_step} every>={CFG.grant_every}s free<={CFG.burst} "
         f"needs {CFG.grant_headroom_jobs}x{CFG.job_bytes / 2**30:.1f}G free "
         f"and psi10<={CFG.grant_psi}% max_resident={CFG.max_resident} "
+        f"desktop_quiet<{CFG.desktop_quiet_psi}% "
         f"start={state.allowed}"
     )
     # Set by __post_init__ when the Nix-derived KX_SEM_CEIL outgrew the slot
@@ -1535,6 +1624,10 @@ def main(sleep=time.sleep):
             pool_cache = None if pool_raw is None else pool_raw[2]
             untracked = read_untracked_mem(POOL)
             mem_available = read_mem_available()
+            desktop = resolve_desktop()
+            desktop_psi10 = (
+                None if desktop is None else read_psi(desktop, "full")[0]
+            )
             occupied = sem.occupancy()
             resident = sem.resident()
             now = time.monotonic()
@@ -1545,6 +1638,7 @@ def main(sleep=time.sleep):
                     now=now, psi10=psi10, psi60=psi60, pool_mem=pool_mem,
                     occupied=occupied, resident=resident, untracked=untracked,
                     pool_cache=pool_cache, mem_available=mem_available,
+                    desktop_psi10=desktop_psi10,
                 ),
                 CFG,
             )
