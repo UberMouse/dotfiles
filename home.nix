@@ -3,6 +3,7 @@
   pkgs,
   lib,
   unstable-pkgs,
+  omp,
   ...
 }:
 
@@ -17,6 +18,10 @@ in
     ./zsh.nix
     ./scriptBins
     ./cgroups.nix
+    # Upstream's own module, from the omp flake input -- it owns the package
+    # default and the config.yml activation, so there is nothing to restate
+    # here. Configured under programs.omp below.
+    omp.homeManagerModules.default
   ];
   # Home Manager needs a bit of information about you and the
   # paths it should manage.
@@ -117,6 +122,26 @@ in
       unstable-pkgs.rushjs
       unstable-pkgs.claude-code
     ];
+
+  # oh-my-pi, from the flake input's own home-manager module (imported
+  # above). The package is the module's default, i.e. the omp flake's own
+  # build -- not an overlay package, so it is not part of the packages/
+  # auto-discovery and has no UPDATE.md; its version moves with the weekly
+  # `nix flake update` like kolide-launcher.
+  #
+  # `settings` is written to ~/.omp/agent/config.yml as a WRITABLE file on
+  # every activation, which means it CLOBBERS runtime `/settings` and
+  # `omp config set` changes to these keys on the next switch. Only keys
+  # that should be declarative belong here -- everything omitted stays
+  # owned by omp itself. Auth is deliberately absent: credentials are
+  # established at runtime via `/login`, never from the repo.
+  programs.omp = {
+    enable = true;
+    settings = {
+      startup.quiet = true;
+      theme.dark = "titanium";
+    };
+  };
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
 

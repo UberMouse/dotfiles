@@ -67,6 +67,17 @@ composing, in module order:
 **Application modules** (imported by home.nix):
 - `i3.nix`, `zsh.nix`, `neovim.nix`, `scriptBins/` (per-script files under
   `scriptBins/bins/`, wired by `scriptBins/default.nix`)
+- the omp input's home-manager module — oh-my-pi, a terminal coding agent.
+  UPSTREAM owns the package and the config activation, so there is no
+  `packages/` entry and no UPDATE.md; like kolide-launcher its version rides
+  the weekly `nix flake update`. Two traps: `programs.omp.settings` in
+  `home.nix` is REWRITTEN over the live config file on every switch, so any
+  key declared there silently discards whatever `/settings` or `omp config
+  set` wrote at runtime (keys left out stay omp's to own) — and the build is
+  a rust nightly toolchain plus ~400 crates, which is why `nixos.nix` adds
+  the nix-community cache. That substituter is NOT optional decoration:
+  upstream declares it in its own flake's nixConfig, and a flake's nixConfig
+  is ignored when the flake is an input rather than the entrypoint.
 
 **Custom packages:** one directory per package under `packages/<name>/`
 (`package.nix` + `UPDATE.md`), AUTO-DISCOVERED by `packages/default.nix` into
@@ -87,7 +98,11 @@ made channel freshness irrelevant and it was dropped.) The channel RULE:
 ordinary packages come from stable; unstable exists as the overlay's base —
 only the custom/overlaid packages (and playwright, whose flake follows
 stable) resolve from it. A non-custom package taken from unstable needs a
-recorded reason, or it's drift.
+recorded reason, or it's drift. The omp input pins a nixpkgs of its own
+(deliberately NOT `follows`-ed — following ours re-hashes every derivation
+and misses upstream's cache), so the LOCKFILE carries a third nixpkgs. It is
+not a third channel and costs nothing like unstable-small did: nothing here
+imports it, and it is evaluated only inside omp's own outputs.
 
 **Not part of the flake:** `userscripts/` holds browser userscripts, kept here
 only so a userscript manager can `@updateURL` them from raw.githubusercontent

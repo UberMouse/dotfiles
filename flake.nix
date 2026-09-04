@@ -33,6 +33,16 @@
       url = "github:kolide/nix-agent";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # oh-my-pi (`omp`): terminal coding agent, installed via its own
+    # home-manager module (see home.nix). Deliberately does NOT carry
+    # `inputs.nixpkgs.follows` -- upstream builds and caches against its own
+    # nixos-unstable pin, so pointing it at our stable channel changes every
+    # derivation hash and misses the cache for no benefit (measured
+    # 2026-09-04: 1650 derivations to build unfollowed, 1836 followed).
+    # This is NOT the third-nixpkgs cost that retired unstable-small: that
+    # one was imported and evaluated here with our overlay on top, whereas
+    # omp's nixpkgs is only ever evaluated inside omp's own outputs.
+    omp.url = "github:can1357/oh-my-pi";
   };
 
   outputs =
@@ -43,6 +53,7 @@
       self,
       nixpkgs-unstable,
       kolide-launcher,
+      omp,
       ...
     }:
     let
@@ -85,7 +96,7 @@
           kolide-launcher.nixosModules.kolide-launcher
           home-manager.nixosModules.home-manager
           {
-            home-manager.extraSpecialArgs = { inherit unstable-pkgs; };
+            home-manager.extraSpecialArgs = { inherit unstable-pkgs omp; };
             home-manager.useGlobalPkgs = true;
             home-manager.useUserPackages = true;
 
