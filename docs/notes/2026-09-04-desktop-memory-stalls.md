@@ -86,6 +86,36 @@ no-signal as NOT self-inflicted like the other two. 5% sits above idle noise
 and below the pressure monitor's own 15% stall threshold, so the exemption
 withdraws *before* the desktop crosses into what that monitor calls a stall.
 
+The threshold is safe in both directions because the desktop's PSI is
+BIMODAL, not continuous: sampled at 3s for two minutes on a calm box it was
+**0.00% in 40 of 40 samples**, while every stall today read 15–48%. So 5%
+separates the two modes with wide room on each side — the exemption stays
+fully available in the normal case (which is what 67a7488 exists to serve)
+and withdraws only during a genuine stall. A threshold this far from either
+mode is not a tuning knob that needs revisiting as load changes.
+
+## How much the third term would have caught
+
+By end of day the exemption had fired on **54** loosens. Correlating each
+against the pressure monitor's own stall log:
+
+| exempted loosens | share |
+|---|---|
+| within ±60s of a logged desktop stall | 8 (14%) |
+| within ±120s | 18 (33%) |
+| within ±300s | 25 (46%) |
+| fired while `psi60` exceeded the 15% TIGHTEN threshold | **15** |
+
+Those are FLOORS, not ceilings, for two reasons. The monitor has a 120s
+cooldown, so stalls inside it are never logged; and the new term gates on the
+desktop's psi10 at the tick itself, not on whether a stall was logged — so it
+also catches the sub-threshold pressure that never trips the monitor at all.
+
+The last row is the sharpest: 15 times the exemption re-opened admission while
+the long-window stall average was above the level at which the SAME controller
+tightens. The two branches were fighting each other, and the exemption was
+winning.
+
 ## The semaphore is structurally late regardless
 
 `12:04:37 TIGHTEN psi10=56.1% allowed 2 -> 1 (occupied 8 … effective 8)` —
@@ -94,6 +124,52 @@ ADMISSION; it evicts nothing. The only tick that matters is the one that
 admits job 8, which is why the exemption softening the early tightens costs
 more than the raw numbers suggest. Not fixed here; noted because it bounds
 how much any control-law change can buy.
+
+## The margin was undersized — but by a third of what it first looked
+
+The partition in `memory-policy.nix` balanced at **exact equality**
+(16+8+2+3 = 29), so any error in any term over-subscribes the box. The margin
+is the term with nothing behind it, and it is measurable directly:
+
+    MemTotal - MemFree - user.slice - system.slice - init.scope
+
+Read that way it came to **p50 4.25G / p90 4.58G / max 4.76G** against a 3G
+budget — which would have forced `poolHighG` down two gigabytes.
+
+That reading was wrong, in the way this tree has now got wrong three times.
+About **1.2G of it is `KReclaimable`** — the dentry/inode slab this workload
+accumulates walking ~80 worktrees — and the kernel drops it unasked, exactly
+like page cache. It is the same misreading `cgroup-mem.py` corrects on the
+pool side and d17dc8b corrected on the fleet side, arriving through a third
+door. Net of it, over 61 samples at 15s with `user.slice` spanning 16.0–21.9G:
+
+| | GiB |
+|---|---|
+| p50 | 3.10 |
+| p90 | 3.43 |
+| p95 | 3.49 |
+| max | **3.62** |
+| samples over 3G | 67% |
+| samples over 4G | **0%** |
+
+So the margin goes to **4G** and `poolHighG` to 15 (with `poolMaxG` 17,
+keeping the 2G band). Sized to the measured *maximum* rather than the p90,
+because unlike `userOtherG` this term has nothing behind it to absorb an
+excursion. It costs **zero build slots**: `KX_SEM_CEIL` is
+`(poolHighG - 3) * 2 / 3`, which is 8 at both 16 and 15 — verified by
+`nix eval`.
+
+### The poolMax assertion is deliberately narrow, and stays that way
+
+`poolMaxG + desktopMinG <= memTotalG` omits `userOtherG` and `marginG`.
+That is not an oversight: `memory.high` is not a hard stop, so requiring
+`max` to fit the steady-state budget too (17+8+2+4 = 31 > 29) would forbid
+the throttle band from ever being used and cost another gigabyte of ceiling.
+What must survive a transient excursion is the desktop floor, which is what
+it asserts. Checked against every archived snapshot: `memory.events` `max`
+and `oom` were **0 in all 265** — the pool has never reached `MemoryMax`,
+because the `memory.high` throttle always engages first. Widen it only if
+that stops being true.
 
 ## Correction: zram figures in the analyses are UNCOMPRESSED
 

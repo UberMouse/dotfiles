@@ -125,6 +125,24 @@ in
       # cgroup-pressure-monitor.service captures forensics + auto-diagnoses each
       # remaining stall so we keep tuning from data. Watch `memory.events high`:
       # if it is 0 after a build storm, the ceiling is too loose again.
+      #
+      # 2026-09-04 -- READ THE NUMBERS ABOVE AS HISTORY, NOT AS CONFIG. Every
+      # figure in the narrative above is hand-copied, and it had already rotted
+      # before this note: the prose argues for "18G/20G" while the values had
+      # since moved to 16G/18G. THE VALUES LIVE IN memory-policy.nix, which is
+      # why the two lines below interpolate rather than restate -- do not
+      # re-copy a cap into this comment, and when the narrative and the policy
+      # file disagree, the policy file is right.
+      #
+      # They are now 15G/17G. Not because the ceiling went loose -- `memory.events
+      # high` ran to 39205 in a day, the opposite failure -- but because the
+      # MARGIN term beneath it was undersized: measured 2026-09-04 at p90 3.2G
+      # net of reclaimable slab against a 3G budget, so the partition balanced
+      # at exact equality while over-subscribing the box in ~30% of samples.
+      # The gigabyte came from here because it was the only term with slack, and
+      # it costs no build slots (KX_SEM_CEIL is unchanged at 8; see below).
+      # MemoryMax follows, keeping the 2 GiB backstop gap the argument above
+      # depends on. See docs/notes/2026-09-04-desktop-memory-stalls.md.
       MemoryAccounting = true;
       MemoryHigh = memory.poolHigh;
       MemoryMax = memory.poolMax;

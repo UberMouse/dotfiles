@@ -17,8 +17,8 @@
 let
   # GiB, as integers for the assertion arithmetic below.
   desktopMinG = 8;
-  poolHighG = 16;
-  poolMaxG = 18;
+  poolHighG = 15;
+  poolMaxG = 17;
   # Memory under user@1000.service that is NEITHER the pool NOR the desktop
   # session scope, and which therefore no pool cap bounds: app.slice,
   # claude.slice, and above all bare `tmux-spawn-*.scope` build work started by
@@ -45,10 +45,50 @@ let
   # ceiling that leaves <~2G under MemTotal never fires (run-out wins the
   # race), so a bare `<` assertion would admit exactly the configuration the
   # evidence condemned. It covers what no cgroup accounts for at all -- kernel
-  # slab, page cache working set, and zram's own PHYSICAL footprint (swap here
-  # is zram-only under load: /dev/dm-0 stayed at 0B through every stall while
-  # zram0 held 0.7-4.9G, so those compressed pages are resident RAM, not disk).
-  marginG = 3;
+  # slab, page tables, page cache working set, and zram's own PHYSICAL
+  # footprint (swap here is zram-only under load: /dev/dm-0 stayed at 0B
+  # through every stall).
+  #
+  # ZRAM IS COUNTED COMPRESSED. The earlier note here read "zram0 held
+  # 0.7-4.9G, so those compressed pages are resident RAM" off the USED column
+  # of `swapon --show` -- which is the UNCOMPRESSED size, not the RAM cost.
+  # The physical figure is `mem_used`, field 3 of /sys/block/zram0/mm_stat.
+  # Measured 2026-09-04: 3.71G uncompressed against 1.29G physical, a 2.9x
+  # ratio, so the old reading overstated zram's claim on this margin by ~3x.
+  # The cgroup-pressure snapshots capture only `swapon --show` and never
+  # mm_stat, so every analysis written from them inherits the same error --
+  # see docs/notes/2026-09-04-desktop-memory-stalls.md.
+  #
+  # SIZED, 2026-09-04, and the sizing turns on the same cache correction this
+  # tree applies everywhere else. What the margin must cover is measurable
+  # directly -- resident memory outside every budgeted cgroup tree:
+  #
+  #   MemTotal - MemFree - user.slice - system.slice - init.scope
+  #
+  # Read RAW that came to p50 4.25G / p90 4.58G / max 4.76G against a 3G
+  # budget, which would have forced poolHighG down two whole gigabytes. But
+  # ~1.2G of it is KReclaimable -- the dentry/inode slab this workload
+  # accumulates walking ~80 worktrees -- and the kernel drops that unasked,
+  # exactly like page cache. Counting it as a hard cost is the SAME misreading
+  # corrected on the pool side by cgroup-mem.py and on the fleet side by
+  # d17dc8b, and getting it wrong here costs a gigabyte of build ceiling.
+  # NET of KReclaimable, 61 samples at 15s with user.slice spanning 16.0-21.9G
+  # (the loaded regime, which is the one that matters): p50 3.10, p90 3.43,
+  # p95 3.49, MAX 3.62.
+  #
+  # So 4G, and the reason it is not 3G is that this term has NOTHING BEHIND
+  # IT. userOtherG above may be sized to ~p90 because excursions past it land
+  # on this margin; the margin is the last line, so it is sized to cover the
+  # measured MAXIMUM rather than the p90 -- 3G was exceeded in 67% of those
+  # samples, 4G in none of them. The cost is one gigabyte of poolHighG and
+  # ZERO build slots: KX_SEM_CEIL is (poolHighG - 3) * 2 / 3, which is 8 at
+  # both 16 and 15. poolMaxG follows it down to keep the throttle band 2G
+  # wide, as designed.
+  #
+  # RE-MEASURE, do not re-copy, if the workload changes: the whole term is
+  #   MemTotal - MemFree - KReclaimable - user.slice - system.slice - init.scope
+  # read from /proc/meminfo and the three cgroup memory.current files.
+  marginG = 4;
   # MemTotal as the box actually reports it (29.19 GiB → floor to be safe).
   # If the VM's RAM allocation changes, update this and re-check the margin.
   memTotalG = 29;
@@ -87,6 +127,18 @@ assert
 # otherwise the pool is legally allowed to reach a size that starves the very
 # guarantee the floor exists to provide, and the throttle band becomes a licence
 # to overcommit rather than a brake.
+#
+# THIS ASSERTION IS DELIBERATELY NARROWER than the steady-state one above: it
+# omits userOtherG and marginG. That is not an oversight -- it is the whole
+# point of a throttle band. `memory.high` is not a hard stop, so the pool may
+# briefly exceed it while being throttled; requiring `max` to fit the
+# steady-state budget too (17+8+2+4 = 31 > 29) would forbid the band from ever
+# being used and cost another gigabyte of ceiling to defend it. What must
+# survive a transient excursion is the DESKTOP FLOOR, and that is exactly what
+# this asserts. Checked 2026-09-04 against every archived stall snapshot:
+# memory.events `max` and `oom` were 0 in all 265 of them -- the pool has never
+# reached MemoryMax, because the memory.high throttle always engages first.
+# Widen this only if that stops being true.
 assert
   poolMaxG + desktopMinG <= memTotalG
   || throw "memory-policy: pool MemoryMax + desktop MemoryMin must fit under MemTotal";
