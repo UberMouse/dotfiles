@@ -27,17 +27,25 @@ in
     // {
       # nixpkgs' own claude-code derivation (wrapper env, alsa-lib, install
       # check, canonical downloads.claude.ai CDN), with ONLY the version
-      # manifest overridden -- ./claude-code/manifest.json is the verbatim
+      # manifest overridden -- ./claude-code/manifest.zst.json is the verbatim
       # upstream manifest for the pinned version, refreshed weekly (see
-      # ./claude-code/UPDATE.md). This replaced a 74-line hand-maintained
-      # clone of the nixpkgs package that pinned the same versions against
-      # a legacy GCS bucket upstream had already migrated off.
+      # ./claude-code/UPDATE.md).
+      #
+      # It must be the ZSTD manifest (binary "claude.zst"): upstream's
+      # installPhase runs `unzstd` on the fetched artifact, so the plain
+      # uncompressed manifest downloads a raw binary and the build dies with
+      # "zstd: unsupported format" -- which is how the 2026-09-07 nixpkgs bump
+      # broke this override.
+      #
+      # This replaced a 74-line hand-maintained clone of the nixpkgs package
+      # that pinned the same versions against a legacy GCS bucket upstream had
+      # already migrated off.
       #
       # (The clone also carried `--unset DEV`, which turned out to be
       # fossilized nixpkgs packaging from the 2.0.x era, not a local need --
       # DEV is set nowhere on this box, and nixpkgs dropped the flag too.)
       claude-code = prev.claude-code.override {
-        manifest = lib.importJSON ./claude-code/manifest.json;
+        manifest = lib.importJSON ./claude-code/manifest.zst.json;
       };
     };
 }
