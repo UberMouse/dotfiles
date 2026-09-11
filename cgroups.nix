@@ -165,7 +165,7 @@ in
 
   # Container slice for the Claude background-agent fleet, a child of the pool
   # above. NOT a throttle: it carries no MemoryHigh of its own, so the fleet is
-  # governed only by the pool's 18G high (and the desktop's 8G memory.min floor).
+  # governed only by the pool's own high (and the desktop's memory.min floor).
   # It exists to (a) give the fleet a distinct, observable bucket under the pool
   # -- the "agents" line in wt-cgroup-status -- and (b) be the placement target
   # for claude-agents-reattach, which re-homes the cc-daemon and every worker it
@@ -181,14 +181,58 @@ in
   # ceiling -- memory PSI full ~60%, 38k high-breach events, 2.3 GB forced into
   # swap -- so the fleet crawled while the pool above it sat at only 4 of 16 GB.
   # A sub-cap below the pool is the wrong tool once agents ARE the pool's primary
-  # tenant: the pool's own 18G high is the single agent+build budget, and its
-  # MemoryMax=20G still backstops a runaway subtree with one contained OOM.
+  # tenant: the pool's own high is the single agent+build budget, and its
+  # MemoryMax still backstops a runaway subtree with one contained OOM.
   #
   # The `claude agents` UI is deliberately kept OUT of this slice (and the whole
   # pool) so it stays responsive under memory pressure; only the daemon and the
   # work it invokes live here. Fork inheritance means that split cannot be
   # inherited from an out-of-pool UI, so claude-agents.sh pulls the daemon in
   # once at launch via claude-agents-reattach. See both scripts for the details.
+  #
+  # CPU. The fleet is the pool's INTERACTIVE tenant, and until 2026-09-11 it
+  # competed at par with twelve-worker typechecks -- the same bug the claude-ui
+  # slice below documents, one level down and worse, because there were TWO
+  # distinct faults:
+  #
+  #   * `cpu` was never DELEGATED into the pool. The pool declares CPUAccounting
+  #     + CPUQuota, which enables `cpu` in its PARENT's subtree_control, but no
+  #     pool CHILD declared any cpu property -- so worktrees.slice's own
+  #     subtree_control read "memory pids" and NO worktree slice had a cpu.weight
+  #     file at all. The pool's comment above promises "each worktree slice's
+  #     equal weight shares this pool fairly"; with the controller off that
+  #     promise was VOID -- CFS saw one FLAT group of ~630 tasks and shared by
+  #     THREAD COUNT, so a build spawning a worker per core outranked an
+  #     interactive agent session 12:1 and one busy worktree could starve
+  #     another. Declaring a cpu property on a CHILD is what makes systemd
+  #     enable the controller in every ancestor, which is why this stanza --
+  #     not the pool's -- is what repairs the pool's own promise. Asserted by
+  #     scripts/lint-tripwires.py, the only thing standing between that promise
+  #     and a silent revert to one flat group: nothing about a missing
+  #     subtree_control entry is observable from the pool's own declaration,
+  #     which is exactly how it went unnoticed. The suites cannot cover it --
+  #     the script-tests sandbox copies only scripts/ and scriptBins/bins/, so
+  #     no *.test.py can read this file.
+  #   * even once delegated, weight 100 is par with a build. Measured
+  #     2026-09-11: the fleet averaged 2.70 of the pool's 12 cores (46% of all
+  #     pool CPU, 447 of 629 pids) while the pool paid 3.17 CORE-HOURS of
+  #     CPUQuota hard-stops in 3.97h of uptime (nr_throttled 16777/138599
+  #     periods). A quota stop freezes the WHOLE subtree until the next quota
+  #     period boundary -- systemd's default, NOT pinned here, so don't restate
+  #     its length; it was observed changing under us on the very switch that
+  #     landed this stanza -- so every interactive agent session froze alongside
+  #     the builds, which is what "the box is crawling while top shows 60%
+  #     idle" was.
+  #
+  # 300 = three build worktrees' worth. Against the 7 sibling worktree slices
+  # live that day it floors the fleet at 300 of their combined 1000, i.e. 30% of
+  # the quota -- above its measured 2.70 cores, so it can never be starved --
+  # while builds keep the majority. Deliberately NOT claude-ui's 5000: that
+  # slice holds one ~200 MB TUI whose demand is negligible, so a 50:1 edge
+  # there costs builds nothing, whereas a 447-pid fleet at 5000 would squeeze
+  # build admission to near zero on a burst. CPUWeight remains the right
+  # instrument for the reason spelled out below -- work-conserving, so an idle
+  # fleet still hands the builds the whole pool.
   systemd.user.slices."worktrees-agents" = {
     Unit = {
       Description = "Claude agents fleet (worktrees pool child)";
@@ -196,6 +240,8 @@ in
     };
     Slice = {
       MemoryAccounting = true;
+      CPUAccounting = true;
+      CPUWeight = 300;
     };
   };
 

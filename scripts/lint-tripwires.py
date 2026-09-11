@@ -286,6 +286,71 @@ if Path(".git").exists():
             "the pre-push gate is not armed (see home.nix's includeIf block)"
         )
 
+# 13. CPU delegation into the build pool. worktrees.slice declares CPUQuota,
+#     and its comment promises "each worktree slice's equal weight shares this
+#     pool fairly (one busy worktree gets it all; several busy split it
+#     evenly)". That promise is cpu.weight, and cpu.weight files only EXIST on
+#     a slice's children once the `cpu` controller is in that slice's
+#     cgroup.subtree_control — which systemd enables only when some CHILD
+#     declares a cpu property of its own. Declaring CPUQuota on the POOL
+#     enables `cpu` one level UP (in user@.service) and does nothing for the
+#     pool's own children. So from 2026-07 until 2026-09-11 the pool read
+#     `memory pids`, no worktree slice had a cpu.weight at all, and CFS shared
+#     the pool as ONE FLAT GROUP of ~630 tasks — by thread count, so a build
+#     spawning a worker per core outranked an interactive agent session 12:1
+#     and one busy worktree COULD starve another. Nothing was observable from
+#     the pool's declaration, which is why it survived: the exact shape
+#     CLAUDE.md calls a safety property that quietly stopped being true.
+cg = Path("cgroups.nix")
+if cg.exists():
+    cg_text = cg.read_text()
+
+    def _slice_body(name):
+        """Brace-matched body of `systemd.user.slices.<name> = { ... }`, with
+        comments stripped so prose ABOUT a knob can never satisfy the check."""
+        m = re.search(
+            r'systemd\.user\.slices\.(?:"%s"|%s)\s*=\s*\{' % (re.escape(name), re.escape(name)),
+            cg_text,
+        )
+        if not m:
+            return None
+        depth, i = 1, m.end()
+        while i < len(cg_text) and depth:
+            depth += {"{": 1, "}": -1}.get(cg_text[i], 0)
+            i += 1
+        return "\n".join(
+            code_of(ln) for ln in cg_text[m.end() : i].splitlines()
+            if not ln.lstrip().startswith("#")
+        )
+
+    pool_body = _slice_body("worktrees")
+    if pool_body is None:
+        failures.append(
+            "cgroups.nix: systemd.user.slices.worktrees not found — the build pool "
+            "was renamed or moved; the CPU-delegation tripwire is now blind"
+        )
+    elif "CPUQuota" in pool_body:
+        kids = sorted(
+            set(re.findall(r'systemd\.user\.slices\."(worktrees-[^"]+)"\s*=', cg_text))
+        )
+        if not kids:
+            failures.append(
+                "cgroups.nix: worktrees.slice has a CPUQuota but declares no "
+                "worktrees-* child slice to delegate `cpu` through"
+            )
+        elif not [
+            k for k in kids
+            if re.search(r"\bCPU(?:Weight|Accounting)\b", _slice_body(k) or "")
+        ]:
+            failures.append(
+                "cgroups.nix: worktrees.slice has a CPUQuota but NO child slice "
+                f"({', '.join(kids)}) declares CPUWeight/CPUAccounting — `cpu` is "
+                "not in the pool's cgroup.subtree_control, so no worktree slice "
+                "has a cpu.weight and the pool's documented per-worktree CPU "
+                "fairness is silently void (CFS shares it as one flat group, by "
+                "thread count)"
+            )
+
 if failures:
     print("\n".join(failures))
     sys.exit(1)
