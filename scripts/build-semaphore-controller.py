@@ -393,6 +393,22 @@ class Config:
     # plausibly be about builds at all". See the self-inflicted note in
     # decide().
     self_inflicted_headroom_jobs: float = 4.0
+    # Part one, ALTERNATE ROUTE (2026-09-11): the share of the THROTTLED CHARGE
+    # that builds hold. The headroom bar above is a proxy, and it decays as the
+    # fleet grows -- at a 7.17G fleet in a 15G pool, net headroom clears 6G only
+    # while the pool is under 60% net-full, so the exemption was least available
+    # exactly when the fleet was largest. Measured 2026-09-11: three consecutive
+    # tightens took allowed 6 -> 4 -> 2 -> 1 UNTAGGED on headroom of 4.02G,
+    # while the raw charge sat at 99.2% of high pinned there by 3.90G of the
+    # pool's own cache, and BUILDS held 3.81G of that 14.88G charge -- 25.6%.
+    # Tightening cannot remove the other three quarters, so the stall was not
+    # the builds' to relieve.
+    #
+    # 0.35 is the minority bar. Unlike an absolute byte count it is
+    # fleet-size-adaptive -- "a minority tenant cannot be blamed for the
+    # ceiling" stays true at any fleet size -- and it needs BOTH the fleet and
+    # cache reads, so a missing either leaves the old headroom-only behaviour.
+    self_inflicted_build_share: float = 0.35
     # Part two: the MACHINE's own slack. Both halves must hold -- the
     # pool-local term alone would ignore genuine scarcity on a globally
     # starved box, where global reclaim lands on the pool and the resulting
@@ -424,6 +440,26 @@ class Config:
     # distinguishes "our ceiling is squeezing our own cache" from "the squeeze
     # has reached the thing all of this exists to protect".
     desktop_quiet_psi: float = 5.0
+    # THE FUTILITY BRAKE. `allowed` is a CAP, so cutting it removes nothing until
+    # the running set drains -- which makes psi10 holding STEADY after a tighten
+    # the lever's LATENCY, and emphatically not grounds for a brake. psi10
+    # CLIMBING across consecutive tightens is the other thing: measured
+    # 2026-09-11, psi10 went 37.0 -> 47.3 -> 51.6 while allowed was cut
+    # 6 -> 4 -> 2 -> 1, three steps each making the measurement worse, ending in
+    # a serialised pool that relieved nothing. So require a RISE of at least
+    # futile_psi_rise ABOVE WHERE THE RUN OF TIGHTENS BEGAN to count a tighten
+    # against the lever, and clamp at soft_floor once futile_tightens of them
+    # run consecutively. Measuring against the run's origin rather than the
+    # previous tick is load-bearing -- see the note at the brake itself.
+    #
+    # This is the backstop that needs no threshold to be RIGHT: where the
+    # self-inflicted test reasons about whether a stall is the builds' to
+    # relieve, this one observes whether tightening is in fact relieving it. It
+    # CLAMPS at the soft floor rather than lifting the floor, so a misfire still
+    # tightens; and since a genuine episode relieves as builds drain, psi falls,
+    # the streak resets, and the true floor stays reachable.
+    futile_psi_rise: float = 5.0
+    futile_tightens: int = 2
     # Slots surrendered per tightening tick (multiplicative-ish decrease).
     step_down: int = 2
     # Slots regained per loosening tick (additive increase).
@@ -1017,10 +1053,16 @@ class Semaphore:
 # `mark` and `last_growth` are the high-water mark and its spacing clock;
 # `last_up` is the loosen dwell clock; `was_resident_full` is the edge
 # detector behind the RESIDENT-CAP log line.
+# `tighten_ref` / `tighten_streak` are the FUTILITY BRAKE's trail: the psi10 the
+# last consecutive psi-driven tighten acted on, and how many such tightens have
+# run with psi10 RISING. Both are cleared by any tick that does not psi-tighten,
+# so the brake only ever reads a consecutive run. Appended with defaults: the
+# policy suite constructs State positionally.
 State = collections.namedtuple(
     "State",
-    "allowed mark last_up last_growth was_resident_full",
-    defaults=(0, 0.0, 0.0, False),
+    "allowed mark last_up last_growth was_resident_full "
+    "tighten_ref tighten_streak",
+    defaults=(0, 0.0, 0.0, False, None, 0),
 )
 
 # One tick's worth of signals, all read by the caller. `now` is a monotonic
@@ -1035,7 +1077,8 @@ State = collections.namedtuple(
 # is the graphical session scope's full-avg10 memory PSI (or None), its third.
 # Both read no-signal as NOT self-inflicted, so an unreadable input keeps the
 # full floor.
-# `pool_cache` is DIAGNOSTIC ONLY -- it shapes no decision, it just lets the
+# `pool_cache` feeds the BUILD SHARE term of the self-inflicted test (it used to
+# be diagnostic only), and separately lets the
 # HOLD line say how much reclaimable memory the gate is (correctly) refusing to
 # count. It carries a default so the policy suite keeps constructing Inputs
 # without it, and so a new field can never silently become load-bearing: any
@@ -1081,6 +1124,11 @@ def decide(state, inputs, cfg):
     last_up = state.last_up
     last_growth = state.last_growth
     was_resident_full = state.was_resident_full
+    # Cleared by default: only the psi-tighten branch below re-arms them, so any
+    # other outcome this tick (a loosen, a settle, a predictive-only tighten)
+    # ends the run -- which is what makes the streak CONSECUTIVE.
+    tighten_ref = None
+    tighten_streak = 0
 
     now = inputs.now
     psi10 = inputs.psi10
@@ -1089,6 +1137,7 @@ def decide(state, inputs, cfg):
     occupied = inputs.occupied
     resident = inputs.resident
     untracked = inputs.untracked
+    pool_cache = inputs.pool_cache
     mem_available = inputs.mem_available
     desktop_psi10 = inputs.desktop_psi10
 
@@ -1314,9 +1363,34 @@ def decide(state, inputs, cfg):
     # machine" are simultaneously true there, and MemAvailable does not
     # separate them because the cache it counts is the cache whose reclaim is
     # the stall. See docs/notes/2026-09-04-desktop-memory-stalls.md.
-    self_inflicted = (
+    #
+    # PART ONE HAS TWO ROUTES, OR'd. `roomy` is the original headroom proxy.
+    # `minority_builds` asks the actuator's own question directly: of the charge
+    # the kernel is throttling against -- the RAW one, net + reclaimable cache,
+    # because memory.high is enforced on that and not on the corrected figure --
+    # what share do BUILDS hold? `allowed` moves builds and nothing else, so a
+    # charge that is mostly fleet and cache is not a charge tightening can move,
+    # however little net headroom happens to be left. It needs BOTH reads: with
+    # either missing the share is unknowable, which reads as NOT self-inflicted
+    # like every other no-signal here.
+    build_share = None
+    if pool_mem is not None and untracked is not None and pool_cache is not None:
+        raw = pool_mem[0] + pool_cache
+        if raw > 0:
+            # Two reads of a live tree: a fleet that grew between them can put
+            # the numerator below zero. Clamp -- a negative share is a minority
+            # by any reading, never a wrap.
+            build_share = max(0.0, (pool_mem[0] - untracked) / raw)
+    roomy = (
         headroom is not None
         and headroom >= cfg.self_inflicted_headroom_jobs * cfg.job_bytes
+    )
+    minority_builds = (
+        build_share is not None
+        and build_share < cfg.self_inflicted_build_share
+    )
+    self_inflicted = (
+        (roomy or minority_builds)
         and mem_available is not None
         and mem_available >= cfg.self_inflicted_avail
         and desktop_psi10 is not None
@@ -1370,9 +1444,35 @@ def decide(state, inputs, cfg):
         # episode of thrash, since the memory gate reads the same roomy net
         # headroom that makes the stall self-inflicted in the first place --
         # the runaway that PSI is the only signal positioned to catch.
+        # THE FUTILITY BRAKE (see its config note). Only a psi tighten can be
+        # futile -- the predictive one is already bounded by the soft floor, and
+        # it acts on a fraction rather than on a stall, so there is no "did it
+        # help" to measure.
+        #
+        # THE REFERENCE IS THE RUN'S ORIGIN, not the previous tick. Comparing
+        # tick-to-tick lets a decelerating but still-rising stall walk straight
+        # out of the brake: replaying the real 2026-09-11 descent, psi10 went
+        # 37.0 -> 47.3 -> 51.6 and that last step is a rise of 4.3, under the
+        # bar -- so a per-tick reference reset the streak and released the clamp
+        # at exactly the third step, with psi10 14 points WORSE than where the
+        # descent began. Pinning the origin asks the question that matters --
+        # "since we started cutting, has this got better?" -- and is why a run
+        # only resets when psi actually comes back toward where it started.
+        futile = False
+        if hot_psi:
+            origin = state.tighten_ref
+            if origin is not None and psi10 > origin + cfg.futile_psi_rise:
+                tighten_ref = origin
+                tighten_streak = state.tighten_streak + 1
+            else:
+                # First tighten of a run, or psi has come back to/below the
+                # level the run started at -- either way, a fresh baseline.
+                tighten_ref = psi10
+                tighten_streak = 1
+            futile = tighten_streak >= cfg.futile_tightens
         limit = (
             floor_dyn
-            if (hot_psi and not self_inflicted)
+            if (hot_psi and not self_inflicted and not futile)
             else max(floor_dyn, soft_floor_dyn)
         )
         # The outer min() is load-bearing: a tighten must NEVER raise
@@ -1406,6 +1506,13 @@ def decide(state, inputs, cfg):
             # line does NOT carry: psi10 is high while the net charge is low,
             # and without this tag the pair reads as a contradiction.
             bits.append(f"[self-inflicted, soft floor {limit}]")
+        if hot_psi and futile and not self_inflicted:
+            # Distinct from the self-inflicted tag: that one says the stall was
+            # never the builds' to relieve, this one says tightening has been
+            # tried and psi10 rose anyway.
+            bits.append(
+                f"[futile x{tighten_streak}, soft floor {limit}]"
+            )
         if not hot_psi:
             bits.append(f"[predictive, soft floor {limit}]")
         # Appended even when the clamp did not move `allowed` (before ==
@@ -1540,6 +1647,8 @@ def decide(state, inputs, cfg):
             last_up=last_up,
             last_growth=last_growth,
             was_resident_full=was_resident_full,
+            tighten_ref=tighten_ref,
+            tighten_streak=tighten_streak,
         ),
         target=target,
         healthy=healthy,
@@ -1599,7 +1708,16 @@ def main(sleep=time.sleep):
         f"grow+{CFG.grow_step} every>={CFG.grant_every}s free<={CFG.burst} "
         f"needs {CFG.grant_headroom_jobs}x{CFG.job_bytes / 2**30:.1f}G free "
         f"and psi10<={CFG.grant_psi}% max_resident={CFG.max_resident} "
-        f"desktop_quiet<{CFG.desktop_quiet_psi}% "
+        # The self-inflicted predicate, in the shape decide() evaluates it:
+        # (headroom OR build-share) AND avail AND desktop-quiet. Only the
+        # desktop term used to appear here, which made a [self-inflicted] tag
+        # unreadable without the source -- two of the three bars were invisible.
+        f"self_inflicted=("
+        f"headroom>={CFG.self_inflicted_headroom_jobs}jobs "
+        f"or builds<{CFG.self_inflicted_build_share * 100:.0f}%) "
+        f"and avail>={CFG.self_inflicted_avail / 2**30:.0f}G "
+        f"and desktop_quiet<{CFG.desktop_quiet_psi}% "
+        f"futile=x{CFG.futile_tightens}@psi+{CFG.futile_psi_rise}% "
         f"start={state.allowed}"
     )
     # Set by __post_init__ when the Nix-derived KX_SEM_CEIL outgrew the slot
