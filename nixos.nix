@@ -73,19 +73,6 @@ in
   ];
   nix.settings.download-buffer-size = 134217728; # 128 MB (default is 64 MB)
 
-  # The omp (oh-my-pi) flake input is a Bun + Rust build: without this cache
-  # a version bump compiles a rust nightly toolchain plus ~400 crates
-  # locally. Upstream declares the substituter in its own flake's nixConfig,
-  # but a flake's nixConfig applies only when that flake is the ENTRYPOINT
-  # (and only for a trusted user) -- as an input it is ignored entirely, so
-  # the cache has to be declared here or it silently never applies.
-  # `extra-` prefixed, not a bare assignment: assigning substituters outright
-  # would REPLACE cache.nixos.org rather than add to it.
-  nix.settings.extra-substituters = [ "https://nix-community.cachix.org" ];
-  nix.settings.extra-trusted-public-keys = [
-    "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
-  ];
-
   # Record the flake rev the system was built from (readable via
   # `nixos-version --configuration-revision`).
   system.configurationRevision = self.rev or self.dirtyRev or null;
