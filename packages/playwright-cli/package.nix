@@ -153,12 +153,12 @@ buildNpmPackage (finalAttrs: {
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@playwright/cli/-/cli-${finalAttrs.version}.tgz";
-    hash = "sha256-VxrappuH7YJejG5W9ght27EUXwlppWRdOPTVsYfP1ek=";
+    hash = "sha256-mMIclKY1sUlUyFHFmy0ansuKZg9LVMU+KBw3Sc9eEqg=";
   };
 
   # regen: nix run nixpkgs#prefetch-npm-deps -- packages/playwright-cli/package-lock.json
   # (UPDATE.md step 3) -- the one value every version bump must recompute.
-  npmDepsHash = "sha256-B6t59yhBIBMvI5XN8t2uUq96+Gsu6QVkvdb//DrgL10=";
+  npmDepsHash = "sha256-oc6ZV+TGLMrIu90DMdlZvJye/I1coKYEmn7T56pA7MY=";
 
   postPatch = ''
     cp ${./package-lock.json} package-lock.json

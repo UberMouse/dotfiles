@@ -10,11 +10,11 @@
 # distinct from nixpkgs' `sentry-cli` (the older getsentry/sentry-cli, 2.x).
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "sentry";
-  version = "0.44.1";
+  version = "0.45.0";
 
   src = fetchurl {
     url = "https://github.com/getsentry/cli/releases/download/${finalAttrs.version}/sentry-linux-x64";
-    hash = "sha256-0AClJTbJPKfq8qntN83KoXhT79xe+TylWSl9PRxBXTk=";
+    hash = "sha256-ZYNjr9DG1YG4h95BFgxArcfinHnAFVaaV6rwFTLtR74=";
   };
 
   dontUnpack = true;

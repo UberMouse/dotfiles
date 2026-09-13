@@ -2,6 +2,6 @@
   "name": "rush-global",
   "version": "1.0.0",
   "dependencies": {
-    "@microsoft/rush": "5.178.1"
+    "@microsoft/rush": "5.179.0"
   }
 }

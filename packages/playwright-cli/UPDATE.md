@@ -39,9 +39,8 @@ nix eval --raw "github:Pentusha/playwright-web-flake/$(jq -r '.nodes.playwright.
 npm view @playwright/cli version                     # latest CLI version
 npm view @playwright/cli dependencies.playwright     # its pinned playwright
 
-# (c) whether the flake HEADs have moved on (i.e. would a flake bump help?):
-nix eval --raw "github:Pentusha/playwright-web-flake#playwright-driver.version"   # the fork we track
-nix eval --raw "github:pietdevries94/playwright-web-flake#playwright-driver.version" # upstream
+# (c) whether the source's HEAD has moved on (i.e. would a flake bump help?):
+nix eval --raw "github:Pentusha/playwright-web-flake#playwright-driver.version"
 ```
 
 Then decide:
@@ -55,15 +54,18 @@ Then decide:
      `npm view @playwright/cli@<v> dependencies.playwright`. If such a version is
      newer than the currently pinned one, update to it via the steps below.
   2. Going past that requires bumping the `playwright` flake input. Use (c) to see
-     if it would even help: if a fork/upstream HEAD provides the playwright
-     major.minor a newer CLI wants, a flake bump would unblock it; if every HEAD
-     is still behind (as when the CLI wants 1.62 but the fork is at 1.61), no bump
-     helps yet — that CLI version simply isn't installable.
+     if it would even help: if HEAD provides the playwright major.minor a newer
+     CLI wants, a flake bump would unblock it; if HEAD is still behind (as when
+     the CLI wants 1.62 but the source is at 1.61), no bump helps yet — that CLI
+     version simply isn't installable.
   3. **Never bump `inputs.playwright` (or `flake.lock`'s playwright node) on your
-     own.** It rebuilds the driver + browsers, and the fork carries hand-applied
-     build fixes (see the comment on `inputs.playwright` in `flake.nix`) — always
-     get explicit user permission first. Report (a), (b), and (c) and what a bump
-     would/wouldn't unblock, then wait.
+     own.** It rebuilds the driver + browsers — always get explicit user
+     permission first. Report (a), (b), and (c) and what a bump would/wouldn't
+     unblock, then wait.
+  4. Do NOT propose switching to `pietdevries94/playwright-web-flake` as a way
+     around a version gap. It is the ancestor of the pinned source, not a
+     fallback: it was tried on 2026-09-14 at an identical driver version and
+     failed to build. See `packages/playwright/UPDATE.md`.
 
 After a permitted flake bump, refresh the input with
 `nix flake update playwright` (the input is named `playwright`) and re-check (a)

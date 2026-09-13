@@ -10,13 +10,26 @@
     # nothing while costing a third nixpkgs eval and weekly lock churn.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     playwright = {
-      # Pentusha's fork — pinned to 1.62.1 (auto-update 2026-08-02).
-      # Upstream pietdevries94 has since caught up (also 1.62.1, checked
-      # 2026-08-17), so this pin is no longer forced. Kept on the fork for its
-      # build fixes (libbacktrace in webkit buildInputs, postPatch sed guards,
-      # missing bundle package-lock.json handling) — moving back is untested,
-      # and buys nothing while both sit on the same driver version.
-      url = "github:Pentusha/playwright-web-flake/74974b957d10ad871afb721a06688bd09eb0bbda";
+      # Pentusha/playwright-web-flake is THE source for the playwright driver
+      # and browsers here — pinned to 1.63.0 (bumped 2026-09-14).
+      #
+      # It is not a stopgap. pietdevries94 is the ancestor, not the
+      # destination: on 2026-09-14, with both at 1.63.0, switching to it
+      # failed outright — its webkit omits `libmanette` from buildInputs, so
+      # auto-patchelf cannot satisfy libmanette-0.2.so.0 for
+      # libWPEWebKit-2.0.so.1.12.0 and playwright-browsers dies. The pinned
+      # source carries that dependency in its own webkit derivation, plus the
+      # other build fixes. Do not read a version match as interchangeability —
+      # the versions matched exactly when that attempt failed.
+      #
+      # DELIBERATELY REV-PINNED, not branch-tracking: a bare URL would let the
+      # weekly `nix flake update` move the driver — and so the playwright
+      # major.minor that gates which @playwright/cli version is installable —
+      # with no one deciding to. Bumping this rev rebuilds the driver and all
+      # browsers and must re-check the CLI coupling; both
+      # packages/playwright/UPDATE.md and packages/playwright-cli/UPDATE.md
+      # require explicit user permission first.
+      url = "github:Pentusha/playwright-web-flake/252935ebc9500e60b5080859e086491ba724c190";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
