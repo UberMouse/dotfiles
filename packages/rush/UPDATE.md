@@ -5,7 +5,10 @@ version_file: packages/rush/package.json
 # The overlay attr is `rushjs` (plain `rush` would shadow GNU Rush) -- this is
 # what `nix build .#<flake_attr>` must use; the default (= name) would fail.
 flake_attr: rushjs
-changelog_github: microsoft/rushstack
+# microsoft/rushstack publishes NO GitHub releases (the releases API returns an
+# empty list), so changelog_github yields nothing here. The per-package change
+# log file is the only source.
+changelog_url: https://raw.githubusercontent.com/microsoft/rushstack/main/apps/rush/CHANGELOG.md
 ---
 
 # Update Process
