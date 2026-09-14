@@ -2,7 +2,8 @@
 # command while holding it, and release it on exit.
 #
 #   kx-build-slot [--label NAME] [--timeout SECS]
-#                 [--resident-probe CMD] [--resident] -- COMMAND [ARGS...]
+#                 [--resident-probe CMD | --resident-self] [--resident]
+#                 -- COMMAND [ARGS...]
 #
 # The semaphore is published by build-semaphore-controller.py (see that file for
 # why admission control is the lever and why the loop is asymmetric). This is
@@ -67,6 +68,23 @@
 # that exists to keep BUILDS moving. Without it the accounting is honest and the
 # admission is not: the browser is counted, and still got in on a stalling box.
 #
+# --resident-self is residency for a command that does NOT return: a dev server
+# or storybook that runs in the foreground for its whole life (monorepo-jobs'
+# spawnProcess; a `heft start` held 3.3 GB outside all admission on 2026-09-14).
+# There is nothing to diff, so there is no probe -- the WRAPPER is the keeper. It
+# implies --resident (same admission: load test AND resident cap), writes the
+# marker naming its own pid, runs the command as a child, and removes the marker
+# once the child has exited. spawnProcess kills by process GROUP, so wrapper and
+# server take a signal together, and a TERM still waits out the server's own
+# exit before the slot goes back. A SIGKILLed wrapper leaves a marker naming a
+# dead pid, which the controller prunes like any stale keeper's.
+#
+# THE HEARTBEAT. A queued server prints nothing, and its caller's port-discovery
+# idle timer (180 s of silence, server-spawn.tsx) would SIGTERM the group long
+# before the 600 s wait fails open. So in --resident-self mode a queued wrapper
+# prints a line to stderr every KX_BUILD_SLOT_HEARTBEAT seconds (default 60). It
+# lands in the server's own log, which is where "why is startup slow" is asked.
+#
 # The keeper drops a marker in $SEM_DIR/resident/ naming itself, because the
 # controller has to tell a slot held by a BUILD from one held by a BROWSER: it
 # raises its floor by the latter so residents can never squeeze admission to
@@ -104,6 +122,9 @@ label=""
 timeout_s="${KX_BUILD_SLOT_TIMEOUT:-600}"
 resident_probe=""
 resident_mode=""
+resident_self=""
+heartbeat_every="${KX_BUILD_SLOT_HEARTBEAT:-60}"
+case "$heartbeat_every" in '' | *[!0-9]*) heartbeat_every=60 ;; esac
 
 # need_value: a flag passed as the LAST argument must be a hard error, not a
 # hang. `shift 2` with only one argument left is refused by bash, `$#` never
@@ -125,6 +146,7 @@ while [ "$#" -gt 0 ]; do
     --resident-probe) need_value "$@"; resident_probe="$2"; shift 2 ;;
     --resident-probe=*) resident_probe="${1#--resident-probe=}"; shift ;;
     --resident) resident_mode=1; shift ;;
+    --resident-self) resident_self=1; resident_mode=1; shift ;;
     --) shift; break ;;
     -h|--help)
       # Pure bash on purpose: --help has to work under the most restricted
@@ -158,6 +180,14 @@ done
 
 if [ "$#" -eq 0 ]; then
   echo "kx-build-slot: no command given (use -- COMMAND ARGS)" >&2
+  exit 2
+fi
+
+# Two different answers to "what is resident": a probe diffs what the command
+# LEAVES BEHIND, self means the command IS the tenant. Together they would write
+# two markers for one slot and double-raise the floor.
+if [ -n "$resident_self" ] && [ -n "$resident_probe" ]; then
+  echo "kx-build-slot: --resident-self and --resident-probe are exclusive" >&2
   exit 2
 fi
 
@@ -385,6 +415,15 @@ run_child() {
   trap 'kill -TERM "$child" 2>/dev/null || true' TERM INT
   wait "$child"
   rc=$?
+  # A trapped signal makes `wait` return AT ONCE (rc > 128) while the child may
+  # still be shutting down. A build's slot going back a moment early is
+  # harmless; a SERVER's is not -- a dev server's SIGTERM grace can hold
+  # gigabytes for seconds -- so --resident-self waits out the child's real exit
+  # and reports its real status. (Builds keep the old shape, unchanged.)
+  if [ -n "$resident_self" ] && kill -0 "$child" 2>/dev/null; then
+    wait "$child"
+    rc=$?
+  fi
   trap - TERM INT
 
   # Anything present now but absent before was spawned by this job. Comparing
@@ -485,6 +524,22 @@ jitter_sleep() {
   sleep "0.$(((RANDOM % 4) + 2))"
 }
 
+last_beat=""
+heartbeat() {
+  # $1 = why the job is waiting. --resident-self only (see THE HEARTBEAT in the
+  # header): plain builds and browser launchers own their stderr, and a server
+  # is the one caller that kills on silence. stderr, never the log -- the point
+  # is to be OUTPUT the caller's idle timer sees.
+  [ -n "$resident_self" ] || return 0
+  local now
+  now=$(date +%s)
+  [ -n "$last_beat" ] || last_beat="$start"
+  [ $((now - last_beat)) -ge "$heartbeat_every" ] || return 0
+  last_beat="$now"
+  printf 'kx-build-slot: %s waiting for a build slot (%ss, %s)\n' \
+    "$label" "$((now - start))" "$1" >&2
+}
+
 start=$(date +%s)
 waited=0
 
@@ -511,6 +566,7 @@ while :; do
       slotlog "RESIDENT-WAIT $label load test shut, not taking the floor slot"
     fi
     wait_marker_take
+    heartbeat "load test shut"
     now=$(date +%s)
     waited=$((now - start))
     if [ "$waited" -ge "$timeout_s" ]; then
@@ -572,8 +628,24 @@ while :; do
       # marker still held here would count this job as queued for as long as
       # the build it is no longer queued for takes to run.
       wait_marker_drop
+      # --resident-self: THIS process is the keeper, for exactly as long as the
+      # command runs. $$ is right here (the main shell, not a subshell -- contrast
+      # start_keeper's BASHPID), and the format is the one Semaphore.resident()
+      # parses, so the controller needs no second reader.
+      self_marker=""
+      if [ -n "$resident_self" ]; then
+        self_marker="$SEM_DIR/resident/$(basename "$slot")"
+        if mkdir -p "$SEM_DIR/resident" 2>/dev/null \
+           && printf 'keeper=%s\n' "$$" > "$self_marker" 2>/dev/null; then
+          slotlog "RESIDENT-SELF $label holds $(basename "$slot") for its lifetime (keeper=$$)"
+        else
+          slotlog "RESIDENT-MARKER-FAILED $self_marker unwritable - controller will count this server as a build"
+          self_marker=""
+        fi
+      fi
       run_child "$@"
       rc=$?
+      [ -z "$self_marker" ] || rm -f "$self_marker" 2>/dev/null
       if [ -n "$resident_new" ]; then
         # Unquoted on purpose: start_keeper takes ONE ARGUMENT PER PID, so the
         # list has to split. Quoting it happens to survive today -- `$*` rejoins
@@ -595,6 +667,7 @@ while :; do
 
   # Every slot was busy: this job is now genuinely queued, so say so.
   wait_marker_take
+  heartbeat "all slots busy"
   now=$(date +%s)
   waited=$((now - start))
   if [ "$waited" -ge "$timeout_s" ]; then

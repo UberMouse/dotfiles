@@ -571,12 +571,79 @@ check("no waiting marker among the exec'd command's fds",
       "/waiting/" in p_out.stdout, False)
 check("failing open leaves the queue", waiters(), [])
 
-# 13. THE QUEUE MUST NOT EAT STDERR. The waiting marker used to be opened with
-#     `exec {fd}>marker 2>/dev/null`, and an exec with no command makes every
-#     redirection on the line permanent: from the first failed pass on, the
-#     script's stderr -- and so the stderr of the command it finally ran -- was
-#     /dev/null. Every job that ever queued lost its error output. Both wait
-#     paths share the marker, so both are asserted.
+# 13. --RESIDENT-SELF. Residency for a command that never returns (a dev server):
+#     the WRAPPER is the keeper, so the marker names its own pid for exactly the
+#     server's lifetime. monorepo-jobs spawns it `detached` and kills by process
+#     GROUP, so every signal here is delivered the same way.
+import signal  # noqa: E402
+
+reap()
+slots()
+publish(healthy=1)
+log_text()
+
+SERVER = BASE / "server.sh"
+SERVER.write_text(
+    f"#!{BASH}\n"
+    'trap \'echo TERM > "$1"; exit 0\' TERM\n'
+    "while :; do sleep 0.1; done\n"
+)
+SERVER.chmod(0o755)
+
+
+def spawn_self(*args, timeout="30"):
+    """A --resident-self wrapper in its OWN process group, as spawnProcess's
+    `detached: true` puts it. stdio on /dev/null so no pipe outlives it."""
+    env = dict(os.environ)
+    env.update(KX_BUILD_SEM_DIR=str(SEM), HOME=str(HOME))
+    env.pop("KX_BUILD_SLOT_HELD", None)
+    return subprocess.Popen(
+        ["bash", "-o", "nounset", str(SLOT), "--timeout", timeout,
+         "--label", "srv", "--resident-self", *args],
+        env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True,
+    )
+
+
+def marker_text():
+    return (SEM / "resident" / "slot.00").read_text().strip()
+
+
+got = BASE / "got-term"
+w = spawn_self("--", str(SERVER), str(got))
+check("resident-self marker names the WRAPPER's own pid",
+      wait_for(marker_text, timeout=10), f"keeper={w.pid}")
+check("resident-self holds the slot while the server runs", held(), True)
+check("real resident() counts the self-keeper", bsc.Semaphore(SEM, 4).resident(), 1)
+check("real resident() left the live marker alone", markers(), ["slot.00"])
+check("admission is logged", "RESIDENT-SELF srv holds slot.00" in log_text(), True)
+
+os.killpg(w.pid, signal.SIGTERM)
+check("group SIGTERM reaches the server",
+      bool(wait_for(lambda: got.read_text().strip() == "TERM", timeout=10)), True)
+check("wrapper exits with the SERVER's rc, not the signal's", w.wait(timeout=10), 0)
+check("marker removed once the server has exited", markers(), [])
+check("slot released once the server has exited", held(), False)
+
+# A group SIGKILL (spawnProcess's stop() escalation) leaves nothing able to clean
+# up: the marker stays, the lock goes with the processes, and the controller
+# must read that marker as nothing at all.
+w = spawn_self("--", str(SERVER), str(BASE / "unused"))
+wait_for(lambda: markers() == ["slot.00"], timeout=10)
+os.killpg(w.pid, signal.SIGKILL)
+w.wait(timeout=10)
+check("group SIGKILL leaves the marker behind", markers(), ["slot.00"])
+check("...the lock dies with the group",
+      bool(wait_for(lambda: not held(), timeout=10)), True)
+check("...and the stale marker counts for nothing (pruned)",
+      (bsc.Semaphore(SEM, 4).resident(), markers()), (0, []))
+
+# THE QUEUE MUST NOT EAT STDERR. The waiting marker used to be opened with
+# `exec {fd}>marker 2>/dev/null`, and an exec with no command makes every
+# redirection on the line permanent: from the first failed pass on, the script's
+# stderr -- and so the stderr of the command it finally ran -- was /dev/null.
+# Every job that ever queued lost its error output. Both wait paths share the
+# marker, so both are asserted.
 slots()
 publish(healthy=0)
 log_text()
@@ -591,5 +658,39 @@ p, _ = run("--label", "errcap", "--", "sh", "-c", "echo ERR-VISIBLE >&2",
 log_text()
 check("a build that queued at the cap keeps its stderr",
       "ERR-VISIBLE" in p.stderr, True)
+
+# Queued on the load test / resident cap: a second server waits exactly like a
+# browser, and HEARTBEATS while it does -- otherwise the caller's 180 s
+# port-discovery idle timer kills the group before the wait can fail open.
+slots()
+publish(healthy=0)
+log_text()
+p, _ = run("--label", "srv2", "--resident-self", "--", "true", timeout="1",
+           extra_env={"KX_BUILD_SLOT_HEARTBEAT": "0"})
+lg = log_text()
+check("a second server queues on the load test / resident cap",
+      "RESIDENT-WAIT srv2" in lg, True)
+check("a queued server heartbeats on stderr",
+      "waiting for a build slot" in p.stderr, True)
+check("...and still fails open at its timeout",
+      ("UNGATED" in lg, p.returncode), (True, 0))
+check("a timed-out server runs unmarked", markers(), [])
+p, _ = run("--label", "brw", "--resident", "--", "true", timeout="1",
+           extra_env={"KX_BUILD_SLOT_HEARTBEAT": "0"})
+log_text()
+check("plain --resident never heartbeats (its stderr belongs to its caller)",
+      "waiting for a build slot" in p.stderr, False)
+
+# Fail-open 1 is unchanged: no semaphore at all means exec, no marker.
+env = dict(os.environ)
+env.update(KX_BUILD_SEM_DIR=str(BASE / "nope"), HOME=str(HOME))
+env.pop("KX_BUILD_SLOT_HELD", None)
+p = subprocess.run(["bash", "-o", "nounset", str(SLOT), "--resident-self", "--",
+                    "echo", "ran"], env=env, capture_output=True, text=True)
+check("resident-self runs with no semaphore dir", p.stdout.strip(), "ran")
+
+publish(healthy=1)
+p, _ = run("--resident-self", "--resident-probe", str(PROBE), "--", "true")
+check("--resident-self and --resident-probe are exclusive", p.returncode, 2)
 
 summary(cleanup_dir=BASE)
