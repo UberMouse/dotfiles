@@ -38,6 +38,16 @@
 #      resident. zram compresses ~3.5:1 on this box (measured), so ~2.9 GB of
 #      cold spare becomes ~800 MB and re-faulting costs RAM bandwidth, not disk.
 #
+#      GATED ON EFFECTIVENESS (2026-09-14), because that premise expires. On
+#      09-14 idle spares were 0.65 GB of a 12 GB slice, three of five sampled
+#      reclaims left the charge at or above where it started, and anon refaults
+#      tracked steals page for page: the duty was evicting ACTIVE pages that came
+#      straight back, at a core of sys time. reclaim_useful reads the slice's
+#      refault ratio over the last tick and duty_a_step skips when it says the
+#      reclaim would only feed the loop. The STALL path's reclaim is NOT gated --
+#      it is the desktop's emergency lever, where late is the worse failure.
+#      See docs/notes/2026-09-14-fleet-anon-thrash.md.
+#
 #   B. BUILD CONCURRENCY CAP (admission control, applied to EXECUTION).
 #      True admission control gates at spawn, but the spawn point is
 #      ~/code/kawaka/.claude/hooks/worktree-setup.sh -- a different repo. The
@@ -102,6 +112,8 @@
 #   CGGOV_HEAVY_MB        a build scope counts as heavy above this    (default 256)
 #   CGGOV_RECLAIM_MB      bytes-worth pushed to zram per attempt      (default 256)
 #   CGGOV_RECLAIM_COOL    min seconds between reclaim attempts        (default 30)
+#   CGGOV_THRASH_PCT      duty A skips at this anon-refault %% of steal (default 0 = off, log-only)
+#   CGGOV_THRASH_MIN_STEAL  ...only once the tick stole this many pages (default 0)
 #   CGGOV_FREEZE_SECS     emergency freeze duration                   (default 3)
 #   CGGOV_MAX_FREEZE_SECS absolute ceiling on ANY freeze              (default 60)
 #   CGGOV_ROTATE_SECS     rotate cap victims this often               (default 20)
@@ -121,6 +133,11 @@ MAXCONC="${CGGOV_MAXCONC:-3}"
 HEAVY_MB="${CGGOV_HEAVY_MB:-256}"
 RECLAIM_MB="${CGGOV_RECLAIM_MB:-256}"
 RECLAIM_COOL="${CGGOV_RECLAIM_COOL:-30}"
+# Duty A's effectiveness gate (see reclaim_useful). OFF by default: the refault
+# ratio is measured every tick and logged on every RECLAIM line, but withholds
+# nothing. Both numbers get picked from those logged ratios, not guessed.
+THRASH_PCT="${CGGOV_THRASH_PCT:-0}"
+THRASH_MIN_STEAL="${CGGOV_THRASH_MIN_STEAL:-0}"
 FREEZE_SECS="${CGGOV_FREEZE_SECS:-3}"
 MAX_FREEZE_SECS="${CGGOV_MAX_FREEZE_SECS:-60}"
 ROTATE_SECS="${CGGOV_ROTATE_SECS:-20}"
@@ -189,6 +206,9 @@ deleg_warned=0               # ensure_delegation: warn once, not every tick
 desktop_blind=0              # resolve_desktop failure: warn once, not every tick
 pool_blind=0                 # pool memory.pressure unreadable: warn once, not every tick
 reclaim_pid=""               # in-flight backgrounded reclaim, if any
+prev_refault=""              # agents slice counters at the previous tick, for
+prev_steal=""                #   duty A's refault ratio ("" = not yet sampled)
+last_thrash_log=0            # SKIPPED-THRASH rate limiter (never last_reclaim)
 # Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
 # the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
 # which stopped measurement for up to ~5 s at the single most memory-starved
@@ -286,6 +306,37 @@ read_meminfo() {
       MemAvailable:) MEMAVAIL_MB=$(( v / 1024 )); break ;;
     esac
   done < "${1:-/proc/meminfo}" 2>/dev/null
+  return 0
+}
+
+# The agents slice's reclaim counters, for duty A's effectiveness gate. Read on
+# EVERY tick, so the same fork-free shape as read_meminfo: the kernel lists
+# workingset_refault_anon before pgsteal, so the loop stops at pgsteal instead
+# of reading the ~30 lines after it. Anything not read cleanly -- missing file,
+# absent key, non-numeric value, a future kernel reordering the keys -- is left
+# EMPTY, which reclaim_useful reads as "reclaim is useful".
+#
+# pgsteal, not pgsteal_anon: the memcg file has no per-type steal counter
+# (checked on 6.18; /proc/vmstat has one, the cgroup does not). File steals
+# therefore dilute the ratio, and that dilution errs toward "useful" -- cache
+# that is evicted and stays evicted is reclaim doing its job.
+RC_REFAULT=""
+RC_STEAL=""
+read_reclaim_counters() {  # memory.stat path -> RC_REFAULT RC_STEAL
+  local k v
+  RC_REFAULT=""; RC_STEAL=""
+  # Silence exactly as psi_full_avg10 does it: a builtin `[ -r ]` for the common
+  # missing-slice case, and 2>/dev/null BEFORE the `<` (redirections apply left
+  # to right) for a file that vanishes between the test and the open.
+  [ -r "$1" ] || return 0
+  while read -r k v _; do
+    case "$k" in
+      workingset_refault_anon) RC_REFAULT="$v" ;;
+      pgsteal) RC_STEAL="$v"; break ;;
+    esac
+  done 2>/dev/null < "$1"
+  case "$RC_REFAULT" in '' | *[!0-9]*) RC_REFAULT="" ;; esac
+  case "$RC_STEAL" in '' | *[!0-9]*) RC_STEAL="" ;; esac
   return 0
 }
 
@@ -785,6 +836,71 @@ brake_step() {  # brake_scope brake_armed now last_reclaim -> BRAKE_ACTION BRAKE
   return 0
 }
 
+# Duty A's EFFECTIVENESS verdict (see the duty's header note). Over the last
+# tick, what share of the pages stolen from the agents slice came back as anon
+# refaults? When most of them did, evicting more anon only feeds the loop.
+# Not useful = steal cleared THRASH_MIN_STEAL AND refaults reached THRASH_PCT
+# of it. EVERY other shape is useful -- a missing or non-numeric sample (first
+# tick, no memory.stat), a counter that went backwards (slice recreated), zero
+# steal, the gate switched off -- so a blind gate keeps the pre-gate behaviour.
+# The deltas and ratio are left for the log whenever computable; REFAULT_PCT
+# is "-" when not. 10# because a leading zero must never read as octal.
+RECLAIM_USEFUL=1
+REFAULT_DELTA=""
+STEAL_DELTA=""
+REFAULT_PCT="-"
+reclaim_useful() {  # prev_refault prev_steal cur_refault cur_steal -> RECLAIM_USEFUL REFAULT_{DELTA,PCT} STEAL_DELTA
+  local a
+  RECLAIM_USEFUL=1; REFAULT_DELTA=""; STEAL_DELTA=""; REFAULT_PCT="-"
+  for a in "$1" "$2" "$3" "$4"; do
+    case "$a" in '' | *[!0-9]*) return 0 ;; esac
+  done
+  if [ "$3" -lt "$1" ] || [ "$4" -lt "$2" ]; then
+    return 0
+  fi
+  REFAULT_DELTA=$(( 10#$3 - 10#$1 ))
+  STEAL_DELTA=$(( 10#$4 - 10#$2 ))
+  if [ "$STEAL_DELTA" -le 0 ]; then
+    REFAULT_DELTA=""; STEAL_DELTA=""
+    return 0
+  fi
+  REFAULT_PCT=$(( REFAULT_DELTA * 100 / STEAL_DELTA ))
+  [ "$THRASH_PCT" -gt 0 ] 2>/dev/null || return 0
+  [ "$STEAL_DELTA" -ge "$THRASH_MIN_STEAL" ] 2>/dev/null || return 0
+  if [ $(( REFAULT_DELTA * 100 )) -ge $(( STEAL_DELTA * THRASH_PCT )) ]; then
+    RECLAIM_USEFUL=0
+  fi
+  return 0
+}
+
+# Duty A's decision, for a TIGHT tick. Actions:
+#   cooldown -- reclaimed inside RECLAIM_COOL; nothing to do.
+#   reclaim  -- due, and reclaim_useful says so.
+#   skip-log -- due, but it would feed thrash: log SKIPPED-THRASH.
+#   skip     -- as skip-log, inside the log line's own cooldown (quiet).
+# A SKIP NEVER ADVANCES last_reclaim. brake_step reads that same clock to
+# choose between reclaim-arm and braking straight away, and the STALL path's
+# reclaim is deliberately ungated -- a skipped duty A has to leave the
+# emergency path exactly as it found it, or the gate reaches it through the
+# shared clock.
+DUTY_A_ACTION="cooldown"
+duty_a_step() {  # last_reclaim last_thrash_log now useful -> DUTY_A_ACTION
+  elapsed_since "$1" "$3"
+  if [ "$ELAPSED" -lt "$RECLAIM_COOL" ]; then
+    DUTY_A_ACTION="cooldown"
+  elif [ "$4" = 1 ]; then
+    DUTY_A_ACTION="reclaim"
+  else
+    elapsed_since "$2" "$3"
+    if [ "$ELAPSED" -ge "$RECLAIM_COOL" ]; then
+      DUTY_A_ACTION="skip-log"
+    else
+      DUTY_A_ACTION="skip"
+    fi
+  fi
+  return 0
+}
+
 # Duty B's candidate filter over the arrays list_build_scopes fills: heavy
 # scopes only. Light scopes are left alone -- they are not the problem and
 # freezing them buys nothing. Filtered in bash: the old
@@ -862,7 +978,7 @@ on_signal() { log "STOP|signal received, shutting down"; exit 0; }
 trap on_exit EXIT
 trap on_signal INT TERM
 
-log "START|governor started (thresh=${STALL_THRESH}% pool_thresh=${POOL_THRESH}% low_free=${LOW_FREE_MB}M maxconc=${MAXCONC} heavy=${HEAVY_MB}M reclaim=${RECLAIM_MB}M/${RECLAIM_COOL}s sweep_cool=${SWEEP_COOL}s freeze=${FREEZE_SECS}s max_freeze=${MAX_FREEZE_SECS}s rotate=${ROTATE_SECS}s lag_warn=${LAG_WARN}s dryrun=${DRYRUN:-off})"
+log "START|governor started (thresh=${STALL_THRESH}% pool_thresh=${POOL_THRESH}% low_free=${LOW_FREE_MB}M maxconc=${MAXCONC} heavy=${HEAVY_MB}M reclaim=${RECLAIM_MB}M/${RECLAIM_COOL}s thrash_gate=${THRASH_PCT}%@${THRASH_MIN_STEAL}pg(0%=log-only) sweep_cool=${SWEEP_COOL}s freeze=${FREEZE_SECS}s max_freeze=${MAX_FREEZE_SECS}s rotate=${ROTATE_SECS}s lag_warn=${LAG_WARN}s dryrun=${DRYRUN:-off})"
 
 # Machine-fact cross-check. memory-policy.nix hardcodes memTotalG -- the one
 # hand-copied machine fact the policy allows itself -- and every margin
@@ -971,6 +1087,17 @@ while :; do
   fi
   pm="$PSI_TEXT"; pm_c="$PSI_CENTI"
   read_meminfo; free_mb="$MEMFREE_MB"; avail="$MEMAVAIL_MB"
+  # Duty A's refault ratio, sampled EVERY tick whatever the state, so the ratio
+  # a TIGHT tick acts on spans one interval -- the first tick of an episode
+  # included. One builtin read loop. `gate` rides on both RECLAIM call sites.
+  read_reclaim_counters "$FLEET/memory.stat"
+  reclaim_useful "$prev_refault" "$prev_steal" "$RC_REFAULT" "$RC_STEAL"
+  prev_refault="$RC_REFAULT"; prev_steal="$RC_STEAL"
+  if [ "$REFAULT_PCT" = "-" ]; then
+    gate="ratio=-"
+  else
+    gate="ratio=${REFAULT_PCT}% refault=${REFAULT_DELTA} steal=${STEAL_DELTA}"
+  fi
 
   # --- 1. Classify. The semantics (and the 07-29 pool-clause history) live on
   # classify_state, above the test seam. ---
@@ -1005,13 +1132,20 @@ while :; do
       # is rate-limited on top of that -- see maybe_sweep.
       maybe_sweep
 
-      # Duty A: cheapest lever first -- push the fleet's cold spare heaps to
-      # zram. No pause, no throttle, no effect on hot pages.
-      elapsed_since "$last_reclaim" "$now"
-      if [ "$ELAPSED" -ge "$RECLAIM_COOL" ]; then
-        reclaim_from "$FLEET" "$RECLAIM_MB" "TIGHT free=${free_mb}M"
-        last_reclaim=$now
-      fi
+      # Duty A: cheapest lever first -- push the fleet's cold pages to zram. No
+      # pause, no throttle -- unless the refault ratio says the pages it would
+      # evict are not cold (duty_a_step, above the seam).
+      duty_a_step "$last_reclaim" "$last_thrash_log" "$now" "$RECLAIM_USEFUL"
+      case "$DUTY_A_ACTION" in
+        reclaim)
+          reclaim_from "$FLEET" "$RECLAIM_MB" "TIGHT free=${free_mb}M $gate"
+          last_reclaim=$now
+          ;;
+        skip-log)
+          log "RECLAIM|SKIPPED-THRASH refault=${REFAULT_DELTA} steal=${STEAL_DELTA} (${REFAULT_PCT}%, thrash>=${THRASH_PCT}%) - evicted fleet anon is coming straight back"
+          last_thrash_log=$now
+          ;;
+      esac
 
       # Duty B: hold all but $MAXCONC heavy build scopes, rotating victims so
       # none is starved. The candidate filter and the rotated victim window
@@ -1064,7 +1198,8 @@ while :; do
         hold) : ;;
         escalate|brake) do_brake=1 ;;
         reclaim-arm)
-          reclaim_from "$FLEET" "$(( RECLAIM_MB * 2 ))" "STALL mem_psi=${dm}%"
+          # Ungated on purpose (see duty A's header note); logs the ratio anyway.
+          reclaim_from "$FLEET" "$(( RECLAIM_MB * 2 ))" "STALL mem_psi=${dm}% $gate"
           last_reclaim=$now
           brake_armed_dm="$dm"
           ;;

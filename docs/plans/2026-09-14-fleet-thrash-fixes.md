@@ -16,6 +16,14 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
   HOLD line carries `cache=NN%` (`cache=?` = no signal). No branch reads it.
   Calibrate 1b from:
   `grep -E 'BUILDSEM\|(TIGHTEN|LOOSEN|HOLD) .*cache=' ~/.local/state/cgroup-pressure/build-semaphore.log`
+- **Phase 2 (log-only) — shipped and switched 2026-09-14.** The agents slice's
+  `workingset_refault_anon`/`pgsteal` are sampled every tick; both RECLAIM
+  call sites log `ratio=NN% refault=N steal=N` (`ratio=-` = not computable).
+  `CGGOV_THRASH_PCT` defaults to 0, so the gate never skips yet. The memcg
+  file has no `pgsteal_anon`, so the denominator is total `pgsteal` (file
+  steals dilute toward "useful"). Enabling picks BOTH `CGGOV_THRASH_PCT` and
+  `CGGOV_THRASH_MIN_STEAL` from:
+  `grep -E 'CGGOV\|RECLAIM\|.*ratio=[0-9]' ~/.local/state/cgroup-pressure/governor.log`
 
 ---
 

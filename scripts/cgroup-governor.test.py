@@ -488,4 +488,108 @@ check("ensure_delegation: refusal warns once, then stays quiet",
       (gov_log().count("DELEGATE|cannot"), out), (1, "1"))
 (ro / "cgroup.subtree_control").chmod(0o644)
 
+# ---------------------------------------------------------------------------
+# 6. DUTY A's EFFECTIVENESS GATE (2026-09-14). Reclaiming the agents slice is
+#    only worth its sys time while the pages it evicts STAY evicted; on 09-14
+#    anon refaults tracked steals page for page. Every unreadable shape must
+#    read as "useful", so a blind gate keeps the pre-gate behaviour.
+
+# read_reclaim_counters: fork-free, stops at pgsteal (which follows the refault
+# counter in the kernel's key order).
+stat = BASE / "agents-memory.stat"
+stat.write_text(
+    "anon 3374104576\nfile 1001103360\n"
+    "workingset_refault_anon 16749231\nworkingset_refault_file 14659485\n"
+    "pgscan 75628334\npgsteal 57387177\npgsteal_kswapd 3641964\n"
+)
+out, _ = sh(GOV, f'read_reclaim_counters "{stat}"; '
+                 'printf "%s %s" "$RC_REFAULT" "$RC_STEAL"')
+check("read_reclaim_counters: refault_anon and pgsteal", out, "16749231 57387177")
+out, _ = sh(GOV, f'read_reclaim_counters "{BASE}/no-such-stat"; '
+                 'printf "[%s|%s]" "$RC_REFAULT" "$RC_STEAL"')
+check("read_reclaim_counters: missing memory.stat leaves both empty",
+      out, "[|]")
+err = sh_stderr(GOV, f'read_reclaim_counters "{BASE}/no-such-stat"')
+check("read_reclaim_counters: silent on a missing file (runs every tick)",
+      err, "")
+junk = BASE / "junk-memory.stat"
+junk.write_text("workingset_refault_anon 12x\npgsteal 5\n")
+out, _ = sh(GOV, f'read_reclaim_counters "{junk}"; '
+                 'printf "[%s|%s]" "$RC_REFAULT" "$RC_STEAL"')
+check("read_reclaim_counters: non-numeric value reads as not read",
+      out, "[|5]")
+
+# reclaim_useful: THRASH_PCT=90, THRASH_MIN_STEAL=1000 pinned in every body.
+useful_cases = [
+    (("0", "0", "9500", "10000"), "0 95", "refaults at 95% of steal: thrash, skip"),
+    (("0", "0", "1000", "10000"), "1 10", "cold reclaim (10%) proceeds"),
+    (("0", "0", "9000", "10000"), "0 90", "exactly at the bar is thrash (>=)"),
+    (("0", "0", "8999", "10000"), "1 89", "one page under the bar proceeds"),
+    (("100", "100", "50", "10000"), "1 -", "refault counter went backwards: proceed"),
+    (("0", "20000", "9500", "10000"), "1 -", "steal counter went backwards: proceed"),
+    (("5", "7", "5", "7"), "1 -", "zero steal proceeds (no ratio at all)"),
+    (("0", "0", "999", "999"), "1 100", "steal under the floor proceeds, ratio still logged"),
+    (("", "", "9500", "10000"), "1 -", "first tick (no previous sample) proceeds"),
+    (("0", "0", "", ""), "1 -", "missing memory.stat proceeds"),
+]
+for (pr, ps, cr, cs), want, why in useful_cases:
+    out, rc = sh(GOV, 'THRASH_PCT=90; THRASH_MIN_STEAL=1000; '
+                      f'reclaim_useful "{pr}" "{ps}" "{cr}" "{cs}"; '
+                      'printf "%s %s" "$RECLAIM_USEFUL" "$REFAULT_PCT"')
+    check(f"reclaim_useful: {why}", (out, rc), (want, 0))
+out, _ = sh(GOV, 'THRASH_PCT=0; THRASH_MIN_STEAL=0; '
+                 'reclaim_useful 0 0 9500 10000; '
+                 'printf "%s %s %s %s" "$RECLAIM_USEFUL" "$REFAULT_PCT" '
+                 '"$REFAULT_DELTA" "$STEAL_DELTA"')
+check("reclaim_useful: gate OFF (log-only) never skips, still measures",
+      out, "1 95 9500 10000")
+out, _ = sh(GOV, 'printf "%s %s" "$THRASH_PCT" "$THRASH_MIN_STEAL"')
+check("thrash gate ships OFF by default (log-only until calibrated)",
+      out, f'{os.environ.get("CGGOV_THRASH_PCT", "0")} '
+           f'{os.environ.get("CGGOV_THRASH_MIN_STEAL", "0")}')
+
+# duty_a_step: cooldown outranks the gate; a skip logs at most once per cooldown.
+duty_cases = [
+    (("0", "0", "1000", "1"), "reclaim", "due and useful reclaims"),
+    (("990", "0", "1000", "1"), "cooldown", "inside RECLAIM_COOL waits"),
+    (("990", "0", "1000", "0"), "cooldown", "cooldown outranks the thrash verdict"),
+    (("0", "0", "1000", "0"), "skip-log", "due but thrashing skips, loudly"),
+    (("0", "990", "1000", "0"), "skip", "a repeat skip inside the log cooldown is quiet"),
+    (("5000", "0", "1000", "1"), "cooldown", "backward wall jump reads as cooldown"),
+]
+for (lr, ll, now, useful), want, why in duty_cases:
+    out, rc = sh(GOV, 'RECLAIM_COOL=30; '
+                      f'duty_a_step {lr} {ll} {now} {useful}; '
+                      'printf "%s" "$DUTY_A_ACTION"')
+    check(f"duty_a_step: {why}", (out, rc), (want, 0))
+
+# THE STALL PATH IS UNAFFECTED. A skipped Duty A must not advance last_reclaim,
+# or brake_step would read "reclaim on cooldown" and brake straight away instead
+# of reclaim-arming -- the gate would have reached the ungated emergency path
+# through the shared clock. Threaded as the loop does it: skip at 1000 with
+# last_reclaim still 0, then a STALL tick at 1005.
+out, _ = sh(GOV, 'RECLAIM_COOL=30; last_reclaim=0; '
+                 'duty_a_step "$last_reclaim" 0 1000 0; a=$DUTY_A_ACTION; '
+                 'brake_step "" 0 1005 "$last_reclaim"; '
+                 'printf "%s %s" "$a" "$BRAKE_ACTION"')
+check("a thrash skip leaves the STALL path free to reclaim-arm",
+      out, "skip-log reclaim-arm")
+
+
+def code(block):
+    """Source lines of `block` with comments stripped, for shape assertions."""
+    return "\n".join(ln.split("#", 1)[0] for ln in block.splitlines())
+
+
+tight = gov_src[gov_src.index("\n    TIGHT)\n"):gov_src.index("\n    STALL)\n")]
+stall = gov_src[gov_src.index("\n    STALL)\n"):gov_src.rindex('\n  sleep "$INTERVAL"')]
+skip_arm = tight[tight.index("skip-log)"):]
+skip_arm = skip_arm[:skip_arm.index(";;")]
+check("shape: the TIGHT skip arm never assigns last_reclaim",
+      "last_reclaim" in code(skip_arm), False)
+check("shape: the STALL branch never consults the thrash gate",
+      any(t in code(stall) for t in ("RECLAIM_USEFUL", "duty_a_step")), False)
+check("shape: both reclaim call sites carry the logged ratio",
+      min(code(tight).count("$gate"), code(stall).count("$gate")) >= 1, True)
+
 summary(cleanup_dir=BASE)
