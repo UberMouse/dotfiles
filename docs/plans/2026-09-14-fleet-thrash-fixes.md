@@ -41,6 +41,104 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
   The daemon's transition watchdog (10 min ceiling, 3 min silence) is outlived
   by the 600 s wait and fed by the same heartbeat.
 
+## Next session — handover (written 2026-09-14, for 2026-09-15 testing)
+
+Read this first; the phases below are the design. The brief's decisions still
+hold and are not to be reopened: the cache term gates LOOSEN only (the
+TIGHTEN softening stays); Duty A gets a gate, not removal or a standby leaf;
+the STALL reclaim stays ungated; installs and cliDaemon are freeze-only; zram
+is measure-only; http-server stays off every list.
+
+**State at handover.**
+- dotfiles `master`: everything committed and switched through b3b0bc6.
+  NOT pushed (ahead of origin, including commits that predate this work).
+- kawaka: PR https://github.com/koordinates/kawaka/pull/9695
+  (`mj-server-admission`) open, CI running, unreviewed. The `~/code/kawaka`
+  checkout is on `master`, so no local mj daemon runs the change yet.
+- Nothing has been observed under REAL pressure: the box stayed idle after
+  each switch. The deployed code was proven against a synthetic pool instead
+  (recipe below).
+
+**Tomorrow's testing, in order.**
+1. Under real load, confirm the new fields appear in the live logs:
+   `grep -E 'BUILDSEM\|(TIGHTEN|LOOSEN|HOLD) .*cache=|CGGOV\|RECLAIM\|.*ratio=' ~/.local/state/cgroup-pressure/{build-semaphore,governor}.log`
+2. Phase 3: during a TIGHT spell, `CGGOV|SWEEP|migrated` should now take
+   installs, cliDaemon and the playwright runner. Identify the pids through
+   `/proc/<pid>/cmdline` or `kx-proc-find`, never `pgrep -f`.
+3. Phase 4 end to end, once #9695 is merged (or checked out) and the mj daemon
+   restarted on it: start a dev server through `mj`, then expect:
+   - `BUILDSEM|RESIDENT-SELF server:dev:<pkg>` in the log;
+   - the `allowed` file's resident field +1 for the server's life;
+   - the marker gone after stop.
+
+   Queue case: while `healthy=0`, the server's own log should show
+   `kx-build-slot: server:dev:<pkg> waiting for a build slot` about every 60 s,
+   and the server must NOT be killed at 180 s.
+4. Collect data for the two thresholds. Do not guess them, and confirm both
+   with taylorl before committing.
+   - **1b `self_inflicted_cache_frac`** (0.40 proposed). For each
+     `LOOSEN … [self-inflicted]` line, note its `cache=` and whether a TIGHTEN
+     followed within ~2 min. The bar belongs between the re-tightened cluster
+     and the held one.
+   - **Phase 2 `CGGOV_THRASH_PCT` + `CGGOV_THRASH_MIN_STEAL`**. Pair each
+     RECLAIM line's `ratio=` with its own `before -> after` charge. High ratios
+     that left the charge flat or rising are the thrash cluster; clean drops are
+     cold reclaim. MIN_STEAL goes above the steal counts of quiet ticks.
+5. Phase 5, only while a thrash episode is live:
+   `sudo nix shell nixpkgs#perf -c perf record -a -g -- sleep 20`.
+
+**Implementing 1b.** Follow Phase 1's "split, don't widen". `cache_frac` is
+already computed in `decide()` next to `build_share`, from the same `raw`;
+reuse it. Change the LOOSEN tag to `[self-inflicted, cache NN%]`. Two tests
+must change:
+- The fixture "self-inflicted psi60 does not block recovery" must pass
+  `cache=` explicitly; otherwise it silently tests the no-signal path.
+- The 1a check "…alongside the exemption tag (no behaviour change yet)" locks
+  today's cache-poor-loosen-passes behaviour on purpose, and should flip.
+
+**Enabling Phase 2.** Only the defaults move: `THRASH_PCT`/`THRASH_MIN_STEAL`
+in cgroup-governor.sh (or `CGGOV_*` in cgroups.nix). `reclaim_useful`,
+`duty_a_step` and their tests already exist; the §6 shape tests in
+cgroup-governor.test.py pin that STALL stays ungated and that a skip never
+touches `last_reclaim`.
+
+**Proving deployed code without real pressure** (what worked on 09-14).
+- Take the store paths and env from
+  `systemctl --user show <unit> -p ExecStart -p Environment`.
+- Run them against a synthetic tree made with `mktemp -d` under
+  `$CLAUDE_JOB_DIR/tmp`. Keep `rm -rf` out of the command; that call was
+  permission-denied.
+- Controller: `KX_SEM_POOL`, `KX_SEM_DESKTOP`, `KX_BUILD_SEM_DIR`,
+  `KX_SEM_STATE_DIR`, `KX_CGROUP_MEM_LIB`.
+- Governor: `KX_POOL`, `CGGOV_OUTDIR`, `CGLIB`, plus a fake
+  `worktrees-agents.slice/memory.stat` whose counters a side loop bumps.
+
+**Traps learned on 09-14** (beyond CLAUDE.md).
+- An `exec` with no command makes EVERY redirect on its line permanent:
+  `exec {fd}>f 2>/dev/null` silenced kx-build-slot's stderr for the rest of
+  its run (fixed in 9b191e2). Scope it: `{ exec {fd}>f; } 2>/dev/null`.
+- A /proc scan matching argv TEXT finds the agent's own tool shell, whose
+  `zsh -c` carries the pattern: the pgrep -f trap again, in Python. Match
+  argv[0] or compare start times.
+- Fixtures running `bash -c 'sleep …'` orphan the sleep on a plain kill, and
+  it holds any inherited pipe open (a 1 s suite took 120 s piped). Spawn with
+  `start_new_session=True` and DEVNULL stdio, and kill by group.
+- The script-tests sandbox sees only `scripts/`, `scriptBins/bins/` and
+  (since 43b8477) `nohang/nohang.conf`. A test reading any other repo file
+  needs a `cp` in flake.nix.
+- Committing part of a file without `git add -p`: build the intended file in
+  tmp, run `git hash-object -w`, then
+  `git update-index --cacheinfo <mode>,<blob>,<path>`. Copy the mode from
+  `git ls-tree HEAD`; a guessed 100755 got committed once and had to be
+  amended.
+- kawaka commits run lint-staged plus rush autoinstallers (slow and noisy,
+  but fine). The package gate is `node_modules/.bin/heft test` in
+  packages/tools/monorepo-jobs.
+
+Regex for all logging added in this rollout (the heartbeat lands in the
+server's own log, not the state dir):
+`BUILDSEM\|((TIGHTEN|LOOSEN|HOLD) .*cache=|RESIDENT-SELF )|CGGOV\|(RECLAIM\|(SKIPPED-THRASH|.*ratio=)|START\|.*thrash_gate=)|kx-build-slot: .* waiting for a build slot`
+
 ---
 
 ## Phase 1 — the LOOSEN exemption must require a cache-heavy pool
