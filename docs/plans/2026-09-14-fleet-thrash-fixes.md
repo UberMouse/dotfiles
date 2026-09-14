@@ -29,8 +29,12 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
   the subset is asserted. `FREEZE_ONLY_RE` holds rush/pnpm install and
   `/entry/cliDaemon.js`. Install RSS measured 2026-09-14 before adding it:
   `pnpm install` worker 2449 MB peak, launcher 685 MB, `rush install` 238 MB.
-- **Phase 4 — dotfiles half shipped 2026-09-14; kawaka half pending.**
-  `kx-build-slot --resident-self` is inert until something calls it. The
+- **Phase 4 — dotfiles half shipped and switched 2026-09-14; kawaka half on
+  branch `mj-server-admission`, PR https://github.com/koordinates/kawaka/pull/9695.** Verified live against
+  the real semaphore: resident 0 -> 1 -> 0, marker naming the wrapper. Kawaka
+  prefixes only `spawnDevServer`/`spawnStorybook` (not the `spawnProcess`
+  primitive its lifecycle tests drive); `MJ_SERVER_ADMISSION=0` opts out.
+  Inert until that branch lands and a daemon restarts on it. The
   Phase B trap is real: `server-spawn.tsx` kills a server after 180 s of
   SILENCE (its idle timer), well inside the 600 s slot wait, so a queued
   wrapper heartbeats to stderr every `KX_BUILD_SLOT_HEARTBEAT` s (default 60).
