@@ -546,6 +546,60 @@ check("a starved machine still blocks recovery", d.state.allowed, 4)
 d = bsc.decide(st(allowed=8, mark=8), inp(now=100.0, occupied=8), CFG)
 check("no loosen past the ceiling", d.state.allowed, 8)
 
+# --- The CACHE FRACTION on every decision line (observation only) ----------
+#
+# The LOOSEN exemption rests on a premise none of its terms measures: that the
+# stall is the pool's ceiling squeezing its OWN page cache (67a7488). On
+# 2026-09-14 it re-opened admission 9 times into fleet-anon thrash with the
+# pool at 19% cache. Before any branch reads the fraction, every TIGHTEN, LOOSEN
+# and HOLD line carries it, so the bar is picked from the log rather than
+# guessed. `cur` is NET of cache, so the fraction is cache / (cur + cache).
+d = bsc.decide(st(allowed=8),
+               inp(psi10=50.0, cur=11.34, high=15.0, cache=2.66, occupied=8),
+               CFG)
+check("TIGHTEN line carries the cache fraction",
+      "cache=19%" in d.reasons[0].detail, True)
+blind = bsc.decide(st(allowed=8),
+                   inp(psi10=50.0, cur=11.34, high=15.0, occupied=8), CFG)
+check("...and the fraction changes no decision",
+      (d.state, d.target, d.healthy),
+      (blind.state, blind.target, blind.healthy))
+check("no cache signal prints cache=?, never a fabricated 0%",
+      "cache=?" in blind.reasons[0].detail, True)
+
+# Both reads are required: a zero raw charge and an unreadable pool are no
+# signal, exactly like a missing cache read.
+d = bsc.decide(st(allowed=2),
+               inp(psi10=50.0, cur=0.0, cache=0.0, occupied=2), CFG)
+check("a zero raw charge is no cache signal",
+      "cache=?" in d.reasons[0].detail, True)
+d = bsc.decide(st(allowed=2),
+               inp(psi10=50.0, pool=False, cache=1.0, occupied=2), CFG)
+check("cache without a pool read is no cache signal",
+      "cache=?" in d.reasons[0].detail, True)
+
+# The exempted LOOSEN carries it too -- the line calibration will be read from.
+# A cache-POOR pool still passes the exemption here; withdrawing that is the
+# follow-up this logging exists to calibrate, locked so the change is a decision.
+d = bsc.decide(st(allowed=4, mark=4),
+               inp(now=100.0, psi60=5.0, cur=1.0, cache=0.2, occupied=4,
+                   avail=12.0), CFG)
+check("LOOSEN line carries the cache fraction",
+      "cache=17%" in d.reasons[0].detail, True)
+check("...alongside the exemption tag (no behaviour change yet)",
+      (d.state.allowed, "[self-inflicted]" in d.reasons[0].detail), (5, True))
+d = bsc.decide(st(allowed=4, mark=4), inp(now=100.0, occupied=4), CFG)
+check("a quiet LOOSEN with no cache read prints cache=?",
+      "cache=?" in d.reasons[0].detail, True)
+
+# HOLD: next to, not instead of, the absolute "(cache NG excl)" figure.
+d = bsc.decide(st(allowed=4, mark=2),
+               inp(cur=13.5, cache=1.5, occupied=2), CFG)
+check("HOLD line carries the cache fraction beside the excluded bytes",
+      ("cache=10%" in d.hold, "(cache 1.5G excl)" in d.hold), (True, True))
+d = bsc.decide(st(allowed=4, mark=2), inp(psi10=10.0, occupied=2), CFG)
+check("a psi HOLD with no cache read prints cache=?", "cache=?" in d.hold, True)
+
 # --- The high-water mark and the growth clock ------------------------------
 
 # Occupancy above the mark while healthy is demonstrated concurrency: the

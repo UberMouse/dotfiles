@@ -4,11 +4,18 @@ Evidence: `docs/notes/2026-09-14-fleet-anon-thrash.md`. Scope decided
 2026-09-14 by taylorl: cache premise gates LOOSEN only; Duty A gets an
 effectiveness gate (not removal, not a standby leaf); fleet demand gets a
 freezable-not-killable worker list plus residency for dev servers; zram is
-measure-first. Nothing here is approved for implementation yet.
+measure-first. Implementation approved 2026-09-14 in the order below.
 
 Phases are independent and ship as separate commits, in this order. Each
 lists the tests that make it safe, since `scripts/run-tests.sh` and
 `nix flake check` are the only gates.
+
+## Status
+
+- **Phase 1a — shipped and switched 2026-09-14.** Every TIGHTEN, LOOSEN and
+  HOLD line carries `cache=NN%` (`cache=?` = no signal). No branch reads it.
+  Calibrate 1b from:
+  `grep -E 'BUILDSEM\|(TIGHTEN|LOOSEN|HOLD) .*cache=' ~/.local/state/cgroup-pressure/build-semaphore.log`
 
 ---
 

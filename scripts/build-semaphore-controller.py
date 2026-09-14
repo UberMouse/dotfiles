@@ -1078,7 +1078,8 @@ State = collections.namedtuple(
 # Both read no-signal as NOT self-inflicted, so an unreadable input keeps the
 # full floor.
 # `pool_cache` feeds the BUILD SHARE term of the self-inflicted test (it used to
-# be diagnostic only), and separately lets the
+# be diagnostic only), the `cache=NN%` fraction every TIGHTEN, LOOSEN and HOLD
+# line carries (logged, not yet read by any branch), and separately lets the
 # HOLD line say how much reclaimable memory the gate is (correctly) refusing to
 # count. It carries a default so the policy suite keeps constructing Inputs
 # without it, and so a new field can never silently become load-bearing: any
@@ -1373,14 +1374,27 @@ def decide(state, inputs, cfg):
     # however little net headroom happens to be left. It needs BOTH reads: with
     # either missing the share is unknowable, which reads as NOT self-inflicted
     # like every other no-signal here.
-    build_share = None
-    if pool_mem is not None and untracked is not None and pool_cache is not None:
+    #
+    # THE CACHE FRACTION of that same raw charge. OBSERVATION ONLY for now: no
+    # branch reads it, every TIGHTEN, LOOSEN and HOLD line carries it. It is the
+    # one quantity the exemption's founding premise (67a7488: "our ceiling
+    # squeezing our own page cache") is actually about, and none of the terms
+    # above measures it -- on 2026-09-14 the exempted LOOSEN re-opened admission
+    # 9 times into fleet-anon thrash with the pool at 19% cache. The bar it will
+    # gate on is picked from these log lines, not guessed. See
+    # docs/notes/2026-09-14-fleet-anon-thrash.md.
+    raw = None
+    if pool_mem is not None and pool_cache is not None:
         raw = pool_mem[0] + pool_cache
-        if raw > 0:
-            # Two reads of a live tree: a fleet that grew between them can put
-            # the numerator below zero. Clamp -- a negative share is a minority
-            # by any reading, never a wrap.
-            build_share = max(0.0, (pool_mem[0] - untracked) / raw)
+    cache_frac = pool_cache / raw if raw else None
+    # "?" rather than a fabricated 0% when either read is missing.
+    cache_tok = "cache=?" if cache_frac is None else f"cache={cache_frac * 100:.0f}%"
+    build_share = None
+    if raw and untracked is not None:
+        # Two reads of a live tree: a fleet that grew between them can put
+        # the numerator below zero. Clamp -- a negative share is a minority
+        # by any reading, never a wrap.
+        build_share = max(0.0, (pool_mem[0] - untracked) / raw)
     roomy = (
         headroom is not None
         and headroom >= cfg.self_inflicted_headroom_jobs * cfg.job_bytes
@@ -1501,6 +1515,7 @@ def decide(state, inputs, cfg):
                     f"build={high_frac * 100:.0f}% "
                     f"(fleet {untracked / 2**30:.1f}G)"
                 )
+        bits.append(cache_tok)
         if hot_psi and self_inflicted:
             # Named in the log because the number that explains it is one the
             # line does NOT carry: psi10 is high while the net charge is low,
@@ -1563,7 +1578,7 @@ def decide(state, inputs, cfg):
         # Tagged when the gate was passed on the exemption rather than on a
         # quiet window, so a LOOSEN at psi60=4.4% against a 3.0% threshold
         # cannot read as a broken comparison.
-        detail = f"psi60={psi60:.1f}%"
+        detail = f"psi60={psi60:.1f}% {cache_tok}"
         if psi60 >= cfg.loosen_psi:
             detail += " [self-inflicted]"
         reasons.append(Reason("LOOSEN", detail, before, allowed))
@@ -1638,7 +1653,10 @@ def decide(state, inputs, cfg):
                 bits.append(f"(cache {inputs.pool_cache / 2**30:.1f}G excl)")
         if not psi_ok:
             bits.append(f"psi10={psi10:.1f}%")
-        hold = f"HOLD {' '.join(bits)} occupied={occupied} allowed={allowed}"
+        hold = (
+            f"HOLD {' '.join(bits)} {cache_tok} "
+            f"occupied={occupied} allowed={allowed}"
+        )
 
     return Decision(
         state=State(
