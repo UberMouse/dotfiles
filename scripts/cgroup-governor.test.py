@@ -592,4 +592,136 @@ check("shape: the STALL branch never consults the thrash gate",
 check("shape: both reclaim call sites carry the logged ratio",
       min(code(tight).count("$gate"), code(stall).count("$gate")) >= 1, True)
 
+# ---------------------------------------------------------------------------
+# 7. FREEZABLE IS NOT KILLABLE (2026-09-14). nohang's kill set must be a SUBSET
+#    of the governor's freeze set -- nothing is killed that could not first be
+#    paused -- and FREEZE_ONLY_RE widens the freeze set without ever reaching
+#    the kill list. The two lists used to be "kept in step" by comment and had
+#    drifted: nohang carried bare `playwright`, WORKER_RE only ms-playwright.
+from testlib import wait_for  # noqa: E402
+
+NOHANG = HERE.parent / "nohang" / "nohang.conf"
+
+
+def top_level_alts(regex):
+    """Split an ERE on its TOP-LEVEL `|` only, so `/(rush|pnpm) install`
+    stays one alternative."""
+    out, depth, cur, prev = [], 0, "", ""
+    for ch in regex:
+        if prev != "\\" and ch == "(":
+            depth += 1
+        elif prev != "\\" and ch == ")":
+            depth -= 1
+        if ch == "|" and depth == 0 and prev != "\\":
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+        prev = ch
+    out.append(cur)
+    return out
+
+
+# nohang's own parse: a rule is a line STARTING with the key (indented ones are
+# examples inside comments), split on `///`, stripped.
+kill = []
+for ln in NOHANG.read_text().splitlines():
+    if not ln.startswith("@BADNESS_ADJ_RE_CMDLINE"):
+        continue
+    adj, _, pat = ln.partition("@BADNESS_ADJ_RE_CMDLINE")[2].partition("///")
+    if int(adj.strip()) > 0:
+        kill.append(pat.strip())
+out, _ = sh(GOV, 'printf "%s\\n%s" "$WORKER_RE" "$FREEZE_ONLY_RE"')
+worker_re, freeze_only_re = out.split("\n")
+worker = top_level_alts(worker_re)
+freeze_only = top_level_alts(freeze_only_re)
+check("nohang.conf yields a real kill list (the parse found its rules)",
+      len(kill) >= 8, True)
+check("every nohang kill pattern is in WORKER_RE (kill set <= freeze set)",
+      [p for p in kill if p not in worker], [])
+check("no FREEZE_ONLY_RE pattern is in nohang's kill list",
+      [p for p in freeze_only if p in kill], [])
+check("the split keeps the grouped install alternative whole",
+      "/(rush|pnpm) install( |$)" in freeze_only, True)
+
+# sweep_transient against REAL processes whose argv carry each shape. A
+# fixture file of pids would only assert a belief about /proc; these are read
+# through the same comm/cmdline/statm builtins the governor uses.
+SWEEP = BASE / "sweep-pool"
+fleet = SWEEP / "worktrees-agents.slice" / "fleet"
+fleet.mkdir(parents=True)
+HOLD = "import time; time.sleep(120)"
+fixtures = {
+    "pnpm install": [sys.executable, "-c", HOLD,
+                     "/k/common/temp/pnpm-local/node_modules/.bin/pnpm",
+                     "install", "--frozen-lockfile"],
+    "rush install": [sys.executable, "-c", HOLD,
+                     "/nix/store/x-rush/lib/node_modules/@microsoft/rush/bin/rush",
+                     "install"],
+    "cliDaemon": [sys.executable, "-c", HOLD,
+                  "/x/playwright-core/lib/entry/cliDaemon.js", "session-1"],
+    "playwright runner": [sys.executable, "-c", HOLD,
+                          "/k/node_modules/playwright/cli.js", "test"],
+    # Guard 1 must still win: a SHELL whose arguments name an install is the
+    # launcher, not the worker (`zsh -c "... rush install ..."`).
+    "shell naming an install": [BASH, "-c", "sleep 120; :", "_",
+                                "/x/bin/rush", "install"],
+    "rush install-autoinstaller": [sys.executable, "-c", HOLD,
+                                   "/x/bin/rush", "install-autoinstaller"],
+    "http-server (deliberately excluded)": [sys.executable, "-c", HOLD,
+                                            "/x/node_modules/.bin/http-server",
+                                            "storybook-static"],
+}
+want_migrated = {"pnpm install", "rush install", "cliDaemon", "playwright runner"}
+# Own session + /dev/null stdio, killed by GROUP: killing the bash fixture alone
+# orphans its `sleep`, which holds an inherited stdout open -- and whatever is
+# reading this suite's output (run-tests.sh, the flake sandbox) then waits out
+# the sleep. Measured: 1.3 s unpiped, >120 s through a pipe.
+procs = {
+    k: subprocess.Popen(v, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, start_new_session=True)
+    for k, v in fixtures.items()
+}
+try:
+    def argv_ready():
+        for k, p in procs.items():
+            with open(f"/proc/{p.pid}/cmdline", "rb") as fh:
+                if fixtures[k][-1].encode() not in fh.read():
+                    return False
+        return True
+
+    check("sweep fixtures exec'd with their argv", bool(wait_for(argv_ready)), True)
+    (fleet / "cgroup.procs").write_text(
+        "".join(f"{p.pid}\n" for p in procs.values()))
+    reset_log()
+    sh(GOV, f'POOL="{SWEEP}"; WORKER_MIN_MB=1; DRYRUN=1; sweep_transient')
+    log_text = gov_log()
+    pid_of = {str(p.pid): k for k, p in procs.items()}
+    migrated = {pid_of[ln.split("pid=", 1)[1].split()[0]]
+                for ln in log_text.splitlines() if "would MIGRATE pid=" in ln}
+    for k in fixtures:
+        check(f"sweep_transient: {k} {'migrates' if k in want_migrated else 'stays put'}",
+              k in migrated, k in want_migrated)
+
+    # And a REAL (non-dry) sweep lands the install in the slice's transient leaf.
+    one = SWEEP / "worktrees-one.slice" / "claude-x.scope"
+    one.mkdir(parents=True)
+    (one / "cgroup.procs").write_text(f"{procs['pnpm install'].pid}\n")
+    (fleet / "cgroup.procs").write_text("")
+    reset_log()
+    sh(GOV, f'POOL="{SWEEP}"; WORKER_MIN_MB=1; sweep_transient')
+    landed = (one.parent / "transient" / "cgroup.procs").read_text().split()
+    check("a real sweep writes the install's pid into transient",
+          (landed, "SWEEP|migrated 1" in gov_log()),
+          ([str(procs["pnpm install"].pid)], True))
+finally:
+    import signal  # noqa: E402
+
+    for p in procs.values():
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.wait()
+
 summary(cleanup_dir=BASE)

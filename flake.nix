@@ -162,9 +162,12 @@
                 ];
               }
               ''
-                mkdir -p work/scriptBins && cd work
+                mkdir -p work/scriptBins work/nohang && cd work
                 cp -r ${./scripts} scripts
                 cp -r ${./scriptBins/bins} scriptBins/bins
+                # cgroup-governor.test.py asserts nohang's kill list is a
+                # subset of the governor's freeze list, so it reads this.
+                cp ${./nohang/nohang.conf} nohang/nohang.conf
                 chmod -R +w .
                 export PYTHONDONTWRITEBYTECODE=1
                 for t in scripts/*.test.py; do

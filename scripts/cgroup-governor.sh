@@ -359,13 +359,38 @@ read_reclaim_counters() {  # memory.stat path -> RC_REFAULT RC_STEAL
 # .claude-wrapped is NEVER matched -- nohang protects it at -2000 and it is the
 # agent itself. MCP servers simply do not appear on the allowlist, so they are
 # never migrated and never frozen.
-# Kept deliberately in step with nohang.conf's @BADNESS_ADJ_RE_CMDLINE "prefer as
-# victim" rules -- one list, two escalation levels: the governor FREEZES this set
-# under pressure, and nohang KILLS the same set if it ever gets that far.
+# THE CONTRACT WITH nohang.conf: every positive @BADNESS_ADJ_RE_CMDLINE pattern
+# there appears VERBATIM here -- the kill set is a subset of the freeze set, so
+# nothing is ever killed under pressure that the governor could not first have
+# paused. Asserted by cgroup-governor.test.py, not kept in step by comment: the
+# comment version had already drifted (nohang had bare `playwright`, this list
+# only ms-playwright) when it was replaced on 2026-09-14.
 # /bin/tsc rather than /tsc, because the short form also matches
 # "/tsconfig.json", which appears in the arguments of plenty of processes that
-# are not the compiler.
-WORKER_RE='jest-worker|/jest|--headless|ms-playwright|/eslint|/heft|/bin/tsc|/esbuild|/vitest'
+# are not the compiler. /playwright/cli\.js is the `playwright test` runner's
+# entry script, not bare `playwright`, which matches any argv naming it.
+WORKER_RE='jest-worker|/jest|--headless|ms-playwright|/eslint|/heft|/bin/tsc|/esbuild|/vitest|/playwright/cli\.js'
+
+# FREEZABLE BUT NOT KILLABLE -- matched IN ADDITION to WORKER_RE by
+# sweep_transient, and never added to nohang.conf (the test asserts that too).
+# Pausing these for a few seconds costs nothing; killing one costs real work.
+#
+#   * rush/pnpm INSTALL, anchored on the script path followed by an `install`
+#     field -- never a bare substring, and not `install-autoinstaller`.
+#     Measured 2026-09-14: the pnpm worker peaked at 2449 MB, its launcher at
+#     685 MB and `rush install` at 238 MB, all over WORKER_MIN_MB. The note's
+#     worktree-setup install ran ungated at 127% sys in the fleet. Killing one
+#     leaves a half-written node_modules; freezing one briefly holds that
+#     worktree's rush lock, which MAX_FREEZE_SECS bounds.
+#   * playwright-cli's /entry/cliDaemon.js: an agent's OPEN browser session,
+#     and the parent of the headless chromium WORKER_RE already freezes.
+#     Killing it destroys the session; pausing it is just latency.
+#
+# Deliberately NOT here: http-server (the storybook servers). Measured at 51 MB
+# RSS with most of it swapped -- under the migration floor, and a freeze
+# pauses CPU and allocation, it does not reclaim, so freezing a swapped-out
+# server frees nothing.
+FREEZE_ONLY_RE='/(rush|pnpm) install( |$)|/entry/cliDaemon\.js'
 
 # Two guards, because a cmdline match ALONE is not evidence that a process IS the
 # worker. Caught in testing: a shell invoked as `zsh -c "... rushx test ..."`
@@ -446,7 +471,7 @@ sweep_transient() {
         parts=()
         mapfile -d '' -t parts < "/proc/$p/cmdline" 2>/dev/null || continue
         cl="${parts[*]}"
-        [[ "$cl" =~ $WORKER_RE ]] || continue
+        [[ "$cl" =~ $WORKER_RE ]] || [[ "$cl" =~ $FREEZE_ONLY_RE ]] || continue
         # Guard 2: heavy only. Reading RSS last keeps it off the hot path for the
         # many processes that fail the cheaper checks above. statm field 2 is
         # resident pages and is readable with `read`; /proc/<pid>/status needed awk.

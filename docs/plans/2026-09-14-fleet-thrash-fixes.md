@@ -24,6 +24,11 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
   steals dilute toward "useful"). Enabling picks BOTH `CGGOV_THRASH_PCT` and
   `CGGOV_THRASH_MIN_STEAL` from:
   `grep -E 'CGGOV\|RECLAIM\|.*ratio=[0-9]' ~/.local/state/cgroup-pressure/governor.log`
+- **Phase 3 — shipped 2026-09-14.** Drift resolved by anchoring nohang's bare
+  `playwright` to the runner (`/playwright/cli\.js`), now also in `WORKER_RE`;
+  the subset is asserted. `FREEZE_ONLY_RE` holds rush/pnpm install and
+  `/entry/cliDaemon.js`. Install RSS measured 2026-09-14 before adding it:
+  `pnpm install` worker 2449 MB peak, launcher 685 MB, `rush install` 238 MB.
 
 ---
 
