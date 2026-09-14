@@ -571,4 +571,25 @@ check("no waiting marker among the exec'd command's fds",
       "/waiting/" in p_out.stdout, False)
 check("failing open leaves the queue", waiters(), [])
 
+# 13. THE QUEUE MUST NOT EAT STDERR. The waiting marker used to be opened with
+#     `exec {fd}>marker 2>/dev/null`, and an exec with no command makes every
+#     redirection on the line permanent: from the first failed pass on, the
+#     script's stderr -- and so the stderr of the command it finally ran -- was
+#     /dev/null. Every job that ever queued lost its error output. Both wait
+#     paths share the marker, so both are asserted.
+slots()
+publish(healthy=0)
+log_text()
+p, _ = run("--label", "errq", "--resident", "--", "sh", "-c",
+           "echo ERR-VISIBLE >&2", timeout="1")
+log_text()
+check("a job that queued on the load test keeps its stderr",
+      "ERR-VISIBLE" in p.stderr, True)
+publish(allowed=1, occupied=1, healthy=1)
+p, _ = run("--label", "errcap", "--", "sh", "-c", "echo ERR-VISIBLE >&2",
+           timeout="1")
+log_text()
+check("a build that queued at the cap keeps its stderr",
+      "ERR-VISIBLE" in p.stderr, True)
+
 summary(cleanup_dir=BASE)

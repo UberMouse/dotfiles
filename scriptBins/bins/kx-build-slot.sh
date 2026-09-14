@@ -210,7 +210,15 @@ wait_marker_take() {
   # re-locked by whichever job next gets that pid, so the directory does not
   # grow without bound, and until then it sits there unlocked and uncounted.
   wait_marker="$WAIT_DIR/$$"
-  if ! exec {wait_fd}>"$wait_marker" 2>/dev/null; then
+  # The 2>/dev/null lives on a BRACE GROUP, never on the exec itself. `exec`
+  # with no command makes EVERY redirection on its line permanent for the
+  # shell, so the old `exec {wait_fd}>"$wait_marker" 2>/dev/null` sent this
+  # script's stderr to /dev/null for good -- and with it the stderr of every
+  # job that had ever queued, build errors included, since the command
+  # inherits it (found 2026-09-14 when the --resident-self heartbeat never
+  # appeared). A group's redirection is undone when the group ends; the fd
+  # allocated inside it is not.
+  if ! { exec {wait_fd}>"$wait_marker"; } 2>/dev/null; then
     wait_fd=""
     return 0
   fi
