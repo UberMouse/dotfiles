@@ -41,6 +41,66 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
   The daemon's transition watchdog (10 min ceiling, 3 min silence) is outlived
   by the 600 s wait and fed by the same heartbeat.
 
+### Live testing 2026-09-15 (first loaded day)
+
+- **Fields live.** All 56 cache-era controller decisions carry `cache=`; 25
+  governor reclaims carry `ratio=`.
+- **Phase 3.** 28 sweeps that morning, and the stall brake froze the swept
+  leaf (a 5.1G node among it). `SWEEP` logs only a count, and no install or
+  cliDaemon was running during inspection, so the `FREEZE_ONLY_RE` half is
+  still unobserved live.
+- **Phase 4.** #9695 merged 2026-09-15. Each mj daemon runs its own
+  worktree's `dist-cjs`; only worktrees rebased past `b4b1203b88` carry it.
+  taylorl: wait for natural use (a `RESIDENT-SELF` line), don't start one.
+- **1b data, thin, still collecting (taylorl).** Of 13 `[self-inflicted]`
+  loosens, 2 re-tightened within 120 s, at cache 14% and 17%; 11 held, at
+  12–47%. The proposed 0.40 would have blocked 8 of the 11 that held, so the
+  data points nearer 0.20. Re-run the pairing over more days before choosing.
+- **Phase 2 data, thin, still collecting.** Clean reclaims: steal 6k–127k
+  pages at ratio 0–5%. Thrash signatures (charge flat or rising): steal 805
+  at 128%, steal 840 at 35%. So the thrash cluster is LOW steal: a
+  `MIN_STEAL` of 1000 would wave exactly those through as "useful". Expect
+  the floor well below 800 and the ratio bar near 30%; two samples do not
+  place either. Charge rises at ratio 7–8% with steal 1–11k were fleet
+  growth during the window, not thrash.
+- **The hang had a cause outside this plan: the VMware balloon, and it is
+  DELIBERATE.** taylorl lowered this VM's memory reservation in VMware so the
+  host has RAM for gaming. A balloon here is that trade-off working as set,
+  not a host misconfiguration to escalate. `Balloon:` in meminfo held 4.5G of
+  the 29G guest, inflated since that morning's boot and barely deflated. It is charged to no cgroup, so the pool ceiling and
+  desktop floor were sized against RAM the guest no longer had. The desktop
+  stalled at up to 48% `mem_full` with the pool 10G under its ceiling. The
+  pressure monitor's 10:56 analysis called 9–10 GB "unattributed". taylorl
+  chose log-and-explain, no policy change: the governor carries `balloon=` on
+  STATE/STALL, and the monitor's prompt and snapshot name the balloon.
+  The balloon log showed it is NOT a fixed squeeze. From 13:44 the host ran a
+  ~5-minute sawtooth: inflate to a steady 4.36–4.47G, then deflate ~3.5G
+  (down to 0.8–1.7G) inside a minute. MemAvailable swung 5.5G–15.4G each
+  cycle. Logging every fixed-step move wrote ~70 lines/h at 256M and ~100/h at
+  512M, so taylorl chose TURNING POINTS: `CGGOV|BALLOON|peak NM` / `trough NM`,
+  logged once the balloon reverses `CGGOV_BALLOON_STEP_MB` (512) from its
+  running extreme. That is ~2 lines a cycle, plus a first-reading line at start.
+- **14:40:59: a desktop stall with memory FREE.**
+  - The desktop hit `mem_full` 21.94% for 10 s while pool pressure was 0.00%,
+    8.8G was free and the balloon sat at its ~4.4G peak.
+  - In the two minutes before, the pool charge fell from 14.6G to 7.7G.
+  - Kernel counters since boot, read at 14:43:
+    - balloon churn: `balloon_inflate` 11.6M pages and `balloon_deflate`
+      10.5M (~44G in, ~40G out);
+    - `balloon_migrate` 2.88M (65k at 11:30);
+    - compaction: `compact_stall` 2614, `compact_isolated` 38M.
+  - `vmwballoon_shrinker_enable=N`.
+  - Compaction migrating balloon pages would fit a stall with memory free, but
+    this is unproven: the 10 s window closed before perf could run.
+  - The first balloon-aware monitor diagnosis (analysis-20260915-144101)
+    subtracted the balloon correctly and recommended a full memory reservation
+    for this VM on the host. That reservation is the setting taylorl lowered on
+    purpose for host gaming, so it is a trade-off to weigh, not a fix to push.
+    taylorl declined further instrumentation (compaction counters, unattended
+    perf) once the cause was known.
+- **Phase 5.** A watcher on `CGGOV|STALL|desktop` triggers the perf record
+  (perf prefetched as `nixpkgs#perf`).
+
 ## Next session — handover (written 2026-09-14, for 2026-09-15 testing)
 
 Read this first; the phases below are the design. The brief's decisions still
@@ -53,8 +113,8 @@ is measure-only; http-server stays off every list.
 - dotfiles `master`: everything committed and switched through b3b0bc6.
   NOT pushed (ahead of origin, including commits that predate this work).
 - kawaka: PR https://github.com/koordinates/kawaka/pull/9695
-  (`mj-server-admission`) open, CI running, unreviewed. The `~/code/kawaka`
-  checkout is on `master`, so no local mj daemon runs the change yet.
+  (`mj-server-admission`) MERGED 2026-09-15 (see Live testing above for which
+  daemons carry it).
 - Nothing has been observed under REAL pressure: the box stayed idle after
   each switch. The deployed code was proven against a synthetic pool instead
   (recipe below).
@@ -137,7 +197,7 @@ touches `last_reclaim`.
 
 Regex for all logging added in this rollout (the heartbeat lands in the
 server's own log, not the state dir):
-`BUILDSEM\|((TIGHTEN|LOOSEN|HOLD) .*cache=|RESIDENT-SELF )|CGGOV\|(RECLAIM\|(SKIPPED-THRASH|.*ratio=)|START\|.*thrash_gate=)|kx-build-slot: .* waiting for a build slot`
+`BUILDSEM\|((TIGHTEN|LOOSEN|HOLD) .*cache=|RESIDENT-SELF )|CGGOV\|(RECLAIM\|(SKIPPED-THRASH|.*ratio=)|START\|.*thrash_gate=|BALLOON\||(STATE|STALL)\|.*balloon=)|kx-build-slot: .* waiting for a build slot`
 
 ---
 

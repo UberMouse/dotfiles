@@ -98,7 +98,7 @@
 # -- the honest way to watch the policy for a day before letting it act.
 #
 # All log lines are tagged CGGOV for grepping:
-#   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN|SWEEP|MIGRATE|LAG)' \
+#   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN|SWEEP|MIGRATE|LAG|BALLOON)' \
 #     ~/.local/state/cgroup-pressure/governor.log
 #
 # LAG is the one to watch first. It means a tick overran, i.e. the governor was
@@ -114,6 +114,7 @@
 #   CGGOV_RECLAIM_COOL    min seconds between reclaim attempts        (default 30)
 #   CGGOV_THRASH_PCT      duty A skips at this anon-refault %% of steal (default 0 = off, log-only)
 #   CGGOV_THRASH_MIN_STEAL  ...only once the tick stole this many pages (default 0)
+#   CGGOV_BALLOON_STEP_MB balloon reversal that logs a peak/trough     (default 512)
 #   CGGOV_FREEZE_SECS     emergency freeze duration                   (default 3)
 #   CGGOV_MAX_FREEZE_SECS absolute ceiling on ANY freeze              (default 60)
 #   CGGOV_ROTATE_SECS     rotate cap victims this often               (default 20)
@@ -138,6 +139,10 @@ RECLAIM_COOL="${CGGOV_RECLAIM_COOL:-30}"
 # nothing. Both numbers get picked from those logged ratios, not guessed.
 THRASH_PCT="${CGGOV_THRASH_PCT:-0}"
 THRASH_MIN_STEAL="${CGGOV_THRASH_MIN_STEAL:-0}"
+# Log-only: how far the hypervisor balloon must REVERSE before its last extreme
+# is logged as a peak or trough (see balloon_turn); smaller moves are jitter.
+BALLOON_STEP_MB="${CGGOV_BALLOON_STEP_MB:-512}"
+case "$BALLOON_STEP_MB" in '' | *[!0-9]*) BALLOON_STEP_MB=512 ;; esac
 FREEZE_SECS="${CGGOV_FREEZE_SECS:-3}"
 MAX_FREEZE_SECS="${CGGOV_MAX_FREEZE_SECS:-60}"
 ROTATE_SECS="${CGGOV_ROTATE_SECS:-20}"
@@ -209,6 +214,9 @@ reclaim_pid=""               # in-flight backgrounded reclaim, if any
 prev_refault=""              # agents slice counters at the previous tick, for
 prev_steal=""                #   duty A's refault ratio ("" = not yet sampled)
 last_thrash_log=0            # SKIPPED-THRASH rate limiter (never last_reclaim)
+bal_ext=""                   # balloon zigzag: running extreme MiB ("" = no reading yet)
+bal_dir=""                   #   ...its direction (up|down|"" = not yet a full step)
+bal_last_turn=""             #   ...the last logged turn ("peak 4470M"), for context
 # Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
 # the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
 # which stopped measurement for up to ~5 s at the single most memory-starved
@@ -306,6 +314,58 @@ read_meminfo() {
       MemAvailable:) MEMAVAIL_MB=$(( v / 1024 )); break ;;
     esac
   done < "${1:-/proc/meminfo}" 2>/dev/null
+  return 0
+}
+
+# The hypervisor balloon (vmw_balloon on this VM): RAM the HOST has taken back.
+# free(1) counts it as used, yet no cgroup is charged for it, so every partition
+# here (desktop floor, pool ceiling) silently assumes RAM the guest no longer
+# has. Measured 2026-09-15: 4.5G ballooned since boot, the desktop stalled at
+# 48% mem_full with the pool 10G under its ceiling, and nothing logged why.
+# Logged, never acted on. `Balloon:` sits near the END of meminfo, so it is not
+# folded into read_meminfo's three-line pass; still one builtin loop, no fork.
+# No line (no balloon driver), no file, or a non-number -> BALLOON_MB="".
+BALLOON_MB=""
+read_balloon() {
+  local k v
+  BALLOON_MB=""
+  while read -r k v _; do
+    [ "$k" = "Balloon:" ] || continue
+    case "$v" in '' | *[!0-9]*) ;; *) BALLOON_MB=$(( 10#$v / 1024 )) ;; esac
+    break
+  done 2>/dev/null < "${1:-/proc/meminfo}"
+  return 0
+}
+
+# The balloon's TURNING POINTS, so the log shows its envelope rather than every
+# move. On 2026-09-15 the host ran a ~5-minute sawtooth: inflate to a steady
+# ~4.4G, then deflate ~3.5G inside a minute. Logging each move of a fixed step
+# wrote ~100 lines an hour at 512M and would at any step below the swing. A
+# zigzag instead: track the running extreme in the current direction, and only
+# once the reading has come back a full step from it is that extreme a turn --
+# ~2 lines a cycle, with sub-step jitter swallowed. Before any direction is
+# known the extreme is just the first reading. An unknown reading changes
+# nothing. BT_TURN_MB is the extreme being reported (BT_EXT has moved on).
+balloon_turn() {  # ext_mb dir cur_mb step_mb -> BT_EXT BT_DIR BT_TURN(peak|trough|"") BT_TURN_MB
+  local e c
+  BT_EXT="$1"; BT_DIR="$2"; BT_TURN=""; BT_TURN_MB=""
+  [ -n "$3" ] || return 0
+  if [ -z "$1" ]; then BT_EXT="$3"; return 0; fi
+  e=$(( 10#$1 )); c=$(( 10#$3 ))
+  case "$2" in
+    up)
+      if [ "$c" -gt "$e" ]; then BT_EXT="$3"
+      elif [ $(( e - c )) -ge "$4" ]; then BT_TURN=peak; BT_TURN_MB="$1"; BT_DIR=down; BT_EXT="$3"
+      fi ;;
+    down)
+      if [ "$c" -lt "$e" ]; then BT_EXT="$3"
+      elif [ $(( c - e )) -ge "$4" ]; then BT_TURN=trough; BT_TURN_MB="$1"; BT_DIR=up; BT_EXT="$3"
+      fi ;;
+    *)
+      if [ $(( c - e )) -ge "$4" ]; then BT_DIR=up; BT_EXT="$3"
+      elif [ $(( e - c )) -ge "$4" ]; then BT_DIR=down; BT_EXT="$3"
+      fi ;;
+  esac
   return 0
 }
 
@@ -1112,6 +1172,18 @@ while :; do
   fi
   pm="$PSI_TEXT"; pm_c="$PSI_CENTI"
   read_meminfo; free_mb="$MEMFREE_MB"; avail="$MEMAVAIL_MB"
+  # The hypervisor balloon: its turning points as a timeline, a field on STATE/STALL.
+  read_balloon
+  balloon="${BALLOON_MB:+${BALLOON_MB}M}"; balloon="${balloon:-?}"
+  if [ -z "$bal_ext" ] && [ -n "$BALLOON_MB" ]; then
+    log "BALLOON|${BALLOON_MB}M held by the hypervisor (first reading, avail=${avail}M)"
+  fi
+  balloon_turn "$bal_ext" "$bal_dir" "$BALLOON_MB" "$BALLOON_STEP_MB"
+  bal_ext="$BT_EXT"; bal_dir="$BT_DIR"
+  if [ -n "$BT_TURN" ]; then
+    log "BALLOON|${BT_TURN} ${BT_TURN_MB}M held by the hypervisor (${bal_last_turn:+after ${bal_last_turn}, }now ${BALLOON_MB}M, avail=${avail}M)"
+    bal_last_turn="${BT_TURN} ${BT_TURN_MB}M"
+  fi
   # Duty A's refault ratio, sampled EVERY tick whatever the state, so the ratio
   # a TIGHT tick acts on spans one interval -- the first tick of an episode
   # included. One builtin read loop. `gate` rides on both RECLAIM call sites.
@@ -1129,7 +1201,7 @@ while :; do
   classify_state "$dm_c" "$pm_c" "$free_mb"
   state="$CLASSIFY_STATE"
   [ "$state" != "$last_state" ] && \
-    log "STATE|$last_state -> $state (desktop_mem_full_avg10=${dm}% pool_mem_full_avg10=${pm}% free=${free_mb}M avail=${avail}M)"
+    log "STATE|$last_state -> $state (desktop_mem_full_avg10=${dm}% pool_mem_full_avg10=${pm}% free=${free_mb}M avail=${avail}M balloon=${balloon})"
   last_state="$state"
 
   # Deferred STALL re-measure (semantics on brake_recovered, above the seam):
@@ -1210,7 +1282,7 @@ while :; do
       # (list_build_scopes yields nothing else), victims rotate via duty B,
       # and a brake victim is still covered by the EXIT trap, the startup
       # sweep, ExecStopPost, and the MAX_FREEZE_SECS ceiling.
-      log "STALL|desktop mem_full_avg10=${dm}% pool=${pm}% free=${free_mb}M avail=${avail}M"
+      log "STALL|desktop mem_full_avg10=${dm}% pool=${pm}% free=${free_mb}M avail=${avail}M balloon=${balloon}"
       # `force`: during an actual stall the scan IS the urgent step, so it skips
       # the rate limiter that keeps it cheap during ordinary TIGHT ticks.
       maybe_sweep force

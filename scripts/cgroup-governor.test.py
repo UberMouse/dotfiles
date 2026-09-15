@@ -724,4 +724,62 @@ finally:
             pass
         p.wait()
 
+# ---------------------------------------------------------------------------
+# 8. THE HYPERVISOR BALLOON (2026-09-15). Guest RAM the host took back is in
+#    free(1)'s "used" and in no cgroup, so it is logged: a BALLOON timeline
+#    line when it moves a step, and a balloon= field on STATE/STALL. Every
+#    no-signal read is "" (logged as ?), never a number.
+mib = BASE / "meminfo-balloon"
+mib.write_text(
+    "MemTotal:       30606080 kB\n"
+    "MemFree:         7039460 kB\n"
+    "MemAvailable:    9114560 kB\n"
+    "Percpu:            94720 kB\n"
+    "Balloon:         4701876 kB\n"
+    "HugePages_Total:       0\n"
+)
+out, _ = sh(GOV, f'read_balloon "{mib}"; printf "[%s]" "$BALLOON_MB"')
+check("read_balloon parses Balloon: to MiB", out, "[4591]")
+out, _ = sh(GOV, f'read_balloon "{mi}"; printf "[%s]" "$BALLOON_MB"')
+check("read_balloon: no Balloon: line (no driver) is unknown, not zero", out, "[]")
+junk = BASE / "meminfo-balloon-junk"
+junk.write_text("Balloon:         lots kB\n")
+out, _ = sh(GOV, f'read_balloon "{junk}"; printf "[%s]" "$BALLOON_MB"')
+check("read_balloon: a non-number is unknown", out, "[]")
+out, _ = sh(GOV, f'{{ read_balloon "{BASE}/no-such-meminfo"; }} 2>&1; printf "[%s]" "$BALLOON_MB"')
+check("read_balloon: a missing file is unknown AND silent", out, "[]")
+
+#    balloon_turn is a zigzag: ext dir cur step -> BT_EXT BT_DIR BT_TURN BT_TURN_MB.
+for (ext, d, cur, want, why) in [
+    ("", "", "", "||:", "unknown with no history changes nothing"),
+    ("", "", "4000", "4000||:", "the first reading seeds the extreme"),
+    ("4000", "up", "", "4000|up|:", "an unknown reading changes nothing"),
+    ("4000", "", "4300", "4000||:", "undecided: a sub-step move sets no direction"),
+    ("4000", "", "4600", "4600|up|:", "undecided: a full step sets the direction, no turn"),
+    ("4400", "up", "4470", "4470|up|:", "rising extends the running peak"),
+    ("4470", "up", "4100", "4470|up|:", "a sub-step pullback is jitter"),
+    ("4470", "up", "3877", "3877|down|peak:4470", "a full-step reversal reports the PEAK"),
+    ("821", "down", "1500", "1500|up|trough:821", "a full-step rebound reports the TROUGH"),
+]:
+    out, _ = sh(GOV, f'balloon_turn "{ext}" "{d}" "{cur}" 512; '
+                     'printf "%s|%s|%s:%s" "$BT_EXT" "$BT_DIR" "$BT_TURN" "$BT_TURN_MB"')
+    check(f"balloon_turn: {why}", out, want)
+
+# The real 2026-09-15 sawtooth (13:44-13:59 BALLOON lines), with an unknown
+# reading spliced in: 14 readings become four turns.
+out, _ = sh(GOV, 'e=""; d=""; for c in 4357 3684 3139 2623 3357 "" 3953 3018 2404 1700 '
+                 '2533 3203 3754 4358 3704; do '
+                 'balloon_turn "$e" "$d" "$c" 512; e="$BT_EXT"; d="$BT_DIR"; '
+                 '[ -n "$BT_TURN" ] && printf "%s:%s " "$BT_TURN" "$BT_TURN_MB"; done')
+check("balloon_turn: a real sawtooth logs only its turning points",
+      out, "trough:2623 peak:3953 trough:1700 peak:4358 ")
+out, _ = sh(GOV, 'printf "%s" "$BALLOON_STEP_MB"')
+check("balloon step defaults to 512 MiB", out, "512")
+
+state_log = next(ln for ln in gov_src.splitlines() if 'log "STATE|$last_state' in ln)
+stall_log = next(ln for ln in gov_src.splitlines() if 'log "STALL|desktop' in ln)
+check("shape: STATE and STALL lines carry balloon=",
+      ("balloon=${balloon}" in state_log, "balloon=${balloon}" in stall_log),
+      (True, True))
+
 summary(cleanup_dir=BASE)
