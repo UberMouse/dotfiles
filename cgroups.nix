@@ -143,6 +143,12 @@ in
       # it costs no build slots (KX_SEM_CEIL is unchanged at 8; see below).
       # MemoryMax follows, keeping the 2 GiB backstop gap the argument above
       # depends on. See docs/notes/2026-09-04-desktop-memory-stalls.md.
+      #
+      # 2026-09-17 -- MemoryHigh is the ceiling with NO balloon held. The
+      # governor lowers the live memory.high by the hypervisor balloon, down to
+      # poolHighFloorG, and raises it back once the balloon has stayed smaller
+      # (cgroup-governor.sh, ceiling_target). Read `memory.high` below this
+      # value as that mechanism, logged `CGGOV|CEILING|`, not as drift.
       MemoryAccounting = true;
       MemoryHigh = memory.poolHigh;
       MemoryMax = memory.poolMax;
@@ -355,6 +361,10 @@ in
         # but every memory figure in it is the RAW charge, and the inlined
         # diagnosis prompt is told to reason only from the snapshot.
         "KX_CGROUP_MEM_LIB=${./scripts/cgroup-mem.py}"
+        # The CONFIGURED pool ceiling and its balloon floor, so the diagnosis
+        # prompt can tell a governor-lowered memory.high from a retune.
+        "KX_POLICY_POOL_HIGH_G=${toString memory.poolHighG}"
+        "KX_POLICY_POOL_HIGH_FLOOR_G=${toString memory.poolHighFloorG}"
       ];
       ExecStartPre = rotateLog "events.log";
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-pressure-monitor.sh}";
@@ -457,6 +467,12 @@ in
         # so the governor can cross-check it against the real /proc/meminfo
         # at startup and log MEMTOTAL-DRIFT loudly if the VM's RAM moved.
         "KX_POLICY_MEMTOTAL_G=${toString memory.memTotalG}"
+        # The pool ceiling the governor lowers by the hypervisor balloon, and
+        # the floor it stops at (see poolHighFloorG in memory-policy.nix). So
+        # the pool's live memory.high sits BELOW MemoryHigh whenever a balloon
+        # is held -- that is this mechanism, not drift.
+        "KX_POLICY_POOL_HIGH_G=${toString memory.poolHighG}"
+        "KX_POLICY_POOL_HIGH_FLOOR_G=${toString memory.poolHighFloorG}"
       ];
       ExecStartPre = rotateLog "governor.log";
       ExecStart = "${pkgs.bash}/bin/bash ${./scripts/cgroup-governor.sh}";

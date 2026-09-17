@@ -782,4 +782,112 @@ check("shape: STATE and STALL lines carry balloon=",
       ("balloon=${balloon}" in state_log, "balloon=${balloon}" in stall_log),
       (True, True))
 
+# ---------------------------------------------------------------------------
+# 9. THE BALLOON-AWARE POOL CEILING (2026-09-17). The partition in
+#    memory-policy.nix is sized against the whole of MemTotal; a held balloon
+#    removes RAM from under it. The pool's memory.high gives the balloon back,
+#    rounded DOWN to a step so jitter writes nothing, never below the policy
+#    floor and never above the configured ceiling. Lowering is immediate; a
+#    raise waits for the target to have stayed higher for the whole dwell.
+#    ceiling_target base floor balloon step -> CT_MB ("" = feature off).
+for (base, floor, bal, want, why) in [
+    ("15360", "12288", "", "15360", "no balloon reading keeps the configured ceiling"),
+    ("15360", "12288", "0", "15360", "an empty balloon keeps the configured ceiling"),
+    ("15360", "12288", "300", "15360", "a sub-step balloon is jitter, not a cut"),
+    ("15360", "12288", "1300", "14336", "the balloon comes off in whole steps, rounded down"),
+    ("15360", "12288", "2600", "12800", "a larger balloon, still above the floor"),
+    ("15360", "12288", "4570", "12288", "the floor holds (2026-09-17's 4570M balloon)"),
+    ("15360", "16384", "4570", "15360", "a floor above the base never raises the ceiling"),
+    ("", "12288", "4570", "", "no configured base: the feature is off"),
+    ("15360", "", "4570", "", "no configured floor: the feature is off"),
+    ("15G", "12288", "4570", "", "a non-number base: the feature is off"),
+]:
+    out, _ = sh(GOV, f'ceiling_target "{base}" "{floor}" "{bal}" 512; printf "[%s]" "$CT_MB"')
+    check(f"ceiling_target: {why}", out, f"[{want}]")
+
+#    ceiling_step live target now raise_since dwell -> CS_SET CS_SINCE CS_WHY.
+for (live, target, now, since, want, why) in [
+    ("", "12288", "1000", "", "||", "an unreadable live ceiling is left alone"),
+    ("15360", "", "1000", "", "||", "feature off: nothing is written"),
+    ("15360", "12288", "1000", "", "12288||lower", "a higher live ceiling is lowered at once"),
+    ("max", "15360", "1000", "", "15360||lower", "an unset (max) ceiling is lowered at once"),
+    ("15360", "12288", "1000", "990", "12288||lower", "lowering also cancels a pending raise"),
+    ("12288", "12288", "1000", "", "||", "on target: nothing to do"),
+    ("12288", "12288", "1000", "990", "||", "back on target cancels a pending raise"),
+    ("12288", "14336", "1000", "", "|1000|wait", "a raise starts the dwell clock, writes nothing"),
+    ("12288", "14336", "1030", "1000", "|1000|wait", "mid-dwell: still waiting"),
+    ("12288", "14336", "1060", "1000", "14336||raise", "the dwell served: raise"),
+    ("12288", "14336", "900", "1000", "|1000|wait", "a backward clock jump reads as no time passed"),
+]:
+    out, _ = sh(GOV, f'ceiling_step "{live}" "{target}" "{now}" "{since}" 60; '
+                     'printf "%s|%s|%s" "$CS_SET" "$CS_SINCE" "$CS_WHY"')
+    check(f"ceiling_step: {why}", out, want)
+
+#    read_pool_high: bytes -> MiB, `max` passes through, anything else is "".
+ph = BASE / "memory.high-bytes"
+ph.write_text("16106127360\n")
+out, _ = sh(GOV, f'read_pool_high "{ph}"; printf "[%s]" "$POOL_HIGH_MB"')
+check("read_pool_high parses bytes to MiB", out, "[15360]")
+ph.write_text("max\n")
+out, _ = sh(GOV, f'read_pool_high "{ph}"; printf "[%s]" "$POOL_HIGH_MB"')
+check("read_pool_high: an unset ceiling reads as max", out, "[max]")
+out, _ = sh(GOV, f'{{ read_pool_high "{BASE}/no-such-high"; }} 2>&1; printf "[%s]" "$POOL_HIGH_MB"')
+check("read_pool_high: a missing file is unknown AND silent", out, "[]")
+
+#    set_pool_high against a synthetic pool: real writes land, dry runs do not,
+#    a missing file says so, and a lower is backgrounded (the kernel reclaims
+#    synchronously in the writer) but still lands once waited for.
+CEIL = BASE / "ceilpool"
+CEIL.mkdir()
+(CEIL / "memory.high").write_text("16106127360\n")
+reset_log()
+sh(GOV, f'POOL="{CEIL}"; set_pool_high 15360 12288 "lower: test"; wait')
+check("set_pool_high: a lower lands in memory.high (after its background write)",
+      ((CEIL / "memory.high").read_text().strip(),
+       "CEILING|memory.high 15360M -> 12288M (lower: test)" in gov_log()),
+      (str(12288 * 1048576), True))
+reset_log()
+sh(GOV, f'POOL="{CEIL}"; set_pool_high 12288 14336 "raise: test"')
+check("set_pool_high: a raise is written inline (no wait needed)",
+      ((CEIL / "memory.high").read_text().strip(),
+       "CEILING|memory.high 12288M -> 14336M (raise: test)" in gov_log()),
+      (str(14336 * 1048576), True))
+reset_log()
+sh(GOV, f'POOL="{CEIL}"; DRYRUN=1; set_pool_high 14336 12288 "lower: dry"; '
+        'set_pool_high 14336 12288 "lower: dry"; wait')
+check("set_pool_high: DRYRUN writes nothing and logs the decision once",
+      ((CEIL / "memory.high").read_text().strip(),
+       gov_log().count("DRYRUN|would set CEILING memory.high 14336M -> 12288M")),
+      (str(14336 * 1048576), 1))
+reset_log()
+sh(GOV, f'POOL="{BASE}/no-such-pool"; set_pool_high 15360 12288 "lower: gone"; wait')
+check("set_pool_high: a missing memory.high is logged, not silent",
+      "CEILING|SKIPPED - no memory.high" in gov_log(), True)
+
+out, _ = sh(GOV, 'printf "%s" "$CEILING_DWELL"')
+check("ceiling dwell defaults to 60s", out, "60")
+loop = gov_src[gov_src.index("\nwhile :; do\n"):]
+check("shape: the loop derives the ceiling from the balloon and steps it",
+      all(t in code(loop) for t in ('ceiling_target "$POOL_HIGH_BASE_MB"',
+                                    '"$BALLOON_MB"', "ceiling_step", "set_pool_high")),
+      True)
+on_exit = next(ln for ln in gov_src.splitlines() if ln.startswith("on_exit()"))
+check("shape: exit restores the configured ceiling", "restore_pool_high" in on_exit, True)
+
+#    The monitor's diagnosis prompt: it must see the kernel's live reclaim
+#    tuning (two 09-17 diagnoses recommended a watermark_scale_factor the box
+#    already exceeded) and must know a lowered memory.high is the governor.
+out, _ = sh(MON, "vm_tuning")
+check("monitor vm_tuning names the three reclaim knobs, in order",
+      [kv.split("=", 1)[0] for kv in out.split()],
+      ["vm.watermark_scale_factor", "vm.swappiness", "vm.min_free_kbytes"])
+mon_src = MON.read_text()
+machine = next(ln for ln in mon_src.splitlines() if ln.startswith("Machine:"))
+check("shape: the prompt's Machine line carries live vm tuning and the ceiling note",
+      ("$(vm_tuning)" in machine, "${ceiling_note}" in machine), (True, True))
+check("shape: the snapshot records the live vm tuning",
+      'echo "kernel reclaim tuning: $(vm_tuning)"' in mon_src, True)
+check("shape: the prompt no longer forbids what the governor now does",
+      "Never recommend a cgroup retune to compensate for a balloon" in mon_src, False)
+
 summary(cleanup_dir=BASE)

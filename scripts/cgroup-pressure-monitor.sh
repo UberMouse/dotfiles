@@ -138,6 +138,18 @@ investigate() {
   ( run_investigation "$snapfile" ) &
 }
 
+# The kernel's reclaim tuning, read live for the prompt and the snapshot alike.
+# On 2026-09-17 two diagnoses in a row recommended raising
+# vm.watermark_scale_factor to 200 on a box already running 300 (nixos.nix):
+# the prompt never saw the live value, so it re-derived the kernel default.
+vm_tuning() {
+  local k out=""
+  for k in watermark_scale_factor swappiness min_free_kbytes; do
+    out="${out}vm.$k=$(cat "/proc/sys/vm/$k" 2>/dev/null || echo '?') "
+  done
+  printf '%s' "${out% }"
+}
+
 run_investigation() {
   local snapfile="$1"
   local stamp analysis snap prompt headline
@@ -152,7 +164,7 @@ run_investigation() {
   # the exact staleness failure cgroups.nix's 07-28..07-31 note documents for the
   # governor's dead window. Forks are fine here: this is the (rare, cooled-down)
   # investigate path, not the detection loop the fork budget protects.
-  local ncpu mem_gib balloon_gib pool_high pool_max desk_min cpu_cores
+  local ncpu mem_gib balloon_gib pool_high pool_max desk_min cpu_cores ceiling_note
   ncpu=$(nproc 2>/dev/null || echo '?')
   mem_gib=$(awk '/^MemTotal/{printf "%.1f", $2 / 1048576}' /proc/meminfo 2>/dev/null || echo '?')
   # No Balloon: line means no balloon driver, i.e. nothing held: 0.0, not '?'.
@@ -162,10 +174,16 @@ run_investigation() {
   desk_min=$(human "$(cat "$DESKTOP/memory.min" 2>/dev/null)")
   cpu_cores=$(awk '$1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ {printf "%.0f", $1 / $2}' "$POOL/cpu.max" 2>/dev/null)
   [ -n "$cpu_cores" ] || cpu_cores="unlimited"
+  # The live memory.high is not the configured one while a balloon is held: the
+  # governor gives the balloon back out of it (memory-policy.nix, poolHighFloorG).
+  ceiling_note="MemoryHigh ${pool_high}"
+  if [ -n "${KX_POLICY_POOL_HIGH_G:-}" ] && [ -n "${KX_POLICY_POOL_HIGH_FLOOR_G:-}" ]; then
+    ceiling_note="MemoryHigh ${pool_high} live (configured ${KX_POLICY_POOL_HIGH_G}G; the governor lowers it by the balloon size, never below ${KX_POLICY_POOL_HIGH_FLOOR_G}G, and raises it back once the balloon has stayed smaller for a minute -- a live value under the configured one is that mechanism, not drift)"
+  fi
 
   prompt="You are diagnosing a Linux DESKTOP that just STALLED. Below is a forensic snapshot captured at the moment of the stall by a cgroup-v2 PSI monitor. Reason ONLY from the snapshot.
 
-Machine: ${ncpu}-core / ${mem_gib} GiB NixOS host (ubermouse), a VMware guest whose balloon driver currently holds ${balloon_gib} GiB of that RAM for the hypervisor.Parallel git-worktree build work + an adopted Claude 'agents' fleet run inside a cgroup-v2 pool 'worktrees.slice' (subtree agents-adopted), capped: ${cpu_cores} cores CPU quota, MemoryHigh ${pool_high} / MemoryMax ${pool_max}, and io.max on the build disk (value in the snapshot). IMPORTANT: io.weight is a NO-OP on this host (the mq-deadline scheduler ignores it) -> io.max is the ONLY thing bounding pool I/O; do NOT recommend raising/lowering io.weight. The DESKTOP (Xorg/browser) runs in a session-<N>.scope OUTSIDE the pool, protected by memory.min=${desk_min} (guaranteed via the user.slice ancestor chain so the POOL, not Xorg, is the reclaim target) and io.latency target=50ms (its I/O jumps the disk queue ahead of the pool).
+Machine: ${ncpu}-core / ${mem_gib} GiB NixOS host (ubermouse), a VMware guest whose balloon driver currently holds ${balloon_gib} GiB of that RAM for the hypervisor. Kernel reclaim tuning, live: $(vm_tuning) -- NEVER recommend setting one of these to a value it already has. Parallel git-worktree build work + an adopted Claude 'agents' fleet run inside a cgroup-v2 pool 'worktrees.slice' (subtree agents-adopted), capped: ${cpu_cores} cores CPU quota, ${ceiling_note} / MemoryMax ${pool_max}, and io.max on the build disk (value in the snapshot). IMPORTANT: io.weight is a NO-OP on this host (the mq-deadline scheduler ignores it) -> io.max is the ONLY thing bounding pool I/O; do NOT recommend raising/lowering io.weight. The DESKTOP (Xorg/browser) runs in a session-<N>.scope OUTSIDE the pool, protected by memory.min=${desk_min} (guaranteed via the user.slice ancestor chain so the POOL, not Xorg, is the reclaim target) and io.latency target=50ms (its I/O jumps the disk queue ahead of the pool).
 
 CRUCIAL: this monitor triggers on the DESKTOP session scope's OWN PSI (the 'desktop' section of the snapshot), NOT system-wide. The pool's io.max deliberately CONCENTRATES build stall inside the pool, so 'pool io.pressure' running HIGHER than 'system io PSI' is EXPECTED and means the cap is WORKING — that alone is NOT the problem and needs no fix. The problem is ONLY whatever pushed the DESKTOP scope's own io/memory pressure over ~15%. If desktop pressure is low despite high pool/system pressure, the protections HELD and you should say so plainly.
 
@@ -173,7 +191,7 @@ Known dynamics: (a) MEMORY-FREEZE — global reclaim swaps out the desktop despi
 
 TRAP — memory.current IS NOT MEMORY IN USE. It counts PAGE CACHE, which the kernel takes back unasked and which free(1) files under buff/cache rather than used. A pool reading 16G against a 16G memory.high beside a machine reporting far less in use is NOT a contradiction and NOT a bug: the two numbers never measured the same thing. This pool does tens of GB of file IO, so the gap is routinely HALF the charge (measured 2026-08-25: 52% of the pool charge and 47% of the fleet's was reclaimable cache; 2026-08-20: 15.2G charged, 7.36G anon). The snapshot's 'memory IN USE, net of reclaimable page cache' section is the number to reason from — every 'memory.current' line elsewhere in it is RAW and overstates real usage. You MUST NOT compute a shortfall, a percentage-of-ceiling, or a MemoryHigh recommendation from a raw charge when the net column is present. Doing exactly that on 2026-08-25 produced a recommendation to cut the pool from 16G to 11G on the strength of a 14G charge that was mostly cache — a cut that would have starved the pool of page cache and converted a memory stall into an IO stall, which is the OTHER failure mode seen the same day. If the net section says NO SIGNAL or is unavailable, say so explicitly and treat every memory figure as an upper bound rather than quietly reasoning from it. NOTE the asymmetry: memory.high is a limit on the RAW charge, so do not 'correct' the ceiling to match the net usage — the correction applies to the usage side only.
 
-TRAP — BALLOONED MEMORY BELONGS TO NO CGROUP. The snapshot's 'balloon' line (meminfo Balloon:) is guest RAM the HYPERVISOR has taken back. free(1) counts it under 'used', and no cgroup, process or kernel slab figure accounts for it. Subtract it BEFORE calling any gap between free(1) 'used' and the cgroup totals 'unattributed': an analysis on 2026-09-15 reported 9-10 GB it could not attribute while the balloon held 4.5 GB. A balloon also shrinks the RAM that memory.min and MemoryHigh were sized against, so a large balloon is itself a cause of global reclaim. Name it as one when it is large. But the balloon's size is set by the operator's host-side memory reservation for this VM, and a low reservation is often DELIBERATE, e.g. to free host RAM for other workloads. So do NOT present raising the reservation as a fix for a misconfiguration: present it as a trade-off (guest stalls vs host headroom) for the operator to weigh. Never recommend a cgroup retune to compensate for a balloon.
+TRAP — BALLOONED MEMORY BELONGS TO NO CGROUP. The snapshot's 'balloon' line (meminfo Balloon:) is guest RAM the HYPERVISOR has taken back. free(1) counts it under 'used', and no cgroup, process or kernel slab figure accounts for it. Subtract it BEFORE calling any gap between free(1) 'used' and the cgroup totals 'unattributed': an analysis on 2026-09-15 reported 9-10 GB it could not attribute while the balloon held 4.5 GB. A balloon also shrinks the RAM that memory.min and MemoryHigh were sized against, so a large balloon is itself a cause of global reclaim. Name it as one when it is large. But the balloon's size is set by the operator's host-side memory reservation for this VM, and a low reservation is often DELIBERATE, e.g. to free host RAM for other workloads. So do NOT present raising the reservation as a fix for a misconfiguration: present it as a trade-off (guest stalls vs host headroom) for the operator to weigh. The governor ALREADY compensates in the one place it safely can -- it lowers the pool's memory.high by the balloon, down to a floor (see the Machine line) -- so do NOT recommend lowering MemoryHigh, raising the desktop floor, or any other cgroup retune for the balloon. If the pool sits AT that floor while the balloon is larger than the cut, say the floor is binding and leave weighing it to the operator.
 
 TRAP — do NOT recommend reclaiming the agents fleet on argv alone. A process whose command line contains 'bg-spare' is NOT necessarily idle: that string records how it STARTED, and once a session claims the spare it becomes a live agent doing real work while the argv is unchanged. The only way to tell them apart is the process cwd (a genuine idle spare is still inside the cc-daemon spare directory; a claimed one has moved into the worktree it is working in), and the snapshot does NOT contain cwd. Measured 2026-08-19: of 14 bg-spare processes only 7 were truly idle (~571MB); the rest were claimed sessions holding ~2.3GB of real work. So you MUST NOT present the fleet's total RSS as reclaimable slack. If the fleet looks large, say only that its idle fraction is unknown from this snapshot and must be checked with cwd before any reaping.
 
@@ -224,6 +242,7 @@ snapshot() {
     echo "----- memory / swap -----"
     free -h
     echo "balloon (hypervisor-held, charged to no cgroup): $(awk '/^Balloon:/{b = $2} END{printf "%.1f GiB", b / 1048576}' /proc/meminfo 2>/dev/null)"
+    echo "kernel reclaim tuning: $(vm_tuning)"
     echo "swap:"; swapon --show 2>/dev/null | sed 's/^/  /'
     echo
     echo "----- pool (worktrees.slice) -----"

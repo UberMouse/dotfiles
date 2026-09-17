@@ -98,7 +98,7 @@
 # -- the honest way to watch the policy for a day before letting it act.
 #
 # All log lines are tagged CGGOV for grepping:
-#   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN|SWEEP|MIGRATE|LAG|BALLOON)' \
+#   grep -E 'CGGOV\|(RECLAIM|FREEZE|THAW|CAP|STALL|STATE|START|STOP|DRYRUN|SWEEP|MIGRATE|LAG|BALLOON|CEILING)' \
 #     ~/.local/state/cgroup-pressure/governor.log
 #
 # LAG is the one to watch first. It means a tick overran, i.e. the governor was
@@ -114,7 +114,12 @@
 #   CGGOV_RECLAIM_COOL    min seconds between reclaim attempts        (default 30)
 #   CGGOV_THRASH_PCT      duty A skips at this anon-refault %% of steal (default 0 = off, log-only)
 #   CGGOV_THRASH_MIN_STEAL  ...only once the tick stole this many pages (default 0)
-#   CGGOV_BALLOON_STEP_MB balloon reversal that logs a peak/trough     (default 512)
+#   CGGOV_BALLOON_STEP_MB balloon granularity: a reversal that logs a peak/trough,
+#                         and the step the pool ceiling moves in       (default 512)
+#   CGGOV_CEILING_DWELL   seconds a higher ceiling must hold before a raise (default 60)
+#   KX_POLICY_POOL_HIGH_G / KX_POLICY_POOL_HIGH_FLOOR_G
+#                         memory-policy.nix's pool ceiling and its balloon floor;
+#                         without both the balloon-aware ceiling is off
 #   CGGOV_FREEZE_SECS     emergency freeze duration                   (default 3)
 #   CGGOV_MAX_FREEZE_SECS absolute ceiling on ANY freeze              (default 60)
 #   CGGOV_ROTATE_SECS     rotate cap victims this often               (default 20)
@@ -143,6 +148,19 @@ THRASH_MIN_STEAL="${CGGOV_THRASH_MIN_STEAL:-0}"
 # is logged as a peak or trough (see balloon_turn); smaller moves are jitter.
 BALLOON_STEP_MB="${CGGOV_BALLOON_STEP_MB:-512}"
 case "$BALLOON_STEP_MB" in '' | *[!0-9]*) BALLOON_STEP_MB=512 ;; esac
+# The balloon-aware pool ceiling (see ceiling_target). Base and floor are
+# memory-policy.nix's numbers, handed over by the unit in GiB; without both the
+# feature is off, which is what local runs and the test suite get.
+POOL_HIGH_BASE_MB=""
+POOL_HIGH_FLOOR_MB=""
+case "${KX_POLICY_POOL_HIGH_G:-}" in
+  '' | *[!0-9]*) ;; *) POOL_HIGH_BASE_MB=$(( 10#$KX_POLICY_POOL_HIGH_G * 1024 )) ;;
+esac
+case "${KX_POLICY_POOL_HIGH_FLOOR_G:-}" in
+  '' | *[!0-9]*) ;; *) POOL_HIGH_FLOOR_MB=$(( 10#$KX_POLICY_POOL_HIGH_FLOOR_G * 1024 )) ;;
+esac
+CEILING_DWELL="${CGGOV_CEILING_DWELL:-60}"
+case "$CEILING_DWELL" in '' | *[!0-9]*) CEILING_DWELL=60 ;; esac
 FREEZE_SECS="${CGGOV_FREEZE_SECS:-3}"
 MAX_FREEZE_SECS="${CGGOV_MAX_FREEZE_SECS:-60}"
 ROTATE_SECS="${CGGOV_ROTATE_SECS:-20}"
@@ -217,6 +235,9 @@ last_thrash_log=0            # SKIPPED-THRASH rate limiter (never last_reclaim)
 bal_ext=""                   # balloon zigzag: running extreme MiB ("" = no reading yet)
 bal_dir=""                   #   ...its direction (up|down|"" = not yet a full step)
 bal_last_turn=""             #   ...the last logged turn ("peak 4470M"), for context
+ceil_raise_since=""          # pool ceiling: when a raise started waiting out its dwell
+ceil_pid=""                  # in-flight backgrounded memory.high lower, if any
+CEIL_DRY_LAST=""             # DRYRUN: the last would-set logged, so it logs once
 # Duty C (stall brake) state. The brake used to sleep inline -- `sleep 2` for
 # the post-reclaim re-measure, then freeze + `sleep $FREEZE_SECS` + thaw --
 # which stopped measurement for up to ~5 s at the single most memory-starved
@@ -322,7 +343,8 @@ read_meminfo() {
 # here (desktop floor, pool ceiling) silently assumes RAM the guest no longer
 # has. Measured 2026-09-15: 4.5G ballooned since boot, the desktop stalled at
 # 48% mem_full with the pool 10G under its ceiling, and nothing logged why.
-# Logged, never acted on. `Balloon:` sits near the END of meminfo, so it is not
+# Logged, and since 2026-09-17 given back out of the pool's ceiling (see
+# ceiling_target). `Balloon:` sits near the END of meminfo, so it is not
 # folded into read_meminfo's three-line pass; still one builtin loop, no fork.
 # No line (no balloon driver), no file, or a non-number -> BALLOON_MB="".
 BALLOON_MB=""
@@ -366,6 +388,135 @@ balloon_turn() {  # ext_mb dir cur_mb step_mb -> BT_EXT BT_DIR BT_TURN(peak|trou
       elif [ $(( e - c )) -ge "$4" ]; then BT_DIR=down; BT_EXT="$3"
       fi ;;
   esac
+  return 0
+}
+
+# THE BALLOON-AWARE POOL CEILING. memory-policy.nix partitions MemTotal --
+# pool MemoryHigh + desktop floor + user-other + margin -- and a held balloon
+# takes RAM out from under all four terms at once. On 2026-09-17 it sat at
+# ~4.5G all morning: the partition ran that far over, free RAM fell to ~1G
+# every minute or two, and the desktop stalled with its own pages untouched.
+# Of the four terms only the pool is a CEILING the governor can move and only
+# the pool can stand to shrink, so the balloon comes off it: the target is the
+# configured ceiling less the balloon, rounded DOWN to whole steps (a sub-step
+# balloon writes nothing), never below the policy floor, never above the
+# configured ceiling. A cut costs builds, not the desktop: the semaphore
+# controller reads memory.high live, so it tightens admission to match.
+#
+# The floor exists because the cut is not free. cgroups.nix records a 12G
+# ceiling crawling builds under reclaim throttle (pre-memory.min, possibly
+# stale), and the fleet alone runs 5-7G raw; past the floor the rest of the
+# balloon is left to the margin. Unknown balloon -> the configured ceiling.
+ceiling_target() {  # base_mb floor_mb balloon_mb step_mb -> CT_MB ("" = off)
+  local b f s
+  CT_MB=""
+  case "$1" in '' | *[!0-9]*) return 0 ;; esac
+  case "$2" in '' | *[!0-9]*) return 0 ;; esac
+  b=$(( 10#$1 )); f=$(( 10#$2 ))
+  CT_MB="$b"
+  case "$3" in '' | *[!0-9]*) return 0 ;; esac
+  [ "$f" -lt "$b" ] || return 0
+  s=$(( ${4:-0} > 0 ? $4 : 1 ))
+  CT_MB=$(( b - 10#$3 / s * s ))
+  [ "$CT_MB" -ge "$f" ] || CT_MB="$f"
+  return 0
+}
+
+# Moves the live ceiling toward the target, ASYMMETRICALLY. Inflation is when
+# global reclaim bites, so a lower lands on the tick it is seen. A raise waits
+# until the target has stayed higher for the whole dwell: on 2026-09-15 the
+# balloon deflated ~3.5G inside a minute and re-inflated within five, and
+# following that both ways would hand the pool gigabytes it must give straight
+# back, under reclaim, on the next inflate. Stepped against the LIVE value, so
+# a systemd reload that reasserts the configured MemoryHigh is just lowered
+# again next tick. `max` (no ceiling at all) is above any target.
+ceiling_step() {  # live_mb|max target_mb now raise_since dwell -> CS_SET CS_SINCE CS_WHY
+  local l t
+  CS_SET=""; CS_SINCE="$4"; CS_WHY=""
+  if [ -z "$1" ] || [ -z "$2" ]; then CS_SINCE=""; return 0; fi
+  t=$(( 10#$2 ))
+  if [ "$1" = max ]; then l=$(( t + 1 )); else l=$(( 10#$1 )); fi
+  if [ "$l" -gt "$t" ]; then
+    CS_SET="$t"; CS_SINCE=""; CS_WHY=lower
+  elif [ "$l" -eq "$t" ]; then
+    CS_SINCE=""
+  else
+    CS_WHY="wait"
+    if [ -z "$4" ]; then
+      CS_SINCE="$3"
+    else
+      elapsed_since "$4" "$3"
+      if [ "$ELAPSED" -ge "$5" ]; then CS_SET="$t"; CS_SINCE=""; CS_WHY=raise; fi
+    fi
+  fi
+  return 0
+}
+
+# The pool's live memory.high in MiB, `max` when unset, "" when unreadable (the
+# slice is gone while no pool unit runs -- nothing to set). One builtin read.
+POOL_HIGH_MB=""
+read_pool_high() {  # [file] -> POOL_HIGH_MB
+  local v=""
+  POOL_HIGH_MB=""
+  read -r v 2>/dev/null < "${1:-$POOL/memory.high}"
+  case "$v" in
+    max) POOL_HIGH_MB=max ;;
+    '' | *[!0-9]*) ;;
+    *) POOL_HIGH_MB=$(( 10#$v / 1048576 )) ;;
+  esac
+  return 0
+}
+
+# A LOWER is backgrounded for the same reason reclaim_from is: the kernel
+# reclaims the charge down to the new memory.high synchronously in the writer
+# (memory_high_write), gigabytes of it on an inflate, and detection must never
+# wait on actuation. The kernel publishes the new value before it starts
+# reclaiming, so the next tick already reads the lowered ceiling and does not
+# write again. A RAISE cannot reclaim, so it is written inline -- and first
+# signals any lower still reclaiming, whose loop would otherwise keep driving
+# the charge toward the ceiling just given back.
+set_pool_high() {  # live_mb|max new_mb why
+  local f="$POOL/memory.high" from="$1"
+  [ "$from" = max ] || from="${from}M"
+  if [ ! -e "$f" ]; then
+    log "CEILING|SKIPPED - no memory.high at ${POOL#"$USERAT"/} ($3)"
+    return 0
+  fi
+  if [ -n "$DRYRUN" ]; then
+    [ "$CEIL_DRY_LAST" = "$1>$2" ] || log "DRYRUN|would set CEILING memory.high ${from} -> ${2}M ($3)"
+    CEIL_DRY_LAST="$1>$2"
+    return 0
+  fi
+  if [ "$1" != max ] && [ "$2" -ge "$1" ]; then
+    if [ -n "$ceil_pid" ] && kill -0 "$ceil_pid" 2>/dev/null; then
+      kill "$ceil_pid" 2>/dev/null
+    fi
+    log "CEILING|memory.high ${from} -> ${2}M ($3)"
+    printf '%d' "$(( $2 * 1048576 ))" 2>/dev/null > "$f" \
+      || log "CEILING|WRITE-REFUSED memory.high ${from} -> ${2}M ($3) - the ceiling stays where it was"
+    return 0
+  fi
+  if [ -n "$ceil_pid" ] && kill -0 "$ceil_pid" 2>/dev/null; then
+    log "CEILING|SKIPPED - previous lower still reclaiming (pid $ceil_pid)"
+    return 0
+  fi
+  log "CEILING|memory.high ${from} -> ${2}M ($3)"
+  {
+    printf '%d' "$(( $2 * 1048576 ))" 2>/dev/null > "$f" \
+      || log "CEILING|WRITE-REFUSED memory.high ${from} -> ${2}M ($3) - the ceiling stays where it was"
+  } &
+  ceil_pid=$!
+  return 0
+}
+
+# On the way out, hand back the configured ceiling: a governor that is not
+# running cannot raise it again when the balloon deflates.
+restore_pool_high() {  # why
+  [ -n "$POOL_HIGH_BASE_MB" ] || return 0
+  read_pool_high
+  if [ -n "$POOL_HIGH_MB" ] && [ "$POOL_HIGH_MB" != "$POOL_HIGH_BASE_MB" ]; then
+    set_pool_high "$POOL_HIGH_MB" "$POOL_HIGH_BASE_MB" "restore: $1"
+  fi
   return 0
 }
 
@@ -1058,12 +1209,15 @@ fi
 # the loop merrily carries on, `systemctl --user stop` blocks until its timeout,
 # and the service is SIGKILLed (leaving whatever it froze next still frozen).
 # EXIT does the thawing; INT/TERM just ask for a clean exit.
-on_exit() { thaw_all "governor exiting"; log "STOP|governor stopped"; }
+on_exit() { thaw_all "governor exiting"; restore_pool_high "governor exiting"; log "STOP|governor stopped"; }
 on_signal() { log "STOP|signal received, shutting down"; exit 0; }
 trap on_exit EXIT
 trap on_signal INT TERM
 
-log "START|governor started (thresh=${STALL_THRESH}% pool_thresh=${POOL_THRESH}% low_free=${LOW_FREE_MB}M maxconc=${MAXCONC} heavy=${HEAVY_MB}M reclaim=${RECLAIM_MB}M/${RECLAIM_COOL}s thrash_gate=${THRASH_PCT}%@${THRASH_MIN_STEAL}pg(0%=log-only) sweep_cool=${SWEEP_COOL}s freeze=${FREEZE_SECS}s max_freeze=${MAX_FREEZE_SECS}s rotate=${ROTATE_SECS}s lag_warn=${LAG_WARN}s dryrun=${DRYRUN:-off})"
+ceiling="off"
+[ -n "$POOL_HIGH_BASE_MB" ] && [ -n "$POOL_HIGH_FLOOR_MB" ] \
+  && ceiling="${POOL_HIGH_BASE_MB}M-balloon>=${POOL_HIGH_FLOOR_MB}M/raise-after-${CEILING_DWELL}s"
+log "START|governor started (thresh=${STALL_THRESH}% pool_thresh=${POOL_THRESH}% low_free=${LOW_FREE_MB}M maxconc=${MAXCONC} heavy=${HEAVY_MB}M reclaim=${RECLAIM_MB}M/${RECLAIM_COOL}s thrash_gate=${THRASH_PCT}%@${THRASH_MIN_STEAL}pg(0%=log-only) ceiling=${ceiling} sweep_cool=${SWEEP_COOL}s freeze=${FREEZE_SECS}s max_freeze=${MAX_FREEZE_SECS}s rotate=${ROTATE_SECS}s lag_warn=${LAG_WARN}s dryrun=${DRYRUN:-off})"
 
 # Machine-fact cross-check. memory-policy.nix hardcodes memTotalG -- the one
 # hand-copied machine fact the policy allows itself -- and every margin
@@ -1183,6 +1337,18 @@ while :; do
   if [ -n "$BT_TURN" ]; then
     log "BALLOON|${BT_TURN} ${BT_TURN_MB}M held by the hypervisor (${bal_last_turn:+after ${bal_last_turn}, }now ${BALLOON_MB}M, avail=${avail}M)"
     bal_last_turn="${BT_TURN} ${BT_TURN_MB}M"
+  fi
+  # ...and given back out of the pool's ceiling (semantics on ceiling_target
+  # and ceiling_step, above the seam).
+  ceiling_target "$POOL_HIGH_BASE_MB" "$POOL_HIGH_FLOOR_MB" "$BALLOON_MB" "$BALLOON_STEP_MB"
+  if [ -n "$CT_MB" ]; then
+    read_pool_high
+    ceiling_step "$POOL_HIGH_MB" "$CT_MB" "$now" "$ceil_raise_since" "$CEILING_DWELL"
+    ceil_raise_since="$CS_SINCE"
+    case "$CS_WHY" in
+      lower) set_pool_high "$POOL_HIGH_MB" "$CS_SET" "lower: balloon=${balloon} floor=${POOL_HIGH_FLOOR_MB}M" ;;
+      raise) set_pool_high "$POOL_HIGH_MB" "$CS_SET" "raise: balloon=${balloon} held lower ${CEILING_DWELL}s" ;;
+    esac
   fi
   # Duty A's refault ratio, sampled EVERY tick whatever the state, so the ratio
   # a TIGHT tick acts on spans one interval -- the first tick of an episode

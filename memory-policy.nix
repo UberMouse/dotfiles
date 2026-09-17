@@ -19,6 +19,20 @@ let
   desktopMinG = 8;
   poolHighG = 15;
   poolMaxG = 17;
+  # THE BALLOON FLOOR. Every term in this file is sized against the whole of
+  # MemTotal, but this is a VMware guest and the host's balloon driver takes RAM
+  # back from under all of them at once -- deliberately: the VM's reservation is
+  # set low so the host has RAM for other work. On 2026-09-17 the balloon held
+  # ~4.5G all morning, the partition ran that far over, and the desktop stalled
+  # with its own pages untouched. So cgroup-governor gives the balloon back out
+  # of the pool's memory.high at runtime (lower at once, raise after a dwell;
+  # MemoryMax is left alone) -- and never below this. The floor is what keeps
+  # the cut from becoming a build crawl: cgroups.nix records 12G ceilings
+  # throttling builds (pre-memory.min, possibly stale) and the agents fleet
+  # alone runs 5-7G raw. Past it, the rest of the balloon lands on the margin.
+  # Chosen by taylorl 2026-09-17 over 11G and no floor; re-judge it from
+  # `CGGOV|CEILING|` lines against build throughput, not by re-copying it.
+  poolHighFloorG = 12;
   # Memory under user@1000.service that is NEITHER the pool NOR the desktop
   # session scope, and which therefore no pool cap bounds: app.slice,
   # claude.slice, and above all bare `tmux-spawn-*.scope` build work started by
@@ -123,6 +137,9 @@ assert
 assert
   poolMaxG > poolHighG
   || throw "memory-policy: MemoryMax must exceed MemoryHigh or there is no throttle band";
+assert
+  poolHighFloorG > 0 && poolHighFloorG <= poolHighG
+  || throw "memory-policy: the balloon floor must sit at or below the pool MemoryHigh it lowers";
 # MemoryMax is the hard bound, so it must fit beside the desktop floor too --
 # otherwise the pool is legally allowed to reach a size that starves the very
 # guarantee the floor exists to provide, and the throttle band becomes a licence
@@ -164,6 +181,7 @@ assert
   inherit
     desktopMinG
     poolHighG
+    poolHighFloorG
     poolMaxG
     userOtherG
     memTotalG
