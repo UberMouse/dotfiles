@@ -100,6 +100,44 @@ lists the tests that make it safe, since `scripts/run-tests.sh` and
     perf) once the cause was known.
 - **Phase 5.** A watcher on `CGGOV|STALL|desktop` triggers the perf record
   (perf prefetched as `nixpkgs#perf`).
+  It fired at the 15:13:02 stall, but the stall had ended (15:13:18) before
+  the sudo-approved record began (15:13:35). The profile caught only the
+  aftermath: V8 scavenger GC, anon page-fault spinlock contention, futex IPIs.
+  No zram/zstd, compaction or balloon symbols. Inconclusive, because 10–16 s
+  stalls are shorter than a sudo approval. The watcher expired and was not
+  re-armed.
+
+### Live testing 2026-09-17 (balloon held all morning)
+
+- **The hangs tracked the balloon INFLATING.** The box booted at 09:33 with
+  the balloon at 0M. It reached 4.36G by 09:45, dropped to 0 at 10:04 and was
+  back at 4.56G by 10:07. All six stall onsets from 09:45 to 10:13 fall in
+  that window: desktop `mem_full` up to 42.7% and pool up to 62.8%, with free
+  RAM down to 365M.
+  - Counters for the two hours since boot: `balloon_inflate` 2.72M pages,
+    `balloon_migrate` 614k, `compact_stall` 4200, `allocstall_*` 13.6k.
+  - After that the balloon stayed flat at ~4.57G (no sawtooth). The partition
+    (15+8+2+4 = 29G) ran ~4.5G over: 69 NORMAL→TIGHT flips, each with free RAM
+    near 1G, and one more desktop-only stall at 11:35 with the pool at 0.02%.
+- **The monitor recommended `vm.watermark_scale_factor=200` twice.** The box
+  already runs 300: the prompt never saw live sysctls. Fixed: `vm_tuning` puts
+  the live values in both the prompt and the snapshot.
+- **The balloon-aware pool ceiling** (taylorl chose it over accepting the
+  trade-off or logging first).
+  - The governor sets the pool's `memory.high` to MemoryHigh minus the
+    balloon, rounded down to 512M steps and never below `poolHighFloorG`.
+    - The floor is 12G, taylorl's pick over 11G and no floor.
+    - `memory.max` is left alone.
+  - Lowering is immediate. The write is backgrounded, because the kernel
+    reclaims synchronously in the writer. A raise waits until the target has
+    stayed higher for `CGGOV_CEILING_DWELL` (60 s).
+  - Each step works from the LIVE value, so a systemd reload that reasserts
+    15G is lowered again on the next tick. On exit the governor restores the
+    configured ceiling.
+  - The semaphore controller reads `memory.high` live, so build admission
+    follows the ceiling without any change of its own.
+  - Logged as `CGGOV|CEILING|`. Judge the floor from those lines against build
+    throughput.
 
 ## Next session — handover (written 2026-09-14, for 2026-09-15 testing)
 
@@ -197,7 +235,7 @@ touches `last_reclaim`.
 
 Regex for all logging added in this rollout (the heartbeat lands in the
 server's own log, not the state dir):
-`BUILDSEM\|((TIGHTEN|LOOSEN|HOLD) .*cache=|RESIDENT-SELF )|CGGOV\|(RECLAIM\|(SKIPPED-THRASH|.*ratio=)|START\|.*thrash_gate=|BALLOON\||(STATE|STALL)\|.*balloon=)|kx-build-slot: .* waiting for a build slot`
+`BUILDSEM\|((TIGHTEN|LOOSEN|HOLD) .*cache=|RESIDENT-SELF )|CGGOV\|(RECLAIM\|(SKIPPED-THRASH|.*ratio=)|START\|.*thrash_gate=|BALLOON\||CEILING\||(STATE|STALL)\|.*balloon=)|kx-build-slot: .* waiting for a build slot`
 
 ---
 
