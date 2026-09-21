@@ -191,4 +191,104 @@ check("markers are not counted as held slots",
 for fh in live:
     fh.close()
 
+# ------------------------------------------------------ fleet escape --------
+# The ⚠ block asserts an invariant the ⚙ block structurally cannot see: no
+# cc-daemon outside the fleet leaf. An escaped fleet makes the POOL look calm
+# (it is -- it is empty), so every check here is about processes found OUTSIDE
+# it. Driven off a synthetic /proc rather than real daemons: the detector is
+# pure argv-and-cgroup reading, so a live fleet would add nothing but flakiness.
+import shutil  # noqa: E402
+
+PROC = Path(tempfile.mkdtemp(prefix="wt-i3s-proc."))
+mod.PROC = str(PROC)
+
+FLEET_CG = "0::/user.slice/user-1000.slice/user@1000.service" + mod.FLEET_SUFFIX
+UI_CG = ("0::/user.slice/user-1000.slice/user@1000.service"
+         "/claude.slice/claude-ui.slice/run-p1-i1.scope")
+
+
+def proc_entry(pid, argv, cgroup):
+    d = PROC / str(pid)
+    d.mkdir(exist_ok=True)
+    (d / "cmdline").write_bytes(b"\0".join(a.encode() for a in argv) + b"\0")
+    (d / "cgroup").write_text(cgroup + "\n")
+
+
+def reset_escape_cache():
+    mod._escape_cache, mod._escape_at = None, 0.0
+
+
+DAEMON = ["/nix/store/x-claude-code/bin/.claude-wrapped", "daemon", "run",
+          "--origin", "transient", "--spawned-by", '{"pid":4242}']
+
+# argv matching: fields, in order, not necessarily adjacent.
+check("signature matches in order, non-adjacent",
+      mod.argv_matches([b"c", b"daemon", b"run", b"--origin"], mod.DAEMON_ARGV),
+      True)
+check("a missing field does not match",
+      mod.argv_matches([b"c", b"daemon", b"--origin"], mod.DAEMON_ARGV), False)
+check("out-of-order fields do not match",
+      mod.argv_matches([b"c", b"run", b"daemon", b"--origin"], mod.DAEMON_ARGV),
+      False)
+# The trap that makes `pgrep -f` unusable here: the signature as ONE joined
+# field is not three fields, and must not match.
+check("the joined signature as one field does not match",
+      mod.argv_matches([b"grep", b"daemon run --origin"], mod.DAEMON_ARGV),
+      False)
+
+# A daemon sitting in the fleet leaf is the healthy case: not an escape.
+proc_entry(4243, DAEMON, FLEET_CG)
+reset_escape_cache()
+check("daemon in the fleet is not escaped", mod.escaped_daemons(), [])
+check("healthy renders no block", mod.escape_block(), None)
+
+# The same daemon in claude-ui.slice IS the incident: CPUWeight=5000, no
+# cpu.max, and the whole fleet inheriting it at fork.
+proc_entry(4244, DAEMON, UI_CG)
+reset_escape_cache()
+check("daemon outside the fleet is escaped", mod.escaped_daemons(), [4244])
+b = mod.escape_block()
+check("escape renders a block", b["full_text"], "⚠ fleet escaped")
+check("escape is red", b["color"], mod.RED)
+
+# Non-daemons in the same cgroup are not the signal -- the fleet's WORKERS live
+# outside the pool too during an escape, and counting them would turn one
+# incident into a process census.
+proc_entry(4245, ["claude", "bg-spare", "--bg-spare", "/tmp/x.sock"], UI_CG)
+reset_escape_cache()
+check("workers are not counted, only daemons", mod.escaped_daemons(), [4244])
+
+# The repair tool's own probe holds the signature as its argv. Counting it
+# would make every reattach look like the escape it is fixing.
+proc_entry(4246, ["/nix/store/y/bin/kx-proc-find", "daemon", "run", "--origin"],
+           UI_CG)
+reset_escape_cache()
+check("the kx-proc-find probe is not an escaped daemon",
+      mod.escaped_daemons(), [4244])
+
+# Two escaped daemons pluralise rather than reading as one.
+proc_entry(4247, DAEMON, UI_CG)
+reset_escape_cache()
+check("two escapes count", sorted(mod.escaped_daemons()), [4244, 4247])
+check("plural text", mod.escape_block()["full_text"], "⚠ fleet escaped ×2")
+
+# The verdict is cached between ticks (a full argv scan every ~5s is waste), so
+# a repair must not clear the warning until the TTL lapses -- and must clear it
+# then. Asserted both ways, because a cache that never expires is a warning
+# that never goes away.
+shutil.rmtree(PROC / "4244")
+shutil.rmtree(PROC / "4247")
+check("cached verdict survives within the TTL",
+      mod.escape_block()["full_text"], "⚠ fleet escaped ×2")
+mod._escape_at -= mod.ESCAPE_TTL + 1
+check("verdict is re-read once the TTL lapses", mod.escape_block(), None)
+
+# An unreadable /proc must not crash the bar; it reports no escape, which is
+# the same no-signal reading the ⚙ block gives for an absent pool.
+mod.PROC = str(PROC / "does-not-exist")
+reset_escape_cache()
+check("unreadable /proc is not a crash", mod.escaped_daemons(), [])
+
+shutil.rmtree(PROC, ignore_errors=True)
+
 summary(cleanup_dir=SEM)

@@ -289,6 +289,29 @@ Traps when diagnosing it:
   admissions read it, so at cap new browsers queue while builds are untouched.
   Without the cap, enough browsers make every slot keeper-held and every build
   runs ungated after its timeout.
+- **A calm pool can mean an ESCAPED FLEET, not a quiet machine.** The cc-daemon
+  decides the cgroup of every agent worker (a cgroup is inherited at fork), so
+  if the daemon is misplaced the whole fleet is, and the pool then reads calm
+  because it is EMPTY. Worst case it lands in `claude-ui.slice` —
+  `CPUWeight=5000`, no `cpu.max` — where the fleet outranks the desktop 50:1
+  and answers to no core cap; measured 2026-09-22 at 71 processes, load 73 on
+  16 cores, while `worktrees.slice` sat under its 12-core cap doing almost
+  nothing. Diagnose by reading `/proc/<pid>/cgroup` for the DAEMON, never from
+  pool utilisation. Two traps that made this expensive:
+  - **`claude-agents.sh` must wait for THIS TUI's daemon, not for any daemon.**
+    A cc-daemon outlives its TUI, so a leftover from the previous session
+    satisfies a bare "is a daemon up" test instantly — the reattach then fires
+    against the already-correct old daemon and exits one second before the new
+    one is forked. It now matches on the `--spawned-by {...,"pid":N}` argv
+    field (N = the TUI's pid, which is `$$` because both launch paths `exec`
+    in place), falling back to a pre-launch daemon-pid snapshot diff, and
+    reattaches unconditionally on timeout.
+  - **Counting pids MIGRATED is not the same as asserting none ESCAPED.** The
+    failing run logged `rc=0 ... 0 moved, 7 already in slice` — indistinguishable
+    from success, which is why it ran 37 minutes. `claude-agents-reattach` now
+    re-scans afterwards and exits non-zero naming any daemon still outside the
+    fleet leaf, and `wt-cgroup-i3status.py` shows `⚠ fleet escaped` from the
+    same invariant.
 - **The predictive tighten measures the BUILD BUDGET, not the pool.** The pool
   holds the agents fleet (`worktrees-agents.slice`, re-homed there by
   `claude-agents-reattach`) alongside the builds, and the fleet takes no slots

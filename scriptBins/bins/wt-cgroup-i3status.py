@@ -34,6 +34,14 @@
 #            behaviour, so colouring it would pin the block at its warning
 #            shade for the whole of every healthy burst.
 #
+#   ⚠ fleet escaped   a cc-daemon is running OUTSIDE worktrees-agents.slice,
+#            so the agent fleet it forks is unbudgeted -- and if it was born in
+#            claude-ui.slice, also running at CPUWeight=5000 with no core cap.
+#            Shown only when violated. This is deliberately an assertion about
+#            a process the pool does NOT contain: the ⚙ block below reads an
+#            escaped fleet as a quiet pool, because a pool the fleet left really
+#            is quiet. See the escape section for the incident that proved it.
+#
 #   ⚙ 2.4/12c 4.2G/18G 3wt   worktrees.slice: cores/cap, mem/cap, active
 #            buckets, coloured by peak CPU-or-mem utilisation; "⚙ idle" dimmed
 #            when the pool is absent or below the CPU floor. (Sample caps are
@@ -186,6 +194,119 @@ def active_buckets():
 def block(full, color, name="worktrees"):
     return {"full_text": full, "color": color, "name": name,
             "markup": "none", "separator": True}
+
+
+# ------------------------------------------------------- fleet escape ------
+# THE ESCAPED-FLEET TRIPWIRE. The cc-daemon decides the cgroup of the ENTIRE
+# agent fleet: a cgroup is inherited at fork, so every bg-spare, rg and
+# typecheck the daemon spawns lands wherever the daemon itself lives.
+# claude-agents re-homes it into the pool at launch, but that is a one-shot,
+# and when it misfires the fleet runs wherever the daemon happened to be born
+# -- worst of all claude-ui.slice, which carries CPUWeight=5000 and NO cpu.max,
+# so an escaped fleet outranks the desktop 50:1 and answers to no core cap at
+# all.
+#
+# THE POINT IS THAT THE ⚙ BLOCK CANNOT SEE THIS. Measured 2026-09-22: 71
+# escaped processes, load 73 on 16 cores, claude-ui at 55% cpu.pressure -- and
+# ⚙ read a calm, half-empty pool the whole time, because the pool genuinely was
+# calm. It was EMPTY. An idle pool and an escaped fleet are the same picture
+# from inside the pool, which is why it ran for 37 minutes before anyone
+# looked. So this block asserts the INVARIANT (no cc-daemon outside FLEET)
+# rather than any symptom of it.
+#
+# Shown only when violated, the rule ⧗ and ◐ already follow: the healthy
+# reading is the absence of a warning, and a block that says "ok" all day is a
+# block the eye stops parsing.
+FLEET = os.path.join(POOL, "worktrees-agents.slice", "fleet")
+
+# /proc/<pid>/cgroup reports the REAL cgroup path, which no KX_POOL override
+# can retarget, so membership is a suffix match on the leaf rather than a
+# comparison against FLEET. Derived from FLEET anyway, so a slice rename is
+# still one edit.
+FLEET_SUFFIX = "/" + "/".join(FLEET.rsplit("/", 2)[-2:])
+
+# Where to scan for processes. Overridable so the test suite can point this at
+# a synthetic tree instead of needing a real cc-daemon (same technique KX_POOL
+# uses for the cgroup side).
+PROC = os.environ.get("KX_PROC", "/proc")
+
+# The cc-daemon argv signature, as fields matched in order. Byte-identical to
+# the kx-proc-find patterns in claude-agents-reattach.sh and claude-agents.sh,
+# and pinned against the shipped claude-code bundle by the flake's
+# claude-daemon-argv check -- so a release that renames it fails the build
+# rather than silently disarming the repair AND this tripwire together.
+DAEMON_ARGV = (b"daemon", b"run", b"--origin")
+
+# A full argv scan per ~5 s tick is waste: the answer only changes when a fleet
+# starts or is repaired. Re-checked on this interval, cached in between.
+ESCAPE_TTL = float(os.environ.get("WT_BAR_ESCAPE_TTL", "30"))
+
+_escape_cache, _escape_at = None, 0.0
+
+
+# Field-exact, never a substring of the joined cmdline: matching the joined
+# form finds the probe itself plus any editor or shell holding the string.
+# CLAUDE.md bans that style repo-wide and kx-proc-find's header carries the
+# measurement (six daemons found against four real ones). This is the Python
+# twin of kx-proc-find's matcher; keeping it here rather than shelling out is
+# what makes the tick cheap enough to run on a bar.
+def argv_matches(argv, pats):
+    """True when pats appear as whole argv FIELDS, in order (not adjacent)."""
+    i = 0
+    for pat in pats:
+        while i < len(argv) and argv[i] != pat:
+            i += 1
+        if i >= len(argv):
+            return False
+        i += 1
+    return True
+
+
+def escaped_daemons():
+    """pids of cc-daemons running anywhere other than the fleet leaf."""
+    out = []
+    try:
+        names = os.listdir(PROC)
+    except OSError:
+        return out
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(os.path.join(PROC, name, "cmdline"), "rb") as fh:
+                argv = fh.read().split(b"\0")
+        except OSError:
+            continue                      # exited between listdir and read
+        if not argv_matches(argv, DAEMON_ARGV):
+            continue
+        # The one self-match field matching leaves behind: `kx-proc-find daemon
+        # run --origin`, as run by the repair tool itself, holds the signature
+        # as its OWN argv fields. Skipped exactly as kx-proc-find skips it, or
+        # a concurrent repair reads as the thing it is repairing.
+        if any(f.rsplit(b"/", 1)[-1] == b"kx-proc-find" for f in argv):
+            continue
+        try:
+            with open(os.path.join(PROC, name, "cgroup")) as fh:
+                cg = fh.read().strip()
+        except OSError:
+            continue
+        if not cg.endswith(FLEET_SUFFIX):
+            out.append(int(name))
+    return out
+
+
+def escape_block():
+    """Warning block when a cc-daemon is outside the pool; None when healthy."""
+    global _escape_cache, _escape_at
+    now = time.monotonic()
+    if _escape_cache is None or now - _escape_at >= ESCAPE_TTL:
+        _escape_cache = escaped_daemons()
+        _escape_at = now
+    if not _escape_cache:
+        return None
+    n = len(_escape_cache)
+    txt = "⚠ fleet escaped" if n == 1 else f"⚠ fleet escaped ×{n}"
+    return block(txt, RED, name="fleet-escape")
 
 
 # ---------------------------------------------------------------- semaphore --
@@ -499,9 +620,12 @@ def main():
             status_blocks = [{"full_text": raw.rstrip("\n"),
                               "markup": "none", "separator": True}]
 
-        # Semaphore first: it sits to the LEFT of the worktrees block, which in
-        # turn sits left of i3status's own blocks.
-        line = json.dumps([sem_block(), worktree_block()] + status_blocks)
+        # Escape warning first when present (leftmost = most visible, and it
+        # outranks everything else on the bar: while it shows, the ⚙ block's
+        # reading is about a pool the fleet is not even in). Then the
+        # semaphore, then worktrees, then i3status's own blocks.
+        ours = [b for b in (escape_block(), sem_block(), worktree_block()) if b]
+        line = json.dumps(ours + status_blocks)
         sys.stdout.write(("" if first else ",") + line + "\n")
         sys.stdout.flush()
         first = False

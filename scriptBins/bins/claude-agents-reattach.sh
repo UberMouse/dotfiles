@@ -136,3 +136,34 @@ echo "reattached fleet -> worktrees-agents.slice/fleet: ${moved} moved, ${alread
 mem="$(numfmt --to=iec < "$base/memory.current" 2>/dev/null)"
 cap="$(numfmt --to=iec < "$base/memory.high" 2>/dev/null)"
 echo "worktrees-agents.slice now: mem ${mem:-?} / ${cap:-?} high-cap, $(cat "$base/pids.current" 2>/dev/null || echo '?') tasks"
+
+# VERIFY THE DAEMONS ACTUALLY LANDED. The summary above counts pids MIGRATED,
+# which is a different question from the one that matters: is any cc-daemon
+# still outside the pool? A root that exited mid-sweep, a cgroup.procs write
+# the kernel refused, or -- the case this check exists for -- a daemon forked
+# AFTER the roots were enumerated all leave the fleet escaped while that line
+# reads like a success. On 2026-09-22 exactly that happened and the reattach
+# logged "0 moved, 7 already in slice", rc=0: a clean bill of health for a box
+# that then ran 71 unbudgeted processes at load 73 for 37 minutes, because
+# nothing anywhere asserted the INVARIANT rather than the action. So re-scan
+# and be loud, including in the exit code -- claude-agents.sh logs the rc.
+escaped=()
+while read -r p; do
+  [ -n "$p" ] || continue
+  cur="$(cat "/proc/$p/cgroup" 2>/dev/null)" || continue
+  case "$cur" in
+    */worktrees-agents.slice/fleet) continue ;;
+  esac
+  escaped+=("$p (${cur#0::})")
+done < <(
+  kx-proc-find daemon run --origin 2>/dev/null
+  kx-proc-find '*monorepo-jobs*' --daemon-run 2>/dev/null
+)
+
+if [ "${#escaped[@]}" -gt 0 ]; then
+  echo "WARN: ${#escaped[@]} daemon(s) STILL OUTSIDE the pool after reattach --" >&2
+  echo "      their whole fleet inherits that cgroup at fork, so this is the" >&2
+  echo "      escaped-fleet condition, not a cosmetic miss:" >&2
+  for e in "${escaped[@]}"; do echo "  $e" >&2; done
+  exit 1
+fi
