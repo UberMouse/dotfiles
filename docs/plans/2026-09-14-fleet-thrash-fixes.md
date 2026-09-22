@@ -182,6 +182,14 @@ is measure-only; http-server stays off every list.
      RECLAIM line's `ratio=` with its own `before -> after` charge. High ratios
      that left the charge flat or rising are the thrash cluster; clean drops are
      cold reclaim. MIN_STEAL goes above the steal counts of quiet ticks.
+   - **Data collected 2026-09-23** (morning storm; see
+     `docs/notes/2026-09-23-transient-desktop-stalls.md`). 1b: self-inflicted
+     LOOSENs at cache 23–24% re-tightened after 31, 34, 97 and 115 s; the one
+     at 42% held for over 9 minutes — consistent with 0.40, but only one point
+     above the bar. Phase 2: the 10:00–10:07 RECLAIM lines are the clearest
+     thrash cluster so far (`ratio=0% steal=25857` with the charge rising
+     12455M → 12654M; `ratio=700% steal=221`). Neither threshold confirmed
+     with taylorl yet.
 5. Phase 5, only while a thrash episode is live:
    `sudo nix shell nixpkgs#perf -c perf record -a -g -- sleep 20`.
 

@@ -48,13 +48,26 @@ kx_cgroup_paths() {
 # self-correction, the one failure the whole freeze-safety design exists to
 # rule out. One definition, both consumers.
 #
+# `transient` is a PARENT since 2026-09-23: one child leaf per worktree
+# (transient/<worktree>), so the concurrency cap can hold one agent's test run
+# while another's proceeds -- as a single leaf it could only freeze every
+# agent job or none. The parent stays in the list for two reasons: the stall
+# brake freezes it WHOLE (every agent job at once), and a pre-split governor
+# left workers directly in it. Listing both levels is safe for thaw-all
+# (thawing is idempotent); list_build_scopes only counts a cgroup holding
+# pids DIRECTLY, so the parent never double-counts its children there.
+#
 # Globs expand HERE, at call time, so callers that want empty matches elided
 # set nullglob first (both consumers do). "$1"/transient has no glob
 # character and always survives expansion; the callers' existing
 # `[ -e .../cgroup.freeze ]` guard drops a slice that has no such leaf.
+# `transient/*/` matches directories only (the parent's cgroup.* files are
+# not children); the trailing slash is stripped so paths compare equal to the
+# ones sweep_transient writes.
 FREEZE_TARGETS=()
 kx_freeze_targets() {
-  FREEZE_TARGETS=( "$1"/mj-*.scope "$1"/transient )
+  FREEZE_TARGETS=( "$1"/mj-*.scope "$1"/transient "$1"/transient/*/ )
+  FREEZE_TARGETS=( "${FREEZE_TARGETS[@]%/}" )
   return 0
 }
 

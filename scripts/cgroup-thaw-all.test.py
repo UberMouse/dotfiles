@@ -31,6 +31,9 @@ def scope(path, frozen):
 frozen_mj = scope("worktrees-alpha.slice/mj-alpha.scope", frozen=True)
 thawed_mj = scope("worktrees-beta.slice/mj-beta.scope", frozen=False)
 frozen_transient = scope("worktrees-agents.slice/transient", frozen=True)
+# The per-worktree leaves under it (2026-09-23): a cap victim is frozen at the
+# LEAF, so thaw-all must reach one level below the parent the brake freezes.
+frozen_wt_leaf = scope("worktrees-agents.slice/transient/some-worktree", frozen=True)
 # The fleet is NEVER swept: a frozen fleet came from something else, and
 # silently undoing it would hide a real problem (per the script header).
 frozen_fleet = scope("worktrees-agents.slice/fleet", frozen=True)
@@ -48,9 +51,11 @@ check("already-thawed scope untouched",
       (thawed_mj / "cgroup.freeze").read_text().strip(), "0")
 check("frozen transient leaf thawed",
       (frozen_transient / "cgroup.freeze").read_text().strip(), "0")
+check("frozen per-worktree transient leaf thawed",
+      (frozen_wt_leaf / "cgroup.freeze").read_text().strip(), "0")
 check("fleet deliberately NOT thawed",
       (frozen_fleet / "cgroup.freeze").read_text().strip(), "1")
-check("summary line counts", "2 thawed, 0 FAILED, of 3" in r.stdout, True)
+check("summary line counts", "3 thawed, 0 FAILED, of 4" in r.stdout, True)
 
 # The failure path: a cgroup.freeze the script cannot write must be REPORTED
 # and must fail the run (this is ExecStopPost -- the thaw of last resort; a

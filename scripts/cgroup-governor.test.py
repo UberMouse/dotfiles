@@ -83,7 +83,7 @@ POOL = BASE / "pool"
 ME = str(os.getpid())
 
 
-def scope(slice_name, name, procs=None, freeze="0", memcur=None):
+def scope(slice_name, name, procs=None, freeze="0", memcur=None, populated=None):
     d = POOL / slice_name / name
     d.mkdir(parents=True)
     if freeze is not None:
@@ -92,6 +92,8 @@ def scope(slice_name, name, procs=None, freeze="0", memcur=None):
         (d / "cgroup.procs").write_text(procs)
     if memcur is not None:
         (d / "memory.current").write_text(memcur + "\n")
+    if populated is not None:
+        (d / "cgroup.events").write_text(f"populated {populated}\nfrozen 0\n")
     return d
 
 
@@ -109,6 +111,14 @@ scope("worktrees-b.slice", "mj-nofreeze.scope", procs=ME + "\n", freeze=None,
       memcur="99")
 # Never a target: only mj-*.scope and `transient` are freezable.
 scope("worktrees-a.slice", "claude-x.scope", procs=ME + "\n", memcur="31337")
+# The per-worktree split (2026-09-23): a `transient` PARENT holding no pids
+# itself, populated through two worktree leaves. The cap counts the leaves;
+# the brake ranks the parent whole.
+scope("worktrees-c.slice", "transient", procs="", memcur="9000", populated="1")
+scope("worktrees-c.slice", "transient/wt-one", procs=ME + "\n", memcur="5000")
+scope("worktrees-c.slice", "transient/wt-two", procs=ME + "\n", memcur="4000")
+# A parent whose leaves have all finished: nothing to brake.
+scope("worktrees-d.slice", "transient", procs="", memcur="0", populated="0")
 
 body = (
     f'POOL="{POOL}"; list_build_scopes; '
@@ -135,6 +145,38 @@ check("scope without cgroup.freeze skipped (not freezable)",
       "mj-nofreeze.scope" in rows, False)
 check("claude-*.scope never a candidate (agents are never frozen)",
       "claude-x.scope" in rows, False)
+check("per-worktree transient leaves are cap candidates",
+      (rows.get("wt-one"), rows.get("wt-two")), (5000, 4000))
+check("a transient PARENT with no direct pids is not a cap candidate",
+      any(p.endswith(("worktrees-c.slice/transient", "worktrees-d.slice/transient"))
+          for p in out.split()), False)
+
+# A leaf that has no memory.current (delegation cleared by a switch) must read
+# SILENTLY: `read < f 2>/dev/null` opens f before stderr is redirected, and
+# the governor journal filled with one error per candidate per tick that way
+# (2026-09-23). The redirect goes BEFORE the `<`.
+check("scope_mem on a cgroup without memory.current is silent",
+      sh_stderr(GOV, f'scope_mem "{BASE}/no-such-cgroup"'), "")
+
+# list_brake_targets: mj scopes plus each slice's WHOLE transient parent.
+out, rc = sh(GOV, f'POOL="{POOL}"; list_brake_targets; '
+                  'for (( k = 0; k < ${#BK_PATH[@]}; k++ )); do '
+                  'printf "%s\\t%s\\n" "${BK_MEM[$k]}" "${BK_PATH[$k]}"; done')
+check("list_brake_targets runs clean", rc, 0)
+brk = {str(Path(ln.split("\t")[1]).relative_to(POOL)): int(ln.split("\t")[0])
+       for ln in out.splitlines()}
+check("brake: a transient parent populated via its leaves is ranked whole",
+      brk.get("worktrees-c.slice/transient"), 9000)
+check("brake: a pre-split transient holding pids directly still counts",
+      brk.get("worktrees-a.slice/transient"), 4242)
+check("brake: the worktree leaves themselves are not brake candidates",
+      [k for k in brk if "/transient/" in k], [])
+check("brake: an unpopulated transient parent is skipped",
+      "worktrees-d.slice/transient" in brk, False)
+check("brake: mj scopes still candidates, empty ones and claude-* not",
+      ("worktrees-a.slice/mj-live.scope" in brk,
+       "worktrees-a.slice/mj-empty.scope" in brk,
+       "worktrees-a.slice/claude-x.scope" in brk), (True, False, False))
 
 out, _ = sh(GOV, f'POOL="{POOL}"; '
                  f'if is_frozen "{s_frozen}"; then echo frozen; else echo thawed; fi; '
@@ -328,22 +370,27 @@ check("elapsed_since: forward delta", out, "15")
 out, _ = sh(GOV, 'elapsed_since 5000 1000; printf "%s" "$ELAPSED"')
 check("elapsed_since: backward wall jump clamps to zero", out, "0")
 
-# brake_step: all four actions, from all four input shapes.
+# brake_step: every action, from every input shape. Args are
+# brake_count armed now last_reclaim last_add; INTERVAL pinned at 5.
 brake_cases = [
-    (('""', 0, 1000, 0), "reclaim-arm 1",
+    ((0, 0, 1000, 0, 0), "reclaim-arm 1",
      "cold stall reclaims and arms the re-measure"),
-    (('""', 1, 1005, 1000), "escalate 0",
+    ((0, 1, 1005, 1000, 0), "escalate 0",
      "armed and still stalling escalates (and consumes the flag)"),
-    (('"/x/mj-a.scope"', 0, 1000, 999), "hold 0",
-     "active brake holds -- never stacks a second freeze"),
-    (('""', 0, 1010, 1000), "brake 0",
+    ((1, 0, 1004, 999, 1000), "hold 0",
+     "a victim added under one tick ago gets that tick before judging"),
+    ((1, 0, 1005, 999, 1000), "add 0",
+     "still stalled a whole tick after the last victim adds the next"),
+    ((2, 0, 1000, 0, 5000), "hold 0",
+     "backward wall jump on last_add reads as not-yet-a-tick (clamp)"),
+    ((0, 0, 1010, 1000, 0), "brake 0",
      "reclaim on cooldown goes straight to the brake"),
-    (('""', 0, 1000, 5000), "brake 0",
+    ((0, 0, 1000, 5000, 0), "brake 0",
      "backward wall jump reads as cooldown-not-elapsed (clamp)"),
 ]
-for (scope, armed, now, last_rec), want, why in brake_cases:
-    out, rc = sh(GOV, 'RECLAIM_COOL=30; '
-                      f'brake_step {scope} {armed} {now} {last_rec}; '
+for (count, armed, now, last_rec, last_add), want, why in brake_cases:
+    out, rc = sh(GOV, 'RECLAIM_COOL=30; INTERVAL=5; '
+                      f'brake_step {count} {armed} {now} {last_rec} {last_add}; '
                       'printf "%s %s" "$BRAKE_ACTION" "$BRAKE_ARMED_NEXT"')
     check(f"brake_step: {why}", (out, rc), (want, 0))
 
@@ -360,15 +407,15 @@ check("brake_recovered: nothing armed, nothing to release", out, "idle")
 
 # The full cycle, state threaded tick to tick exactly as the loop does it.
 out, _ = sh(GOV, 'RECLAIM_COOL=30; STALL_CENTI=1500; '
-                 'brake_step "" 0 1000 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
+                 'brake_step 0 0 1000 0 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
                  'brake_recovered "$armed" 1400 && r=released || r=stalled; '
                  'printf "%s %s" "$a1" "$r"')
 check("brake cycle: arm -> next tick recovered -> release, no freeze",
       out, "reclaim-arm released")
 out, _ = sh(GOV, 'RECLAIM_COOL=30; STALL_CENTI=1500; '
-                 'brake_step "" 0 1000 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
+                 'brake_step 0 0 1000 0 0; a1=$BRAKE_ACTION; armed=$BRAKE_ARMED_NEXT; '
                  'brake_recovered "$armed" 1600 || true; '
-                 'brake_step "" "$armed" 1005 1000; '
+                 'brake_step 0 "$armed" 1005 1000 0; '
                  'printf "%s %s %s" "$a1" "$BRAKE_ACTION" "$BRAKE_ARMED_NEXT"')
 check("brake cycle: arm -> still stalled next tick -> escalate",
       out, "reclaim-arm escalate 0")
@@ -389,13 +436,46 @@ out, _ = sh(GOV, 'MAX_FREEZE_SECS=60; '
 check("freeze deadline: backward jump defers (held clamps to 0), never fires negative",
       out, "hold 0")
 
-# brake_release_due: the short brake deadline the top of the loop enforces.
-out, _ = sh(GOV, 'brake_release_due "/x" 100 100 && printf due || printf hold')
-check("brake release: due exactly at the deadline", out, "due")
-out, _ = sh(GOV, 'brake_release_due "/x" 100 99 && printf due || printf hold')
-check("brake release: holds before the deadline", out, "hold")
-out, _ = sh(GOV, 'brake_release_due "" 100 5000 && printf due || printf idle')
-check("brake release: no active brake, nothing due", out, "idle")
+# brake_release_due: HOLD TILL CLEAR (2026-09-23). The brake set releases when
+# the desktop is back under the stall line AND the first victim has been held
+# FREEZE_SECS -- never on a timer while the desktop is still stalled (the 09-23
+# freeze/thaw/re-stall loop). Args: brake_count dm_c now brake_since.
+for args, want, why in [
+    ("1 1499 1003 1000", "due", "under the line after the minimum hold releases"),
+    ("1 1500 1003 1000", "hold", "still AT the stall line keeps holding"),
+    ("3 1500 1900 1000", "hold", "no timer: still stalled 900 s later still holds"),
+    ("1 1499 1002 1000", "hold", "clear, but inside the minimum hold, waits"),
+    ("1 junk 1003 1000", "hold", "a non-numeric reading never releases"),
+    ("1 1499 1000 2000", "hold", "backward wall jump reads as not-yet-held (clamp)"),
+    ("0 0 5000 0", "idle", "no brake held, nothing to release"),
+]:
+    out, _ = sh(GOV, 'STALL_CENTI=1500; FREEZE_SECS=3; '
+                     f'brake_release_due {args} && printf due || '
+                     f'{{ [ "{args.split()[0]}" = 0 ] && printf idle || printf hold; }}')
+    check(f"brake release: {why}", out, want)
+
+# brake_prune: the ONE reconciliation of brake_set against frozen_since.
+out, _ = sh(GOV, 'frozen_since=([/a]=100); brake_set=([/a]=1 [/b]=1); '
+                 'brake_since=100; brake_last_add=105; brake_prune; '
+                 'printf "%s|%s|%s" "${!brake_set[*]}" "$brake_since" "$brake_last_add"')
+check("brake_prune: drops a victim thawed elsewhere, keeps the storm clocks",
+      out, "/a|100|105")
+out, _ = sh(GOV, 'frozen_since=(); brake_set=([/a]=1); '
+                 'brake_since=100; brake_last_add=105; brake_prune; '
+                 'printf "%s|%s|%s" "${#brake_set[@]}" "$brake_since" "$brake_last_add"')
+check("brake_prune: an emptied set resets the storm clocks", out, "0|0|0")
+
+# cap_release_due: NORMAL must HOLD before the cap lets go (09-23's 5-20 s flap).
+for args, want, why in [
+    ("1000 1019", "hold", "one second short of CLEAR_SECS holds"),
+    ("1000 1020", "due", "releases exactly at CLEAR_SECS"),
+    ("2000 1000", "hold", "backward wall jump reads as not-yet-clear (clamp)"),
+]:
+    out, _ = sh(GOV, f'CLEAR_SECS=20; cap_release_due {args} && printf due || printf hold')
+    check(f"cap release: {why}", out, want)
+out, _ = sh(GOV, 'printf "%s" "$CLEAR_SECS"')
+check("cap release: CLEAR_SECS defaults to ROTATE_SECS",
+      out, os.environ.get("CGGOV_CLEAR_SECS", os.environ.get("CGGOV_ROTATE_SECS", "20")))
 
 # lag_check: the blind-spot alarm.
 out, _ = sh(GOV, 'LAG_WARN=15; lag_check 0 1000 && v=warn || v=quiet; '
@@ -433,17 +513,24 @@ out, _ = sh(GOV, 'cap_plan 0 3 a b c d; '
                  'printf "%s|%s" "${CAP_FREEZE[*]}" "${CAP_RUN[*]}"')
 check("cap_plan: one over the cap freezes exactly one", out, "a|b c d")
 
-# biggest_scope: duty C's victim pick over the BS arrays.
-out, _ = sh(GOV, 'BS_MEM=(5 99 7); BS_PATH=(a b c); biggest_scope; '
-                 'printf "%s" "$BIGGEST"')
-check("biggest_scope: picks the max", out, "b")
-out, _ = sh(GOV, 'BS_MEM=(5 5); BS_PATH=(first second); biggest_scope; '
-                 'printf "%s" "$BIGGEST"')
-check("biggest_scope: ties keep glob order (stable victim across ticks)",
+# next_victim: duty C's escalating pick over the BK arrays -- the biggest
+# candidate not already held.
+out, _ = sh(GOV, 'BK_MEM=(5 99 7); BK_PATH=(a b c); next_victim; '
+                 'printf "%s" "$NEXT_VICTIM"')
+check("next_victim: picks the max", out, "b")
+out, _ = sh(GOV, 'BK_MEM=(5 99 7); BK_PATH=(a b c); next_victim b; '
+                 'printf "%s" "$NEXT_VICTIM"')
+check("next_victim: escalation skips what is already held", out, "c")
+out, _ = sh(GOV, 'BK_MEM=(5 99 7); BK_PATH=(a b c); next_victim a b c; '
+                 'printf "[%s]" "$NEXT_VICTIM"')
+check("next_victim: everything held yields no victim", out, "[]")
+out, _ = sh(GOV, 'BK_MEM=(5 5); BK_PATH=(first second); next_victim; '
+                 'printf "%s" "$NEXT_VICTIM"')
+check("next_victim: ties keep glob order (stable victim across ticks)",
       out, "first")
-out, _ = sh(GOV, 'BS_MEM=(); BS_PATH=(); biggest_scope; '
-                 'printf "[%s]" "$BIGGEST"')
-check("biggest_scope: empty pool yields no victim", out, "[]")
+out, _ = sh(GOV, 'BK_MEM=(); BK_PATH=(); next_victim; '
+                 'printf "[%s]" "$NEXT_VICTIM"')
+check("next_victim: empty pool yields no victim", out, "[]")
 
 # ---------------------------------------------------------------------------
 # 5. delegate_subtree -- the ONE subtree_control writer (the two hand-rolled
@@ -589,6 +676,11 @@ check("shape: the TIGHT skip arm never assigns last_reclaim",
       "last_reclaim" in code(skip_arm), False)
 check("shape: the STALL branch never consults the thrash gate",
       any(t in code(stall) for t in ("RECLAIM_USEFUL", "duty_a_step")), False)
+check("shape: the brake reclaims the victim it just froze (a freeze frees nothing)",
+      'reclaim_from "$NEXT_VICTIM"' in code(stall), True)
+check("shape: the brake picks from list_brake_targets, not the cap's leaves",
+      ("list_brake_targets" in code(stall), "list_build_scopes" in code(stall)),
+      (True, False))
 check("shape: both reclaim call sites carry the logged ratio",
       min(code(tight).count("$gate"), code(stall).count("$gate")) >= 1, True)
 
@@ -644,6 +736,27 @@ check("no FREEZE_ONLY_RE pattern is in nohang's kill list",
 check("the split keeps the grouped install alternative whole",
       "/(rush|pnpm) install( |$)" in freeze_only, True)
 
+# wt_key: which worktree leaf a worker lands in. `cd /` pins the probing shell's
+# own cwd (it IS the pid probed, $$) so the argv fallback is what is tested.
+WT = BASE / "wt-home" / ".claude" / "worktrees" / "from-cwd" / "packages" / "x"
+WT.mkdir(parents=True)
+for body, want, why in [
+    ('cd / && wt_key $$ "node /k/.claude/worktrees/outer/.claude/worktrees/inner/node_modules/jest"',
+     "inner", "argv: the innermost nested worktree wins"),
+    ('cd / && wt_key $$ "node /nix/store/x-tsc/bin/tsc -p ."',
+     "misc", "argv naming no worktree keys misc"),
+    ('cd / && wt_key $$ "node /k/.claude/worktrees/.hidden/x"',
+     "misc", "a dot-leading name can never spell a control file"),
+    (f'cd "{WT}" && wt_key $$ "node /k/.claude/worktrees/from-argv/x"',
+     "from-cwd", "the cwd outranks the argv"),
+    (f'cd "{WT}" && wt_key 999999999 "node /k/.claude/worktrees/from-argv/x"',
+     "from-argv", "an unreadable cwd (exited pid) falls back to the argv"),
+]:
+    out, _ = sh(GOV, f'{body}; printf "%s" "$WT_KEY"')
+    check(f"wt_key: {why}", out, want)
+out, _ = sh(GOV, f'cd "{WT}" && wt_key $$ x; printf "%s" "$PWD"')
+check("wt_key: the governor's own cwd is restored after probing", out, str(WT))
+
 # sweep_transient against REAL processes whose argv carry each shape. A
 # fixture file of pids would only assert a belief about /proc; these are read
 # through the same comm/cmdline/statm builtins the governor uses.
@@ -679,7 +792,8 @@ want_migrated = {"pnpm install", "rush install", "cliDaemon", "playwright runner
 # the sleep. Measured: 1.3 s unpiped, >120 s through a pipe.
 procs = {
     k: subprocess.Popen(v, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, start_new_session=True)
+                        stderr=subprocess.DEVNULL, start_new_session=True,
+                        cwd="/")
     for k, v in fixtures.items()
 }
 try:
@@ -703,17 +817,32 @@ try:
         check(f"sweep_transient: {k} {'migrates' if k in want_migrated else 'stays put'}",
               k in migrated, k in want_migrated)
 
-    # And a REAL (non-dry) sweep lands the install in the slice's transient leaf.
+    # And a REAL (non-dry) sweep lands the install in its worktree's leaf.
+    # The fixture's cwd is / and its argv names no worktree, so it keys `misc`.
     one = SWEEP / "worktrees-one.slice" / "claude-x.scope"
     one.mkdir(parents=True)
     (one / "cgroup.procs").write_text(f"{procs['pnpm install'].pid}\n")
     (fleet / "cgroup.procs").write_text("")
     reset_log()
     sh(GOV, f'POOL="{SWEEP}"; WORKER_MIN_MB=1; sweep_transient')
-    landed = (one.parent / "transient" / "cgroup.procs").read_text().split()
-    check("a real sweep writes the install's pid into transient",
+    landed = (one.parent / "transient" / "misc" / "cgroup.procs").read_text().split()
+    check("a real sweep writes the install's pid into transient/<worktree>",
           (landed, "SWEEP|migrated 1" in gov_log()),
           ([str(procs["pnpm install"].pid)], True))
+
+    # RE-HOME: a pid sitting directly in the transient PARENT (the pre-split
+    # layout) moves into its worktree leaf WITHOUT re-running the guards --
+    # http-server fails WORKER_RE and would never be migrated from the fleet,
+    # but one already in transient was vetted when it arrived.
+    two = SWEEP / "worktrees-two.slice" / "transient"
+    two.mkdir(parents=True)
+    hs = str(procs["http-server (deliberately excluded)"].pid)
+    (two / "cgroup.procs").write_text(hs + "\n")
+    (one / "cgroup.procs").write_text("")
+    reset_log()
+    sh(GOV, f'POOL="{SWEEP}"; WORKER_MIN_MB=1; sweep_transient')
+    check("a pid left directly in the transient parent is re-homed to its leaf",
+          (two / "misc" / "cgroup.procs").read_text().split(), [hs])
 finally:
     import signal  # noqa: E402
 
