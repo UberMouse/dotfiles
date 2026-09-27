@@ -1,4 +1,9 @@
-{ pkgs, self, ... }:
+{
+  pkgs,
+  unstable-pkgs,
+  self,
+  ...
+}:
 
 let
   # Desktop/pool memory partition — the numbers and their invariant live in
@@ -200,10 +205,59 @@ in
     extraGroups = [
       "networkmanager"
       "wheel"
+      # WhatPulse counts keys/clicks by reading /dev/input/event*, which
+      # NixOS's udev rules already make group-readable by `input` -- so this
+      # replaces upstream's setup-input-permissions script (a udev rule +
+      # chmod) outright. It grants EVERY process of this user raw keyboard
+      # read access, not just WhatPulse -- deliberately kept (2026-09-28): on
+      # this X11 session any X client already reads every keystroke via
+      # XInput2, so the group adds only non-X input (TTYs). A WhatPulse-only
+      # alternative needs a custom env-scrubbing setgid wrapper (the stock
+      # security.wrappers loses the gid at the bash FHS launcher), i.e. new
+      # privileged code for ~no gain. Revisit if the desktop moves to Wayland.
+      "input"
     ];
     shell = pkgs.zsh;
     # home-manager manages zsh so this check doesn't work
     ignoreShellProgramCheck = true;
+  };
+
+  # WhatPulse's network stats. The AppImage can't capture packets itself, so
+  # this companion captures and forwards stats to the client over TCP on
+  # localhost:3499 (its default; it reconnects whenever the client is up).
+  # Upstream ships it as a root unit; the package patches out its root check
+  # so it runs as a throwaway DynamicUser holding only the two capabilities
+  # upstream's own unit grants -- a network sniffer is exactly the process
+  # that shouldn't be full root.
+  systemd.services.whatpulse-pcap-service = {
+    description = "WhatPulse PCap Service (network stats for the WhatPulse client)";
+    after = [ "network.target" ];
+    wantedBy = [ "multi-user.target" ];
+    serviceConfig = {
+      # Empty --log-file: it always logs to stdout/stderr too, so the journal
+      # is the log, instead of its default /var/log file.
+      ExecStart = "${unstable-pkgs.whatpulse-pcap-service}/bin/whatpulse-pcap-service --log-file ''";
+      Restart = "always";
+      RestartSec = 5;
+      DynamicUser = true;
+      AmbientCapabilities = [
+        "CAP_NET_RAW"
+        "CAP_NET_ADMIN"
+      ];
+      CapabilityBoundingSet = [
+        "CAP_NET_RAW"
+        "CAP_NET_ADMIN"
+      ];
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ProtectHome = true;
+      PrivateTmp = true;
+      ProtectKernelTunables = true;
+      ProtectKernelModules = true;
+      ProtectControlGroups = true;
+      RestrictRealtime = true;
+      RestrictNamespaces = true;
+    };
   };
 
   fonts.packages = with pkgs; [

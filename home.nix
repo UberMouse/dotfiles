@@ -116,6 +116,7 @@ in
       unstable-pkgs.ccstatusline
       unstable-pkgs.rushjs
       unstable-pkgs.claude-code
+      unstable-pkgs.whatpulse
     ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;
