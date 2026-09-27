@@ -74,6 +74,12 @@ in
         { command = "slack"; }
         { command = "vivaldi"; }
         { command = "1password"; }
+        # Tray app that may never map a window: without --no-startup-id i3
+        # waits on a startup notification that never comes (busy cursor).
+        {
+          command = "whatpulse";
+          notification = false;
+        }
       ];
 
       assigns = {
