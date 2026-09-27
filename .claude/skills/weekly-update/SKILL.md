@@ -66,8 +66,8 @@ For each UPDATE.md:
   which is why the field exists) — BEFORE moving to the next spec: a bad hash
   surfaces in seconds here instead of aborting the whole run at the system
   rebuild
-- After completing the update, fetch and summarize changelog (see Changelog
-  Handling below) — HOLD the summary for the step 6 report; don't print it now
+- After completing the update, fetch and summarize the changelog (see
+  Changelog Handling below) for the step 6 report
 - Record "name oldVer → newVer" for the final commit message
 
 ### 3. Update Flake Inputs

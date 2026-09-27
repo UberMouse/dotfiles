@@ -168,7 +168,7 @@ Traps when diagnosing it:
 
 - **`memory.current` IS NOT MEMORY IN USE — it counts page cache.** `free`
   files that same cache under `buff/cache`, not `used`, so a pool reading
-  16G/16G beside a machine reporting far less in use is not a contradiction:
+  at its ceiling beside a machine reporting far less in use is not a contradiction:
   the two never measured the same thing. This pool does tens of GB of file IO,
   so the gap is routinely HALF the charge (measured 2026-08-20: 15.2G charged,
   7.36G anon, 7.27G reclaimable — 5.6G of it cold `inactive_file`). Every
@@ -302,13 +302,13 @@ Traps when diagnosing it:
     A cc-daemon outlives its TUI, so a leftover from the previous session
     satisfies a bare "is a daemon up" test instantly — the reattach then fires
     against the already-correct old daemon and exits one second before the new
-    one is forked. It now matches on the `--spawned-by {...,"pid":N}` argv
+    one is forked. It matches on the `--spawned-by {...,"pid":N}` argv
     field (N = the TUI's pid, which is `$$` because both launch paths `exec`
     in place), falling back to a pre-launch daemon-pid snapshot diff, and
     reattaches unconditionally on timeout.
   - **Counting pids MIGRATED is not the same as asserting none ESCAPED.** The
     failing run logged `rc=0 ... 0 moved, 7 already in slice` — indistinguishable
-    from success, which is why it ran 37 minutes. `claude-agents-reattach` now
+    from success, which is why it ran 37 minutes. `claude-agents-reattach`
     re-scans afterwards and exits non-zero naming any daemon still outside the
     fleet leaf, and `wt-cgroup-i3status.py` shows `⚠ fleet escaped` from the
     same invariant.
@@ -319,13 +319,13 @@ Traps when diagnosing it:
   cannot reclaim a byte of it, so `high_frac` subtracts the fleet from BOTH the
   usage and the ceiling: it asks "how much of the memory available to builds are
   builds using". Reading the logs: `build=NN% (fleet N.NG)` is that corrected
-  fraction, `high=NN%` is the old whole-pool one and means
+  fraction, `high=NN%` is the uncorrected whole-pool one and means
   `worktrees-agents.slice` was unreadable (`read_untracked_mem` → None, which
   falls back deliberately — it reads the pool as fuller, so it errs toward
   tightening early). The LOAD TEST is deliberately NOT corrected this way:
   its headroom is `high - current`, and subtracting the same bytes from both
   terms cancels. Free bytes are free bytes no matter who is not using them.
-  That reasoning covers the FLEET only — both signals now take a `current`
+  That reasoning covers the FLEET only — both signals take a `current`
   that is already net of reclaimable page cache (see the `memory.current` trap
   above), because cache has no matching term in the ceiling to cancel against.
 - **A `bg-spare` in an argv does NOT mean an idle process.** It says how the

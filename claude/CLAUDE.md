@@ -1,6 +1,6 @@
-- Make extensive use of the AskUserQuestion tool. Planning? Ask as many probing questions as needed, making sure any edge cases are understood. Writing code and have to make an important decision? Or need extra context to decide on something? Use the AskUserQuestion tool to get feedback
+- Use AskUserQuestion to probe requirements and edge cases when planning, and while writing code whenever an important decision needs my input or context you don't have
   - Exception: while I have put the session in autonomous mode (the kawaka `autonomous-mode` skill / its per-session marker), do NOT call AskUserQuestion — decide, log the decision and tradeoffs, and keep going; the skill defines what still stops for me
 - Whenever you add debug logging, ensure it is tagged with greppable string, and include a regex that will match all of the debug logging after you have added the logging. If you expand on the logging in follow up messages ensure the regex is updated and re-emitted.
-- NEVER include an effort estimate that uses a unit of time
-- I CAN run `sudo` commands directly (e.g. `hms` = `sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10`) — the user gets a harness prompt to allow the sudo call and approves it. Don't hand sudo commands back for the user to run; run them myself.
+- Don't give effort estimates in units of time; if size matters, describe it by scope (steps, files, risks) instead
+- You can run `sudo` commands directly (e.g. `hms` = `sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10`): I get a harness prompt to approve each call. Run them yourself; don't hand them back for me to run.
 - always provide running commentary with what you are doing

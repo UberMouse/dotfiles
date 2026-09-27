@@ -65,8 +65,9 @@ day-to-day work.
   binds the state-file format; verify the *pointers between the files* still
   name symbols that exist.
 - `memory-policy.nix` is the only place the desktop-floor/pool-ceiling
-  numbers live; grep for stray `"8G"`/`"18G"`/`"20G"` literals that bypass it
-  (comments citing history are fine; option values are not).
+  numbers live; read its current `…G = N;` values, then grep the other `.nix`
+  files for those values as literals (`"NG"`) that bypass it (comments citing
+  history are fine; option values are not).
 - Prose in prompts/comments stating machine facts (RAM, core counts, cgroup
   caps) must be interpolated from the source, never hand-copied — see the
   stall-diagnosis prompt for the pattern.
