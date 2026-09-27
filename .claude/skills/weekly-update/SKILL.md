@@ -66,7 +66,8 @@ For each UPDATE.md:
   which is why the field exists) — BEFORE moving to the next spec: a bad hash
   surfaces in seconds here instead of aborting the whole run at the system
   rebuild
-- After completing the update, fetch and summarize changelog (see Changelog Handling below)
+- After completing the update, fetch and summarize changelog (see Changelog
+  Handling below) — HOLD the summary for the step 6 report; don't print it now
 - Record "name oldVer → newVer" for the final commit message
 
 ### 3. Update Flake Inputs
@@ -105,6 +106,19 @@ Omit packages that were already current. If no packages were updated:
 chore(deps): flake inputs
 ```
 
+### 6. Report
+
+The run's closing message is the ONLY output the user is guaranteed to read —
+text written mid-run, between tool calls, is not reliably seen (on 2026-09-28
+changelogs posted while waiting on `nix flake check` never reached the user).
+So the final message must contain, in full:
+
+- what was updated (`name old → new`), what was already current, and anything
+  blocked or check-only with the reason
+- **every updated package's changelog summary**, in the format under Changelog
+  Handling — never "see above", never omitted because it was posted earlier
+- switch side-effects worth knowing (restarted units, needed restarts)
+
 ## Changelog Handling
 
 After each package update, summarize the changelog. Handle two source types:
@@ -119,7 +133,7 @@ template, not a runnable command):
 gh api repos/owner/repo/releases --jq '.[] | select(.tag_name | test("v?(${OLD}|${NEW})")) | "\(.tag_name): \(.name // .tag_name)\n\(.body)"'
 ```
 
-Present changelog summary to user:
+Present each changelog summary in the step 6 final report:
 ```
 ## package-name X.Y.Z → A.B.C
 
