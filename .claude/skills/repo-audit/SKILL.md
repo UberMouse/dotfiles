@@ -64,6 +64,10 @@ day-to-day work.
   `Semaphore.resident()`/`FIELDS` in the controller. The fast test suite
   binds the state-file format; verify the *pointers between the files* still
   name symbols that exist.
+- `zsh.nix`'s `PLAYWRIGHT_BROWSERS_PATH` must be `playwright-cli.gatedBrowsers`,
+  not the raw `playwright-driver.browsers` (only `show-trace` and the
+  playwright-cli wrapper may use the raw tree) — otherwise ad-hoc playwright
+  scripts launch browsers outside the build semaphore again.
 - `memory-policy.nix` is the only place the desktop-floor/pool-ceiling
   numbers live; read its current `…G = N;` values, then grep the other `.nix`
   files for those values as literals (`"NG"`) that bypass it (comments citing

@@ -1,6 +1,7 @@
 {
   lib,
   buildNpmPackage,
+  callPackage,
   fetchzip,
   playwright-driver,
   playwright-test,
@@ -230,6 +231,14 @@ buildNpmPackage (finalAttrs: {
     fi
     runHook postInstallCheck
   '';
+
+  # The browsers tree with every engine's executable behind kx-build-slot, for
+  # the PLAYWRIGHT_BROWSERS_PATH agents' shells export (zsh.nix): ad-hoc
+  # scripts drive playwright directly and never pass through the `open` gate
+  # above. The wrapper here deliberately keeps the RAW tree -- `open` is
+  # already gated, and the daemon it spawns would pass through on
+  # KX_BUILD_SLOT_HELD anyway. See gated-browsers.nix.
+  passthru.gatedBrowsers = callPackage ./gated-browsers.nix { inherit playwright-driver; };
 
   meta = {
     description = "Official Playwright CLI (@playwright/cli)";

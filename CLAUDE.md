@@ -269,6 +269,21 @@ Traps when diagnosing it:
   A residual overshoot of up to one publish interval remains by construction
   (`occupied` is a published value); closing it needs the controller to win its
   reclaim race with a blocking acquire, not another client-side change.
+- **Ad-hoc playwright scripts are gated at the BROWSER BINARY, not the CLI.**
+  Agents write their own `require(<some worktree's playwright>)` +
+  `chromium.launch()` scripts, which never touch `playwright-cli` — caught
+  live 2026-09-30 with a chrome-headless-shell and no `kx-build-slot` in its
+  ancestry. Each script resolves a different playwright copy, so the only
+  common point is `PLAYWRIGHT_BROWSERS_PATH`: zsh exports
+  `playwright-cli.gatedBrowsers` (`packages/playwright-cli/gated-browsers.nix`),
+  a mirror of the browsers tree whose every engine executable runs under
+  `kx-build-slot`. Counted as a plain BUILD for the browser's lifetime (the
+  wrapper is its parent), not a resident; `--timeout 150` fails open inside
+  playwright's 180 s launch timeout; `KX_BUILD_SLOT_HELD` passes already-gated
+  callers straight through. A script that sets its own
+  `PLAYWRIGHT_BROWSERS_PATH` or `executablePath` still escapes it (none were
+  seen doing so; the live case inherited the shell's). Agent shells read the path from a shell
+  snapshot, so a session predating the switch still has the raw tree.
 - **Some slots are held by browsers, not builds.** `playwright-cli open` gates
   the launch *and* keeps the slot for as long as the browser lives, via a keeper
   subshell forked (never exec'd — fork shares the open file description and so
