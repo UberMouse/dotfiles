@@ -358,6 +358,14 @@ Traps when diagnosing it:
   to probe with `flock` (it reserves nothing, so a test-and-release denies no
   job and restarts no grant clock) — which is why the bash reader may probe
   while the Python one reads `/proc/locks`.
+- **Waiters are unordered, except dev servers.** Every client polls with
+  jitter, so there is no FIFO. The one ordering rule: a `--resident-self`
+  waiter names its queue marker `<pid>.priority`, and any other job finding
+  a free slot while such a marker is LOCKED and FRESH (touched every pass;
+  `KX_SEM_PRIORITY_STALE_AFTER`, default 5 s) and the load test passes skips
+  it (`YIELD` in the log). Freshness is load-bearing, not tidiness: a frozen
+  or ^Z'd server keeps its lock and would stall every build to its timeout.
+  Priority never bypasses the load test (the resident ratchet above).
 
 Three files have to agree on residency — `kx-build-slot.sh` (keeper + marker),
 `packages/playwright-cli/package.nix` (`--resident-probe`; its build ASSERTS

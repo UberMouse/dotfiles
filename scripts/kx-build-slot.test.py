@@ -693,4 +693,111 @@ publish(healthy=1)
 p, _ = run("--resident-self", "--resident-probe", str(PROBE), "--", "true")
 check("--resident-self and --resident-probe are exclusive", p.returncode, 2)
 
+# 14. PRIORITY. There is no queue order -- whoever polls first after a slot
+#     frees takes it -- so a dev server someone is waiting on could lose the race
+#     to a stream of typechecks for its whole wait. A queued --resident-self
+#     names its marker <pid>.priority, and every other job leaves free slots to
+#     it while that marker is LOCKED and FRESH and the load test passes.
+#     Asserted from the log: a yielding job writes YIELD <label>.
+PRIO = SEM / "waiting" / "999999.priority"
+
+
+def hold_priority(age=0):
+    """A stand-in queued server: the lock is what makes it live, the mtime what
+    makes it fresh."""
+    PRIO.parent.mkdir(exist_ok=True)
+    fh = open(PRIO, "w")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if age:
+        t = time.time() - age
+        os.utime(PRIO, (t, t))
+    return fh
+
+
+slots()
+publish(allowed=8, occupied=0, healthy=1)
+log_text()
+fh = hold_priority()
+q = spawn("--label", "yielder", "--", "true")
+check("a build leaves a free slot to a waiting dev server",
+      bool(wait_for(lambda: "YIELD yielder" in LOG.read_text(), timeout=10)),
+      True)
+check("...and counts itself queued while it yields",
+      bool(wait_for(lambda: str(q.pid) in waiters(), timeout=10)), True)
+fh.close()
+q.communicate(timeout=30)
+check("...then takes the slot once no server is waiting",
+      (q.returncode, "UNGATED" in log_text()), (0, False))
+
+fh = hold_priority()
+p, _ = run("--label", "yieldout", "--", "true", timeout="1")
+check("a yielding build still fails open at its timeout",
+      ("TIMEOUT yieldout" in log_text(), p.returncode), (True, 0))
+p, _ = run("--label", "brwy", "--resident", "--", "true", timeout="1")
+check("a --resident browser yields too", "YIELD brwy" in log_text(), True)
+p, _ = run("--label", "srvy", "--resident-self", "--", "true", timeout="1")
+lg = log_text()
+check("a server never yields to another server",
+      ("YIELD" in lg, "UNGATED" in lg, p.returncode), (False, False, 0))
+
+# Yielding a slot the server may not take would idle it: the server waits on
+# the load test, so while that is shut the builds keep the slots.
+publish(allowed=8, occupied=0, healthy=0)
+p, _ = run("--label", "shut", "--", "true", timeout="1")
+check("no yield while the load test is shut",
+      ("YIELD" in log_text(), p.returncode), (False, 0))
+publish(allowed=8, occupied=0, healthy=1)
+
+# A garbage threshold must read as stale -- the unordered race, never a stall.
+p, _ = run("--label", "junkthr", "--", "true", timeout="1",
+           extra_env={"KX_SEM_PRIORITY_STALE_AFTER": "abc"})
+check("a garbage staleness threshold fails open",
+      ("YIELD" in log_text(), p.returncode), (False, 0))
+fh.close()
+
+# DEAD MARKERS STALL NOTHING. Unlocked is a SIGKILLed server's litter; locked
+# but stale is a server that is frozen or ^Z'd, which keeps its lock and never
+# takes the slot -- without the freshness test every build would sit in YIELD
+# until its own timeout.
+p, _ = run("--label", "unlocked", "--", "true", timeout="1")
+check("an unlocked priority marker is ignored",
+      ("YIELD" in log_text(), p.returncode), (False, 0))
+fh = hold_priority(age=60)
+p, _ = run("--label", "stale", "--", "true", timeout="1")
+check("a stale (frozen) priority marker is ignored",
+      ("YIELD" in log_text(), p.returncode), (False, 0))
+fh.close()
+
+# END TO END, with a real server. One slot, held; the server queues on the
+# full scan, then a build queues behind it. When the slot frees, the server
+# gets it every time -- not whichever of the two happened to poll first.
+slots(1)
+publish(allowed=8, occupied=0, healthy=1)
+log_text()
+busy = open(SEM / "slot.00", "w")
+fcntl.flock(busy, fcntl.LOCK_EX | fcntl.LOCK_NB)
+w = spawn_self("--", str(SERVER), str(BASE / "unused"))
+pm = SEM / "waiting" / f"{w.pid}.priority"
+check("a queued server's marker carries the priority suffix",
+      bool(wait_for(lambda: pm.name in waiters(), timeout=10)), True)
+t = time.time() - 60
+os.utime(pm, (t, t))
+check("...and is re-touched every pass (the freshness heartbeat)",
+      bool(wait_for(lambda: time.time() - pm.stat().st_mtime < 5, timeout=10)),
+      True)
+q = spawn("--label", "racer", "--", "true")
+wait_for(lambda: str(q.pid) in waiters(), timeout=10)
+busy.close()
+check("the freed slot goes to the server, not the build",
+      wait_for(marker_text, timeout=10), f"keeper={w.pid}")
+check("...and the build is still queued behind it",
+      (q.poll(), str(q.pid) in waiters()), (None, True))
+check("...having yielded rather than lost a race",
+      "YIELD racer" in log_text(), True)
+os.killpg(w.pid, signal.SIGKILL)
+w.wait(timeout=10)
+q.communicate(timeout=30)
+check("the build runs once the server holds nothing", q.returncode, 0)
+bsc.Semaphore(SEM, 4).resident()  # prune the SIGKILLed server's marker
+
 summary(cleanup_dir=BASE)

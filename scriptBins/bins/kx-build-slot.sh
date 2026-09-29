@@ -117,6 +117,32 @@
 # fds survive both fork and exec, so a marker left open would be inherited by
 # the very build it was counting the wait for, and the job would report itself
 # as queued for its whole runtime.
+#
+# PRIORITY (waiting/<pid>.priority). There is no queue ORDER: every waiter polls
+# with jitter and whichever looks first after a slot frees takes it. That is
+# fine between builds and wrong for a dev server, which someone is sitting in
+# front of -- behind a stream of short typechecks it can lose the race for its
+# whole 600 s wait. So a --resident-self waiter names its marker
+# `<pid>.priority`, and every OTHER job that finds a free slot while such a
+# marker is live leaves it alone for that pass (YIELD in the log). The server
+# takes it on its next poll, and the builds resume.
+#
+# What it deliberately does NOT change: the server still waits on the load test
+# like any resident (a 3 GB server admitted onto a thrashing pool is the ratchet
+# the RESIDENT GATE exists to stop), and builds only yield while that test
+# PASSES -- yielding a slot the server is not allowed to take would just leave
+# it idle. It reorders who gets a free slot; it never admits anything new.
+#
+# Live means LOCKED (the queue-depth contract) AND FRESH: a priority waiter
+# touches its marker every pass, and a marker older than
+# KX_SEM_PRIORITY_STALE_AFTER seconds (default 5) is ignored. The lock alone
+# is not enough here, because a marker that stalls BUILDS has to be able to
+# die of more than process death -- a server wrapper that is frozen (cgroup
+# freezer) or stopped (^Z) keeps its lock and never takes the slot, and every
+# build would sit in YIELD until its own timeout. Probing a marker with flock is
+# safe for the reason sem_waiting in wt-cgroup-status.sh gives: it reserves
+# nothing. Every failure here -- unreadable marker, garbage threshold -- reads
+# as NO priority waiter, so the worst case is the old unordered race.
 
 label=""
 timeout_s="${KX_BUILD_SLOT_TIMEOUT:-600}"
@@ -227,7 +253,13 @@ wait_marker_take() {
   # merely uncounted -- this is a readout, and nothing about it may be able to
   # stall a build (the header's whole fail-open argument applies to accounting
   # code with even less room for doubt than to the gate itself).
-  [ -z "$wait_fd" ] || return 0
+  if [ -n "$wait_fd" ]; then
+    # The PRIORITY heartbeat: builds ignore a priority marker that stops being
+    # touched (see PRIORITY in the header). Every pass calls this, so this is
+    # the one place that runs on every pass of every wait path.
+    [ -z "$resident_self" ] || touch -c "$wait_marker" 2>/dev/null || true
+    return 0
+  fi
   if ! mkdir -p "$WAIT_DIR" 2>/dev/null; then
     if [ -z "${wait_marker_warned:-}" ]; then
       wait_marker_warned=1
@@ -240,6 +272,9 @@ wait_marker_take() {
   # re-locked by whichever job next gets that pid, so the directory does not
   # grow without bound, and until then it sits there unlocked and uncounted.
   wait_marker="$WAIT_DIR/$$"
+  # Readers count every locked file in the directory, so the suffix changes
+  # nothing for them; only priority_waiting looks at it.
+  [ -z "$resident_self" ] || wait_marker="$wait_marker.priority"
   # The 2>/dev/null lives on a BRACE GROUP, never on the exec itself. `exec`
   # with no command makes EVERY redirection on its line permanent for the
   # shell, so the old `exec {wait_fd}>"$wait_marker" 2>/dev/null` sent this
@@ -377,6 +412,33 @@ sem_over_cap() {
   case "$a" in '' | *[!0-9]*) return 1 ;; esac
   case "$o" in '' | *[!0-9]*) return 1 ;; esac
   [ "$o" -ge "$a" ] && return 0
+  return 1
+}
+
+priority_waiting() {
+  # TRUE (0) when a live, fresh priority marker exists (PRIORITY in the
+  # header). The glob matches nothing in the common case, so this costs no
+  # fork until a dev server is actually queued.
+  local f fd mtime now=""
+  for f in "$WAIT_DIR"/*.priority; do
+    [ -e "$f" ] || continue
+    [ -n "$now" ] || now=$(date +%s)
+    mtime=$(stat -c %Y "$f" 2>/dev/null) || continue
+    # A garbage threshold makes the test error, which reads as stale: the
+    # fail-open direction.
+    [ $((now - mtime)) -le "${KX_SEM_PRIORITY_STALE_AFTER:-5}" ] 2>/dev/null \
+      || continue
+    # Opened READ-only: flock(2) does not need write access, and `>` would
+    # truncate a marker this job does not own.
+    { exec {fd}<"$f"; } 2>/dev/null || continue
+    if flock -n "$fd"; then
+      # Unlocked: a SIGKILLed waiter's litter. Released at once.
+      exec {fd}<&-
+      continue
+    fi
+    exec {fd}<&-
+    return 0
+  done
   return 1
 }
 
@@ -612,6 +674,27 @@ while :; do
     waited=$((now - start))
     if [ "$waited" -ge "$timeout_s" ]; then
       slotlog "TIMEOUT $label waited ${waited}s at cap, running UNGATED"
+      wait_marker_drop
+      exec "$@"
+    fi
+    jitter_sleep
+    continue
+  fi
+
+  # YIELD TO A WAITING DEV SERVER (PRIORITY in the header). After the cap, so a
+  # capped build keeps logging CAP-WAIT, and gated on the load test, because a
+  # server cannot take a slot while it is shut and yielding would idle one.
+  # Browsers (--resident) yield too: they are agent-driven, not someone waiting.
+  if [ -z "$resident_self" ] && sem_healthy && priority_waiting; then
+    if [ -z "${yield_logged:-}" ]; then
+      yield_logged=1
+      slotlog "YIELD $label an interactive job is waiting, leaving it the free slot"
+    fi
+    wait_marker_take
+    now=$(date +%s)
+    waited=$((now - start))
+    if [ "$waited" -ge "$timeout_s" ]; then
+      slotlog "TIMEOUT $label waited ${waited}s yielding, running UNGATED"
       wait_marker_drop
       exec "$@"
     fi
