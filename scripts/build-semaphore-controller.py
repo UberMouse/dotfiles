@@ -660,7 +660,20 @@ def read_pool_mem(path):
 # The pool subpath holding tenants that take no slots. Overridable for the
 # same reason every other path here is (KX_SEM_POOL points the tests at a
 # synthetic tree); an empty value disables the correction entirely.
-UNTRACKED_SUBPATH = os.environ.get("KX_SEM_UNTRACKED", "worktrees-agents.slice")
+#
+# The FLEET LEAF, not the agents slice. The slice's other child is the
+# governor's `transient`, where sweep_transient parks agents' heavy toolchain
+# workers (eslint, heft, tsc, jest) -- builds, many holding a slot -- and a
+# read of the whole slice discounted them as fleet. Measured 2026-09-30: ~6G of
+# node workers in transient through a 60%-full-PSI stall, subtracted from both
+# sides of high_frac (so the predictive signal never saw them) and from
+# build_share (so they argued FOR the self-inflicted exemption). The sweep runs
+# only off the NORMAL path, so a worker counts as build memory from the first
+# pressured tick onward -- until then it sits in fleet and is discounted, as
+# before. Unswept, that is the old behaviour; swept, it is the conservative one.
+UNTRACKED_SUBPATH = os.environ.get(
+    "KX_SEM_UNTRACKED", "worktrees-agents.slice/fleet"
+)
 
 
 # The memory.stat keys that are genuinely UNRECLAIMABLE without the holder's
@@ -1435,7 +1448,7 @@ def decide(state, inputs, cfg):
         # computation above), which removes most of that error at the source --
         # the fleet's bytes no longer masquerade as build pressure. This soft
         # floor STAYS anyway, as the belt to that braces: the correction needs
-        # worktrees-agents.slice to be readable, and read_untracked_mem returns
+        # worktrees-agents.slice/fleet to be readable, and read_untracked_mem returns
         # None (i.e. the old whole-pool fraction) whenever it is not.
         #
         # So high-frac is treated as what it is -- an EARLY WARNING that

@@ -460,6 +460,25 @@ check("missing memory.stat reads as no signal",
 check("memory.stat without anon/shmem reads as no signal",
       bsc.read_untracked_mem(UNT / "empty"), None)
 
+# Only the FLEET leaf is slot-less. The governor's sweep_transient moves agents'
+# heavy toolchain workers (eslint, heft, tsc, jest) into a `transient` sibling,
+# and those are builds -- often holding a kx-build-slot -- not the persistent
+# agents this discount exists for. Reading the whole agents slice subtracted
+# them from the build budget too: on 2026-09-30 ~6G of node workers sat in
+# transient during a 60%-full-PSI stall, invisible to high_frac and counted
+# toward the minority-builds self-inflicted exemption. The tree is kernel-
+# shaped: the parent's memory.stat is the SUM of its leaves, as cgroup v2
+# reports it, so a reader pointed at the parent fails here.
+KSH = BASE / "kernel-shaped-pool"
+AGENTS = KSH / "worktrees-agents.slice"
+(AGENTS / "fleet").mkdir(parents=True)
+(AGENTS / "transient").mkdir()
+(AGENTS / "fleet" / "memory.stat").write_text(f"anon {7 * GIB}\nshmem 0\n")
+(AGENTS / "transient" / "memory.stat").write_text(f"anon {4 * GIB}\nshmem 0\n")
+(AGENTS / "memory.stat").write_text(f"anon {11 * GIB}\nshmem 0\n")
+check("transient workers count as build memory, not slot-less fleet",
+      bsc.read_untracked_mem(KSH), 7 * GIB)
+
 # The correction is disableable, and disabling it must not fall back to a
 # partial read.
 _saved_subpath = bsc.UNTRACKED_SUBPATH

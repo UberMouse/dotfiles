@@ -335,9 +335,12 @@ Traps when diagnosing it:
   usage and the ceiling: it asks "how much of the memory available to builds are
   builds using". Reading the logs: `build=NN% (fleet N.NG)` is that corrected
   fraction, `high=NN%` is the uncorrected whole-pool one and means
-  `worktrees-agents.slice` was unreadable (`read_untracked_mem` → None, which
-  falls back deliberately — it reads the pool as fuller, so it errs toward
-  tightening early). The LOAD TEST is deliberately NOT corrected this way:
+  `worktrees-agents.slice/fleet` was unreadable (`read_untracked_mem` → None,
+  which falls back deliberately — it reads the pool as fuller, so it errs toward
+  tightening early). The FLEET LEAF, never the whole agents slice: its
+  `transient` sibling holds the agents' eslint/heft/tsc/jest workers the
+  governor sweeps there, which are builds — discounting them hid ~6G from the
+  predictive signal during the 2026-09-30 stalls. The LOAD TEST is deliberately NOT corrected this way:
   its headroom is `high - current`, and subtracting the same bytes from both
   terms cancels. Free bytes are free bytes no matter who is not using them.
   That reasoning covers the FLEET only — both signals take a `current`
