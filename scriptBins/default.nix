@@ -72,6 +72,34 @@ let
         export SENTRY_FORCE_ENV_TOKEN=1
       '';
     };
+    # Home Assistant, reached through its Nabu Casa remote URL (the VM is not
+    # on the home LAN). Personal account, not koordinates: it's the house, not
+    # work. The URL is read from 1Password alongside the token rather than
+    # written here because this repo is public -- the remote URL is the one
+    # address that reaches the instance from anywhere. Both tools read the
+    # same item (an API Credential: `credential` = an admin user's long-lived
+    # token, `hostname` = https://<id>.ui.nabu.casa) under ONE shared caller:
+    # same token, same purpose, so one approval covers both. With a caller
+    # each, a cold start cost four prompts (two fields x two tools), and the
+    # op-cached cache -- keyed by caller -- could not share between them.
+    hass-cli = {
+      pkg = pkgs.home-assistant-cli;
+      caller = "home-assistant";
+      account = "my.1password.com";
+      item = "op://Private/home-assistant/credential";
+      envVar = "HASS_TOKEN";
+      extraReads.HASS_SERVER = "op://Private/home-assistant/hostname";
+    };
+    # The MCP server Claude Code launches (registered user-scope as
+    # `home-assistant`); packages/ha-mcp explains the uvx pin.
+    ha-mcp = {
+      pkg = unstable-pkgs.ha-mcp;
+      caller = "home-assistant";
+      account = "my.1password.com";
+      item = "op://Private/home-assistant/credential";
+      envVar = "HOMEASSISTANT_TOKEN";
+      extraReads.HOMEASSISTANT_URL = "op://Private/home-assistant/hostname";
+    };
   };
 
   # One tiny fork+exec+wait binary PER op-cached consumer. 1Password names its
@@ -97,6 +125,7 @@ let
   opShimCallers = [
     "bk"
     "sentry"
+    "home-assistant"
     "unknown"
   ];
   opShims = lib.genAttrs opShimCallers (
@@ -135,8 +164,19 @@ let
     opCachedDaemon = "${op-cached-daemon}/bin/op-cached-daemon";
   };
 
+  # Optional opTools fields: `caller` (shim/grant name, default the tool's
+  # own), `account` (default koordinates), `extraReads` (more envVar ->
+  # op:// pairs, fetched exactly like the token), `extra`.
   opWrapper =
     name: t:
+    let
+      caller = t.caller or name;
+      account = t.account or "koordinates.1password.com";
+      reads = {
+        ${t.envVar} = t.item;
+      }
+      // (t.extraReads or { });
+    in
     sh {
       inherit name;
       # The real CLI first (the wrapper execs it by bare name; runtimeInputs
@@ -151,13 +191,17 @@ let
         "nounset"
       ];
       text = ''
-        ${t.extra}# Assign then export separately so a failing op-cached (errexit)
+        ${t.extra or ""}# Assign then export separately so a failing op-cached (errexit)
         # aborts here rather than being masked by export's own exit status
-        # (shellcheck SC2155). --as ${name} picks this tool's own
-        # op-1p-${name} shim, so 1Password's prompt names ${name} rather
+        # (shellcheck SC2155). --as ${caller} picks the
+        # op-1p-${caller} shim, so 1Password's prompt names ${caller} rather
         # than the daemon's Python interpreter (see bins/op-1p-shim.c).
-        ${t.envVar}="$(op-cached read --as ${name} --account koordinates.1password.com "${t.item}")"
-        export ${t.envVar}
+        ${lib.concatStrings (
+          lib.mapAttrsToList (var: item: ''
+            ${var}="$(op-cached read --as ${caller} --account ${account} "${item}")"
+            export ${var}
+          '') reads
+        )}
         exec ${name} "$@"
       '';
     };
@@ -215,7 +259,9 @@ in
 # builtins-only ON PURPOSE: this assert sits in the module's structural
 # position, which the module system forces before resolving module args --
 # touching `lib` (= pkgs.lib, a module arg) here is an infinite recursion.
-assert builtins.all (n: builtins.elem n opShimCallers) (builtins.attrNames opTools);
+assert builtins.all (n: builtins.elem (opTools.${n}.caller or n) opShimCallers) (
+  builtins.attrNames opTools
+);
 {
   home.packages = [
     (sh {

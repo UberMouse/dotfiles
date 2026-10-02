@@ -201,12 +201,12 @@ for d in sorted(Path("packages").iterdir()):
 roster_m = re.search(
     r"opShimCallers\s*=\s*\[(.*?)\]", Path("scriptBins/default.nix").read_text(), re.S
 )
-roster = set(re.findall(r'"(\w+)"', roster_m.group(1))) if roster_m else set()
+roster = set(re.findall(r'"([\w-]+)"', roster_m.group(1))) if roster_m else set()
 if not roster:
     failures.append("scriptBins/default.nix: opShimCallers list not found by lint")
 for p in Path("scriptBins/bins").glob("*.sh"):
     for i, line in enumerate(p.read_text().splitlines(), 1):
-        for name in re.findall(r"--as\s+(\w+)", code_of(line)):
+        for name in re.findall(r"--as\s+([\w-]+)", code_of(line)):
             if name not in roster:
                 failures.append(
                     f"{p}:{i}: --as {name} has no opShimCallers entry (falls through to 'unknown')"
