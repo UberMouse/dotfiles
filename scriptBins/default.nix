@@ -99,6 +99,21 @@ let
       item = "op://Private/home-assistant/credential";
       envVar = "HOMEASSISTANT_TOKEN";
       extraReads.HOMEASSISTANT_URL = "op://Private/home-assistant/hostname";
+      # Managed YAML editing (ha_config_set_yaml: backup + validation) and the
+      # file tools. Both are beta-gated server-side AND need the companion
+      # "HA-MCP File & YAML Tools" component (HACS:
+      # homeassistant-ai/ha-mcp-integration) installed in HA; without it the
+      # tools never register. The component confines file writes to HA's
+      # www, themes, custom_templates and dashboards dirs; config YAML is
+      # read-only there and only changes through ha_config_set_yaml -- which
+      # writes ONLY an allowlist of YAML-only integration keys (template,
+      # rest, command_line, sensor, mqtt, ...). Any other top-level key (it
+      # refused a dead `ltss:` block) is still a hand edit for the user.
+      extra = ''
+        export ENABLE_BETA_FEATURES=true
+        export ENABLE_YAML_CONFIG_EDITING=true
+        export HAMCP_ENABLE_FILESYSTEM_TOOLS=true
+      '';
     };
   };
 
