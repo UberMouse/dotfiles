@@ -142,6 +142,10 @@ must exist.
 - Home-manager runs as a NixOS module (not standalone), so changes require `nixos-rebuild switch`
 - The personal `~/.claude/CLAUDE.md` is managed by home-manager: `claude/CLAUDE.md` is symlinked to `~/.claude/CLAUDE.md` (see home.nix)
 - Git is configured with SSH signing via 1Password agent
+- Home Assistant (the house, reached only through Nabu Casa) is operated via
+  the `home-assistant` MCP server and `hass-cli`, both wired here — load the
+  `home-assistant` skill (`.claude/skills/home-assistant/SKILL.md`) before
+  touching it: access, ha-mcp quirks, why the Tapo devices are on Matter
 - Agent runtime state (`.pi/`-shaped directories, `.claude/` scratch) is
   ignored via the tracked `.gitignore`, never `.git/info/exclude` (machine-
   local, doesn't survive a clone — that gap once let 144 MiB of agent
