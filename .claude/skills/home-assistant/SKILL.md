@@ -107,6 +107,61 @@ Check that before renaming.
 - **The Matter bridge drops things:** battery levels, signal, buttons
   (S200B), the hub's siren and settings. They do not exist over Matter.
 
+## Updating HA OS / Supervisor / Core
+
+- **"No updates available" can mean the Supervisor has stopped looking.**
+  Once HA OS falls more than ~4 majors behind the newest release, the
+  Supervisor marks the system `unsupported: os_version` and its job gate
+  blocks `Updater.fetch_data`, the store reload AND its own self-update. Core,
+  Supervisor and every app then report `version_latest == version` forever.
+  Signature in the Supervisor log (`ha_get_logs(source="system_service",
+  slug="supervisor")`): `'Updater.fetch_data' blocked from execution,
+  unsupported OS version`. Check `/resolution/info` before believing any
+  "up to date". Ran 13 months like this (Core 2025.8.3 → found 2026-10-02).
+- **Way out: step the OS by explicit version.** `/os/update` itself is NOT
+  gated on OS support (only HEALTHY + SUPERVISOR_UPDATED against the cached
+  data), and it takes a version:
+  `ha_call_service(ws_command="supervisor/api", data={"endpoint":
+  "/os/update", "method": "post", "data": {"version": "X"}})`. The cached
+  upgrade target won't advance on its own (it is computed only at fetch
+  time), so pass every hop. The hops come from the `hassos-upgrade` map in
+  https://version.home-assistant.io/stable.json: stay on the map's entry for
+  your current major, then jump to the next major's entry. Once within range,
+  the Supervisor fetches, self-updates, and normal update entities reappear.
+- **Wait for the Supervisor's own `running` state** (`/info` → `state`)
+  between hops. Core reporting RUNNING is not enough: an `/os/update` sent
+  while the Supervisor is still in `startup` is refused.
+- **Supervisor ≥2026.07 no longer reboots after `/os/update`.** It raises a
+  `reboot_required` issue instead. Send `POST /host/reboot` yourself.
+- **This VirtualBox VM can hang at shutdown on an OS-update reboot.** The
+  RAUC install has already committed by then, so a hard power-off at the
+  host is safe and boots the new slot. Nothing here can reach the host, so
+  the user has to do it. Tell them before each reboot.
+- **Upgrade Core before running old Core on a much newer OS.** The VirtualBox
+  Core segfault on OS 18.0 (operating-system#4828) needed both OS 18.2+ and
+  Core 2026.7.4+.
+- **`ha_manage_backup(scope="snapshot", action="create")` refuses when HA has
+  no default backup password.** The existing backups are unencrypted (Google
+  Drive Backup app). Create one through the Supervisor instead:
+  `{"endpoint": "/backups/new/full", "method": "post", "data": {"name": ...}}`,
+  then poll `/jobs/<job_id>`.
+- **Google Drive Backup's retention counts by NUMBER, in HA and in Drive
+  alike, and it evicts full backups for tiny ones.** Read its
+  `max_backups_in_ha` / `max_backups_in_google_drive` options
+  (`ha_get_app(slug="cebe7a76_hassio_google_drive_backup")`) before creating
+  any backup. On 2026-10-02, six app updates run with `backup: true` produced
+  six partial backups, and retention deleted EVERY full backup from both
+  places, including the pre-upgrade one. `ignore_upgrade_backups: true` is
+  now set, so HA's automatic pre-update backups no longer count. Ad-hoc
+  backups made through the Supervisor still do. Check what survived with
+  `ha_manage_app(slug=..., path="/getstatus")`.
+- **Custom components break on Core jumps, and some must move BEFORE Core.**
+  HACS only offers releases whose minimum HA version is met, so a component
+  whose installed release breaks on the new Core may need a "bridge"
+  release on the old Core (`ha_manage_hacs(action="download",
+  version=...)`), and its newest release afterwards. Check each component's
+  imports against the target Core before moving Core.
+
 ## Safety
 
 - Claude Code's auto-mode classifier blocks destructive HA operations —
