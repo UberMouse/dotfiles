@@ -4,7 +4,7 @@
   fetchurl,
   autoPatchelfHook,
   makeWrapper,
-  openssl_3,
+  openssl_3_5,
   libz,
   libffi,
   unixodbc,
@@ -27,12 +27,13 @@ stdenv.mkDerivation (finalAttrs: {
 
   # Hand-maintained against the release bundle's NEEDED entries; a kart
   # release that gains a new .so lands here (autoPatchelf fails the build and
-  # names it). openssl_3 is an explicit major pin: the bundled cryptography
+  # names it). openssl_3_5 is an explicit major pin (the 3.x LTS; the bare
+  # openssl_3 alias was dropped when 3.0 went EOL): the bundled cryptography
   # libgit2 are built against OpenSSL 3's ABI. stdenv.cc.cc.lib already
   # provides libgcc_s.so.1 alongside libstdc++ (a separate libgcc entry here
   # was redundant).
   buildInputs = [
-    openssl_3
+    openssl_3_5
     libz
     libffi
     stdenv.cc.cc.lib

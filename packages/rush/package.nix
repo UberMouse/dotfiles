@@ -24,7 +24,7 @@ buildNpmPackage {
 
   # regen: nix run nixpkgs#prefetch-npm-deps -- packages/rush/package-lock.json
   # (UPDATE.md step 3) -- the one value every version bump must recompute.
-  npmDepsHash = "sha256-c99H9YyntBt6fNrOOML5DJGSzcsl8KroSH4jYZncHbI=";
+  npmDepsHash = "sha256-CZEEO4D905rTyCOLbHGpuG1ZbSwz7WqNgrNIzGmyaGs=";
 
   dontNpmBuild = true;
 
