@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "home-assistant": {
+      "type": "stdio",
+      "command": "/etc/profiles/per-user/taylorl/bin/ha-mcp",
+      "args": [],
+      "env": {}
+    }
+  }
+}

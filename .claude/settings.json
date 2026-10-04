@@ -14,5 +14,8 @@
       "Bash(nix flake check:*)",
       "Bash(gh api:*)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "home-assistant"
+  ]
 }

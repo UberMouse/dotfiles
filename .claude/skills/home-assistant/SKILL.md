@@ -19,9 +19,11 @@ recorded here; read them from the instance (`ha_get_overview`), they rot.
   (`opTools.hass-cli`, `opTools.ha-mcp`):
   - **`home-assistant` MCP server** (ha-mcp) — the main tool. A uvx launcher
     pinned in `packages/ha-mcp/package.nix`; `/weekly-update` bumps it.
-    Registered user-scope in `~/.claude.json`, which the flake does not
-    manage: `claude mcp add --scope user home-assistant --
-    /etc/profiles/per-user/taylorl/bin/ha-mcp`.
+    Registered PROJECT-scope in the tracked `.mcp.json` (pre-approved by
+    `enabledMcpjsonServers` in the tracked project settings), so it starts
+    only in sessions rooted in this repo or its worktrees. It was user-scope
+    once, and every session in every repo spawned it and prompted for the
+    1Password unlock; don't move it back.
   - **`hass-cli`** — raw REST fallback for anything no MCP tool covers:
     `hass-cli raw get /api/...`, `hass-cli raw post /api/... --json '{...}'`.
 - Both read the same 1Password item (personal account, `Private` vault, item

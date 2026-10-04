@@ -90,8 +90,9 @@ let
       envVar = "HASS_TOKEN";
       extraReads.HASS_SERVER = "op://Private/home-assistant/hostname";
     };
-    # The MCP server Claude Code launches (registered user-scope as
-    # `home-assistant`); packages/ha-mcp explains the uvx pin.
+    # The MCP server Claude Code launches (registered project-scope as
+    # `home-assistant` in the repo's .mcp.json, so only sessions in this
+    # repo spawn it); packages/ha-mcp explains the uvx pin.
     ha-mcp = {
       pkg = unstable-pkgs.ha-mcp;
       caller = "home-assistant";
