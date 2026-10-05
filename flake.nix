@@ -64,7 +64,10 @@
       # the claude-code manifest override) -- see packages/default.nix. The
       # overlay is the single declaration site; `packages` below derives its
       # attr list from the same source, so the two cannot drift.
-      custom = import ./packages { inherit (nixpkgs) lib; };
+      custom = import ./packages {
+        inherit (nixpkgs) lib;
+        stable-pkgs = nixpkgs.legacyPackages.${system};
+      };
       # Host identity (username) comes from the same single-declaration file
       # as the hardware facts: the string used to be restated here, in
       # home.nix and in nixos.nix independently, so a rename half-applied --
