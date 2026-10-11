@@ -586,9 +586,21 @@ SERVER = BASE / "server.sh"
 SERVER.write_text(
     f"#!{BASH}\n"
     'trap \'echo TERM > "$1"; exit 0\' TERM\n'
+    ': > "$1.ready"\n'
     "while :; do sleep 0.1; done\n"
 )
 SERVER.chmod(0o755)
+
+
+def term_armed(pid):
+    """Both halves have trapped TERM: the server (its ready file follows its
+    trap) and the wrapper's forwarder (SigCgt bit 15). The marker is written
+    BEFORE either, so signalling on the marker alone races the default action
+    -- rc 143 under a loaded `nix flake check`."""
+    caught = next(int(line.split()[1], 16) for line in
+                  Path(f"/proc/{pid}/status").read_text().splitlines()
+                  if line.startswith("SigCgt:"))
+    return bool(caught & (1 << (signal.SIGTERM - 1)))
 
 
 def spawn_self(*args, timeout="30"):
@@ -617,6 +629,9 @@ check("resident-self holds the slot while the server runs", held(), True)
 check("real resident() counts the self-keeper", bsc.Semaphore(SEM, 4).resident(), 1)
 check("real resident() left the live marker alone", markers(), ["slot.00"])
 check("admission is logged", "RESIDENT-SELF srv holds slot.00" in log_text(), True)
+check("server and wrapper have both trapped TERM",
+      bool(wait_for(lambda: Path(f"{got}.ready").exists() and term_armed(w.pid),
+                    timeout=10)), True)
 
 os.killpg(w.pid, signal.SIGTERM)
 check("group SIGTERM reaches the server",
