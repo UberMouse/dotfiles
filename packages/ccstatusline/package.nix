@@ -8,11 +8,11 @@
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "ccstatusline";
-  version = "2.2.30";
+  version = "2.2.32";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/ccstatusline/-/ccstatusline-${finalAttrs.version}.tgz";
-    hash = "sha256-cfdVpzNb0sa/qYiv/VH3EvNAsxCZDVOG44VVaZQ+vNk=";
+    hash = "sha256-mz7dVziadgxDdF+BjlITkeVu4MoVSc29xN3nuDiSqD8=";
   };
 
   nativeBuildInputs = [ makeWrapper ];
@@ -23,7 +23,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     runHook preInstall
 
     mkdir -p $out/lib/ccstatusline $out/bin
-    cp dist/ccstatusline.js $out/lib/ccstatusline/
+    # The whole dist directory, not just the entry point: since 2.2.32 the
+    # bundle is split into content-hashed chunks the entry imports by
+    # relative path.
+    cp -r dist/. $out/lib/ccstatusline/
 
     makeWrapper ${nodejs}/bin/node $out/bin/ccstatusline \
       --add-flags "$out/lib/ccstatusline/ccstatusline.js"
