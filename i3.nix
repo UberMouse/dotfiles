@@ -73,7 +73,7 @@ in
       startup = [
         { command = "slack"; }
         { command = "vivaldi"; }
-        { command = "1password"; }
+        # 1password is NOT started here: it is a supervised user service below.
         # Tray app that may never map a window: without --no-startup-id i3
         # waits on a startup notification that never comes (busy cursor).
         {
@@ -100,5 +100,32 @@ in
       exec --no-startup-id alacritty --class scratchpad-terminal -e scratch-terminal
       for_window [class="^scratchpad-terminal$"] move to scratchpad
     '';
+  };
+
+  # 1Password is supervised rather than an i3 `startup` entry because it EXITS
+  # BY DESIGN whenever an inotify watch sees its store directory change
+  # ("Application binary and/or it's directory was moved or replaced,
+  # exiting.") -- and nix-optimise's hardlink dedup is exactly such a change.
+  # The optimise timer catches up a few minutes after boot, so the first boot
+  # after a 1Password bump re-links its libs under the running app and takes
+  # the SSH agent (git signing, ssh, pam sudo) down with it. Observed
+  # 2026-10-13: dedup at 09:00:29, exit at 09:00:31. Restart=always (not
+  # on-failure: the exit code of that path is unverified) brings it back; the
+  # cost is that a tray Quit relaunches too -- stop the unit instead.
+  # /run/current-system/sw/bin, not a store path, so a restart after an
+  # upgrade picks up the new version. --silent: start to the tray, so a
+  # relaunch doesn't steal focus; the agent prompts to unlock on first use.
+  systemd.user.services."1password" = {
+    Unit = {
+      Description = "1Password (supervised: exits when nix-optimise relinks its files)";
+      PartOf = [ "graphical-session.target" ];
+      After = [ "graphical-session.target" ];
+    };
+    Install.WantedBy = [ "graphical-session.target" ];
+    Service = {
+      ExecStart = "/run/current-system/sw/bin/1password --silent";
+      Restart = "always";
+      RestartSec = 2;
+    };
   };
 }
