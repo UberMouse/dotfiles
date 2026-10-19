@@ -134,13 +134,14 @@ in
       # re-copy a cap into this comment, and when the narrative and the policy
       # file disagree, the policy file is right.
       #
-      # They are now 15G/17G. Not because the ceiling went loose -- `memory.events
+      # On 2026-09-04 they dropped to 15G/17G. Not because the ceiling went loose -- `memory.events
       # high` ran to 39205 in a day, the opposite failure -- but because the
       # MARGIN term beneath it was undersized: measured 2026-09-04 at p90 3.2G
       # net of reclaimable slab against a 3G budget, so the partition balanced
       # at exact equality while over-subscribing the box in ~30% of samples.
       # The gigabyte came from here because it was the only term with slack, and
-      # it costs no build slots (KX_SEM_CEIL is unchanged at 8; see below).
+      # it cost no build slots (KX_SEM_CEIL stayed at 8; see below). The VM's
+      # growth to ~34G on 2026-10-20 gave two gigabytes back (memory-policy.nix).
       # MemoryMax follows, keeping the 2 GiB backstop gap the argument above
       # depends on. See docs/notes/2026-09-04-desktop-memory-stalls.md.
       #

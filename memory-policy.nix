@@ -17,8 +17,11 @@
 let
   # GiB, as integers for the assertion arithmetic below.
   desktopMinG = 8;
-  poolHighG = 15;
-  poolMaxG = 17;
+  # 2026-10-20: the VM grew 29G -> 33G (memTotalG below). taylorl split the
+  # freed 4G: +2G here (KX_SEM_CEIL 8 -> 9), 2G left as unbudgeted slack under
+  # the partition assertion rather than handed to any one term.
+  poolHighG = 17;
+  poolMaxG = 19;
   # THE BALLOON FLOOR. Every term in this file is sized against the whole of
   # MemTotal, but this is a VMware guest and the host's balloon driver takes RAM
   # back from under all of them at once -- deliberately: the VM's reservation is
@@ -103,9 +106,14 @@ let
   #   MemTotal - MemFree - KReclaimable - user.slice - system.slice - init.scope
   # read from /proc/meminfo and the three cgroup memory.current files.
   marginG = 4;
-  # MemTotal as the box actually reports it (29.19 GiB → floor to be safe).
+  # MemTotal as the box actually reports it (33.51 GiB → floor to be safe).
   # If the VM's RAM allocation changes, update this and re-check the margin.
-  memTotalG = 29;
+  # The VM's size must also fit under VMware's host reserved-memory setting
+  # (plus per-VM overhead): raised 2026-10-19 to ~34G against a 33G
+  # reservation, the balloon held 3-4G back permanently and the governor cut
+  # the pool to its floor. Raising the reservation (applied only after a full
+  # VM power-cycle) brought it to 0 at boot and ~0.7G under load.
+  memTotalG = 33;
   # THE CONTROL PLANE's memory guarantee, in MiB rather than GiB because that is
   # the honest size of it: the governor is a bash loop measured at 2.5M resident
   # (5.5M peak) and the semaphore controller a Python loop at 2.8M (18M peak).
@@ -149,7 +157,7 @@ assert
 # omits userOtherG and marginG. That is not an oversight -- it is the whole
 # point of a throttle band. `memory.high` is not a hard stop, so the pool may
 # briefly exceed it while being throttled; requiring `max` to fit the
-# steady-state budget too (17+8+2+4 = 31 > 29) would forbid the band from ever
+# steady-state budget too (at the 2026-09-04 numbers, 17+8+2+4 = 31 > 29) would forbid the band from ever
 # being used and cost another gigabyte of ceiling to defend it. What must
 # survive a transient excursion is the DESKTOP FLOOR, and that is exactly what
 # this asserts. Checked 2026-09-04 against every archived stall snapshot:
