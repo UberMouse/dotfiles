@@ -117,6 +117,7 @@ in
       unstable-pkgs.rushjs
       unstable-pkgs.claude-code
       unstable-pkgs.whatpulse
+      unstable-pkgs.bolt-launcher
     ];
 
   home.file.".claude/CLAUDE.md".source = ./claude/CLAUDE.md;

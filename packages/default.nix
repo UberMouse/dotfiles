@@ -19,7 +19,10 @@ in
 {
   # Attr names the flake's `packages` output should expose -- derived from
   # the overlay's contents so the two can never drift.
-  names = lib.attrNames discovered ++ [ "claude-code" ];
+  names = lib.attrNames discovered ++ [
+    "claude-code"
+    "bolt-launcher"
+  ];
 
   overlay =
     final: prev:
@@ -59,5 +62,44 @@ in
         manifest = lib.importJSON ./claude-code/manifest.zst.json;
         inherit (stable-pkgs) alsa-lib;
       };
+
+      # nixpkgs' Bolt (native Jagex-account launcher; it downloads the RS3
+      # client itself) with RS3 switched on. Upstream gates RS3 behind
+      # `enableRS3` and marks that variant broken, because the client Bolt
+      # runs -- the `runescape` binary from Jagex's runescape-launcher deb --
+      # NEEDs libssl.so.1.1 + libcrypto.so.1.1 (readelf, 2.2.12, 2026-10-20)
+      # and unstable has dropped openssl_1_1. Stable still carries it, so it
+      # is added to the FHS env here and the broken flag -- which flags
+      # exactly that missing library -- goes with it.
+      #
+      # The insecure permit is scoped to this one use rather than a
+      # system-wide permittedInsecurePackages: the EOL OpenSSL is reachable
+      # only inside Bolt's FHS env, where Jagex's own client is what links it.
+      # When stable drops openssl_1_1 too, this stops evaluating -- the fix
+      # is then Jagex shipping a client built against OpenSSL 3.
+      #
+      # From the unstable base for the version: Bolt's plugin library hooks
+      # the client's renderer, and stable's 0.21.1 predates the two engine
+      # updates that broke it (fixed in 0.22.0 and 0.24.0).
+      bolt-launcher =
+        let
+          openssl_1_1 = stable-pkgs.openssl_1_1.overrideAttrs (o: {
+            meta = o.meta // {
+              knownVulnerabilities = [ ];
+            };
+          });
+        in
+        prev.bolt-launcher.override {
+          enableRS3 = true;
+          buildFHSEnv =
+            args:
+            prev.buildFHSEnv (
+              args
+              // {
+                targetPkgs = pkgs: args.targetPkgs pkgs ++ [ openssl_1_1 ];
+                meta = removeAttrs args.meta [ "problems" ];
+              }
+            );
+        };
     };
 }
