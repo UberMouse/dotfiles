@@ -15,6 +15,27 @@ let
   # name replaced an unrelated package globally, so ours is `rushjs`.
   attrName = n: if n == "rush" then "rushjs" else n;
   discovered = lib.mapAttrs' (n: _: lib.nameValuePair (attrName n) (./. + "/${n}/package.nix")) dirs;
+  # patchelf 0.19.2 (stdenv's since the 2026-10-24 unstable bump; it was
+  # 0.15.2) can lay a binary out so its read-only LOAD overlaps the writable
+  # one, leaving the tail of .dynamic mapped read-only: ld.so then SEGVs in
+  # dl_main before a single library loads. It broke kart and sentry, both
+  # caught only by their install checks (exit 139). auto-patchelf runs
+  # `patchelf` off PATH, so every custom package that asks for
+  # autoPatchelfHook gets one that puts STABLE's patchelf ahead of stdenv's:
+  # the version that built all of them until the bump. Not unstable's
+  # patchelfUnstable (0.18): it fixes kart but still breaks sentry's bun
+  # binary the same way. Upstream: NixOS/nixpkgs#576412. Delete this once
+  # stdenv's patchelf is fixed -- the kart and sentry install checks are the
+  # test.
+  autoPatchelfHook =
+    final:
+    final.makeSetupHook {
+      name = "auto-patchelf-hook-stable-patchelf";
+      propagatedBuildInputs = [
+        stable-pkgs.patchelf
+        final.autoPatchelfHook
+      ];
+    } (final.writeText "empty-setup-hook.sh" "");
 in
 {
   # Attr names the flake's `packages` output should expose -- derived from
@@ -26,7 +47,9 @@ in
 
   overlay =
     final: prev:
-    lib.mapAttrs (_: path: final.callPackage path { }) discovered
+    lib.mapAttrs (
+      _: path: lib.callPackageWith (final // { autoPatchelfHook = autoPatchelfHook final; }) path { }
+    ) discovered
     // {
       # nixpkgs' own claude-code derivation (wrapper env, alsa-lib, install
       # check, canonical downloads.claude.ai CDN), with ONLY the version
