@@ -228,7 +228,20 @@ in
 
     nix-direnv.enable = true;
 
-    config.whitelist.prefix = [ "${config.home.homeDirectory}/code/kawaka" ];
+    # A prefix covers every .envrc beneath it, so agent worktrees under
+    # <repo>/.claude/worktrees/ are allowed without a per-path `direnv allow`.
+    # Own/work repos only: third-party clones in ~/code stay gated.
+    config.whitelist.prefix = map (repo: "${config.home.homeDirectory}/code/${repo}") [
+      "backend"
+      "finance-tracker"
+      "kart"
+      "kawaka"
+      "rea-nix"
+      "RPG"
+      "rs-sdk"
+      "rsplugins"
+      "ubermouse"
+    ];
   };
 
   programs.alacritty = {
