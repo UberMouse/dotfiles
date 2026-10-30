@@ -81,10 +81,40 @@ in
       # terminal). glibc is backward-compatible, so the older libasound is
       # safe inside claude itself, while stable's is one every stable-built
       # child can load.
-      claude-code = prev.claude-code.override {
-        manifest = lib.importJSON ./claude-code/manifest.zst.json;
-        inherit (stable-pkgs) alsa-lib;
-      };
+      #
+      # CLAUDE_CODE_FORK_SUBAGENT=0 closes the fork gate, which is also what
+      # arms the agent_summary side-query: every 30 s per background subagent,
+      # the agent's FULL transcript re-sent to its own model for a 3-5 word
+      # panel status. Those calls are skipTranscript, so no transcript shows
+      # them; replaying the timer over this box's transcripts put them at ~16%
+      # of all spend (2026-10-30). Costs: no `fork` subagent type (used 5
+      # times since October), and the Agent tool offers `run_in_background`
+      # again -- background stays the default, but the model may pick a
+      # blocking foreground run. --set-default so `CLAUDE_CODE_FORK_SUBAGENT=1
+      # claude` still A/Bs it. Spliced into nixpkgs' own wrapProgram rather
+      # than a second wrapProgram, which would stack a `.claude-wrapped_`
+      # layer; the assert fails eval if nixpkgs rewrites that line, instead
+      # of replaceStrings silently dropping the flag.
+      claude-code =
+        (prev.claude-code.override {
+          manifest = lib.importJSON ./claude-code/manifest.zst.json;
+          inherit (stable-pkgs) alsa-lib;
+        }).overrideAttrs
+          (
+            old:
+            let
+              anchor = "wrapProgram $out/bin/claude \\";
+            in
+            assert lib.assertMsg (lib.hasInfix anchor old.installPhase)
+              "claude-code: nixpkgs' installPhase no longer contains `${anchor}`; re-splice CLAUDE_CODE_FORK_SUBAGENT";
+            {
+              installPhase =
+                builtins.replaceStrings
+                  [ anchor ]
+                  [ "${anchor}\n      --set-default CLAUDE_CODE_FORK_SUBAGENT 0 \\" ]
+                  old.installPhase;
+            }
+          );
 
       # nixpkgs' Bolt (native Jagex-account launcher; it downloads the RS3
       # client itself) with RS3 switched on. Upstream gates RS3 behind

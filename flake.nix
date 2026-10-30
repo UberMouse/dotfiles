@@ -244,6 +244,25 @@
                 touch $out
               '';
 
+          # packages/default.nix sets CLAUDE_CODE_FORK_SUBAGENT=0 in the claude
+          # wrapper to switch off the agent_summary side-query. If a release
+          # renames the variable or drops its disable branch, the setting
+          # silently does nothing and ~16% of spend comes back unseen (those
+          # calls never reach a transcript). Pin the disable branch as it
+          # appears in the minified bundle -- property name, `===!1` and the
+          # "disabled" literal survive minification; the receiver does not.
+          claude-fork-gate =
+            checkPkgs.runCommand "claude-fork-gate" { nativeBuildInputs = [ checkPkgs.gnugrep ]; }
+              ''
+                grep -r -a -q -F '.CLAUDE_CODE_FORK_SUBAGENT===!1)return"disabled"' ${unstable-pkgs.claude-code}/bin/ || {
+                  echo 'claude-code no longer has the CLAUDE_CODE_FORK_SUBAGENT=0 disable branch;' >&2
+                  echo 'the wrapper setting in packages/default.nix may no longer stop agent_summary.' >&2
+                  echo 'Re-check what gates enableSummarization before bumping.' >&2
+                  exit 1
+                }
+                touch $out
+              '';
+
           # `nix flake check` must fail on an unformatted tree, or the
           # formatter output is advisory and the next whole-tree reformat
           # commit (plus .git-blame-ignore-revs entry) is only a matter of
