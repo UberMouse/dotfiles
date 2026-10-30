@@ -451,13 +451,19 @@ assert builtins.all (n: builtins.elem (opTools.${n}.caller or n) opShimCallers) 
   ]
   ++ lib.mapAttrsToList opWrapper opTools;
 
-  # Weekly worktree reap. The disk did not fill because anything failed; it
+  # Hourly worktree reap. The disk did not fill because anything failed; it
   # filled because nothing was ever reclaiming worktrees, and the ~2.5G each
   # accumulates faster than it is noticed (79 of them inside 6 days). A
   # calendar is the right trigger BECAUSE the reaper's own criterion is
   # already conservative -- it removes only worktrees that add no commits and
-  # carry no changes, so firing it often costs nothing and firing it rarely
-  # is how this happened.
+  # carry no changes, and never one a live process has as its cwd (so a
+  # freshly created, still-clean worktree is safe) -- so firing it often
+  # costs nothing and firing it rarely is how this happened.
+  #
+  # It was WEEKLY until 2026-10-30, when the disk filled again four days
+  # after a run: 30 reapable worktrees at 3-6G each had piled up in between.
+  # The backlog a run can face is the cadence times the worktree birth rate,
+  # and the birth rate only goes up -- don't lengthen this.
   #
   # --yes, not an interactive prompt: nobody is at a terminal. --no-size is
   # implied by the non-dry-run path (the du pass over ~80 node_modules trees
@@ -475,16 +481,18 @@ assert builtins.all (n: builtins.elem (opTools.${n}.caller or n) opShimCallers) 
   };
 
   systemd.user.timers.wt-reap = {
-    Unit.Description = "Weekly worktree reap";
+    Unit.Description = "Hourly worktree reap";
     Install.WantedBy = [ "timers.target" ];
     Timer = {
-      OnCalendar = "weekly";
+      OnCalendar = "hourly";
       # The box is a VM that is not always up at the nominal hour; without
       # this the timer silently skips the weeks it was off -- which is the
       # same "looks configured, reclaims nothing" failure this whole change
       # exists to fix.
       Persistent = true;
-      RandomizedDelaySec = "1h";
+      # Small against the hourly period: a 1h jitter would let consecutive
+      # runs land nearly two hours apart.
+      RandomizedDelaySec = "10min";
     };
   };
 }
