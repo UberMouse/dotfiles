@@ -5,7 +5,7 @@
 }:
 let
   pname = "whatpulse";
-  version = "6.3.2";
+  version = "7.0";
 
   # Upstream publishes NO versioned download: the AppImage only ever lives at
   # this /latest/ path (the downloads page, the embedded zsync update info and
@@ -16,7 +16,7 @@ let
   # the UPDATE.md bump -- which must move `version` and `hash` together.
   src = fetchurl {
     url = "https://releases.whatpulse.org/latest/linux/whatpulse-linux-latest_amd64.AppImage";
-    hash = "sha256-/XAFqiJD1NItaFkKQyA++hCSb/99UtUMltAFClvzqmQ=";
+    hash = "sha256-yqpus5wQ7mefFTbZkbVMozGDMqf83DZ0yKr0yaLTyD0=";
   };
 
   contents = appimageTools.extract { inherit pname version src; };

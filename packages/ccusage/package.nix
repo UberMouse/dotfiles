@@ -11,11 +11,11 @@
 # asks this binary only for the days it hasn't cached yet.
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "ccusage";
-  version = "20.0.44";
+  version = "20.0.46";
 
   src = fetchzip {
     url = "https://registry.npmjs.org/@ccusage/ccusage-linux-x64/-/ccusage-linux-x64-${finalAttrs.version}.tgz";
-    hash = "sha256-vdpTmWvubARYLRwDgikod10FzbtXzk0JbyQ/v3485yA=";
+    hash = "sha256-AZOhJaPwffQRfsgm4bzESeEHt2W32BgRTXfca4vDak8=";
   };
 
   dontBuild = true;

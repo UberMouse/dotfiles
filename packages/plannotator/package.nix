@@ -7,11 +7,11 @@
 }:
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "plannotator";
-  version = "0.28.31";
+  version = "0.28.43";
 
   src = fetchurl {
     url = "https://github.com/backnotprop/plannotator/releases/download/v${finalAttrs.version}/plannotator-linux-x64";
-    hash = "sha256-Xk+XLrn3LrnYWI+ZMXNcN9kKHu2AW4VY4xd7Uo5egUo=";
+    hash = "sha256-QND3Rpkqv3aIUTCc8nKH1zZz1dERBBwzm6L58ZWap+k=";
   };
 
   dontUnpack = true;
