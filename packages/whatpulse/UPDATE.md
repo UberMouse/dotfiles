@@ -28,9 +28,10 @@ polls, sitting beside the AppImage.
 
 3. Confirm the fetched file really is `${VERSION}` — `version` is only a
    label, so this guards against upstream publishing between the version
-   check and the prefetch:
+   check and the prefetch. `-n 3` is load-bearing: `strings` defaults to a
+   4-char minimum, which silently drops a version like `7.0` (2026-11-02):
    ```bash
-   strings "$(nix build --no-link --print-out-paths .#whatpulse.extracted)/usr/bin/whatpulse" \
+   strings -n 3 "$(nix build --no-link --print-out-paths .#whatpulse.extracted)/usr/bin/whatpulse" \
      | grep -qx "${VERSION}" && echo ok
    ```
 
