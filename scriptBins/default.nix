@@ -300,6 +300,16 @@ assert builtins.all (n: builtins.elem (opTools.${n}.caller or n) opShimCallers) 
       ];
       bashOptions = [ "nounset" ];
     })
+    # The default image opener (desktop entry + mimeApps in home.nix):
+    # opens the clicked file's whole folder in nsxiv, not just the one file.
+    (sh {
+      name = "nsxiv-folder";
+      runtimeInputs = [
+        pkgs.nsxiv
+        pkgs.coreutils
+      ];
+      bashOptions = [ "nounset" ];
+    })
     (sh {
       name = "dev-terminal";
       runtimeInputs = [

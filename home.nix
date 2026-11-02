@@ -9,6 +9,30 @@
 let
   # Username from the host-facts single declaration site (see its header).
   facts = import ./host-facts.nix;
+
+  # Routed to nsxiv-folder (xdg.mimeApps below). The raster subset of the
+  # MimeType line in nsxiv's own desktop file -- copied rather than read from
+  # it, since reading a store path at eval time is import-from-derivation.
+  imageMimeTypes = [
+    "image/png"
+    "image/jpeg"
+    "image/jpg"
+    "image/gif"
+    "image/bmp"
+    "image/x-bmp"
+    "image/tiff"
+    "image/webp"
+    "image/avif"
+    "image/heic"
+    "image/heif"
+    "image/jxl"
+    "image/jp2"
+    "image/x-tga"
+    "image/x-portable-anymap"
+    "image/x-portable-bitmap"
+    "image/x-portable-graymap"
+    "image/x-xpixmap"
+  ];
 in
 {
   imports = [
@@ -141,10 +165,27 @@ in
         "x-scheme-handler/http" = [ "vivaldi-stable.desktop" ];
         "text/html" = [ "vivaldi-stable.desktop" ];
         "x-scheme-handler/koordinates" = [ "koordinates-dev-protocol.desktop" ];
-      };
+      }
+      # Without an explicit default, images fell through to Chrome, whose
+      # desktop file also claims the PNG/JPEG MIME types.
+      // lib.genAttrs imageMimeTypes (_: [ "nsxiv-folder.desktop" ]);
     };
 
     desktopEntries = {
+      nsxiv-folder = {
+        type = "Application";
+        name = "Image Viewer (nsxiv)";
+        genericName = "Image Viewer";
+        icon = "nsxiv";
+        # %f, not %F: the wrapper's single-file form is what loads the
+        # folder around it (scriptBins/bins/nsxiv-folder.sh).
+        exec = "nsxiv-folder %f";
+        mimeType = imageMimeTypes;
+        categories = [
+          "Graphics"
+          "Viewer"
+        ];
+      };
       koordinates-dev-protocol = {
         type = "Application";
         name = "Koordinates dev protocol handler";
