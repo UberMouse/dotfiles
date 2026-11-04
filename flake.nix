@@ -10,17 +10,18 @@
     # nothing while costing a third nixpkgs eval and weekly lock churn.
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     playwright = {
-      # Pentusha/playwright-web-flake is THE source for the playwright driver
-      # and browsers here — pinned to 1.63.0 (bumped 2026-09-14).
+      # pietdevries94/playwright-web-flake is the source for the playwright
+      # driver and browsers — pinned to 1.64.1 (moved here 2026-11-04 from its
+      # fork Pentusha/playwright-web-flake, because upstream shipped 1.64.1
+      # ~2 weeks before the fork did).
       #
-      # It is not a stopgap. pietdevries94 is the ancestor, not the
-      # destination: on 2026-09-14, with both at 1.63.0, switching to it
-      # failed outright — its webkit omits `libmanette` from buildInputs, so
-      # auto-patchelf cannot satisfy libmanette-0.2.so.0 for
-      # libWPEWebKit-2.0.so.1.12.0 and playwright-browsers dies. The pinned
-      # source carries that dependency in its own webkit derivation, plus the
-      # other build fixes. Do not read a version match as interchangeability —
-      # the versions matched exactly when that attempt failed.
+      # A source switch is proven by BUILDING, never by matching versions: on
+      # 2026-09-14, with both at 1.63.0, moving to pietdevries94 failed
+      # outright — its webkit then omitted `libmanette` from buildInputs, so
+      # auto-patchelf could not satisfy libmanette-0.2.so.0 and
+      # playwright-browsers died. The 2026-11-04 move was accepted only after
+      # `nix build .#playwright-cli` (webkit included) and a three-engine
+      # launch passed. Pentusha remains the fallback if upstream regresses.
       #
       # DELIBERATELY REV-PINNED, not branch-tracking: a bare URL would let the
       # weekly `nix flake update` move the driver — and so the playwright
@@ -29,7 +30,7 @@
       # browsers and must re-check the CLI coupling; both
       # packages/playwright/UPDATE.md and packages/playwright-cli/UPDATE.md
       # require explicit user permission first.
-      url = "github:Pentusha/playwright-web-flake/252935ebc9500e60b5080859e086491ba724c190";
+      url = "github:pietdevries94/playwright-web-flake/9acc2817b9866a35ea2716b95edcf87e7492bde3";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {

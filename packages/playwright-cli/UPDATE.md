@@ -33,14 +33,14 @@ Gather the three versions that drive the decision:
 
 ```bash
 # (a) what the flake CURRENTLY provides (the pinned input):
-nix eval --raw "github:Pentusha/playwright-web-flake/$(jq -r '.nodes.playwright.locked.rev' flake.lock)#playwright-driver.version"
+nix eval --raw "github:pietdevries94/playwright-web-flake/$(jq -r '.nodes.playwright.locked.rev' flake.lock)#playwright-driver.version"
 
 # (b) what the LATEST CLI wants:
 npm view @playwright/cli version                     # latest CLI version
 npm view @playwright/cli dependencies.playwright     # its pinned playwright
 
 # (c) whether the source's HEAD has moved on (i.e. would a flake bump help?):
-nix eval --raw "github:Pentusha/playwright-web-flake#playwright-driver.version"
+nix eval --raw "github:pietdevries94/playwright-web-flake#playwright-driver.version"
 ```
 
 Then decide:
@@ -62,10 +62,9 @@ Then decide:
      own.** It rebuilds the driver + browsers — always get explicit user
      permission first. Report (a), (b), and (c) and what a bump would/wouldn't
      unblock, then wait.
-  4. Do NOT propose switching to `pietdevries94/playwright-web-flake` as a way
-     around a version gap. It is the ancestor of the pinned source, not a
-     fallback: it was tried on 2026-09-14 at an identical driver version and
-     failed to build. See `packages/playwright/UPDATE.md`.
+  4. Do not switch the input's SOURCE as a quick way around a version gap.
+     A source switch has its own proof bar (a full browser build, not a
+     version match) — see `packages/playwright/UPDATE.md`.
 
 After a permitted flake bump, refresh the input with
 `nix flake update playwright` (the input is named `playwright`) and re-check (a)
