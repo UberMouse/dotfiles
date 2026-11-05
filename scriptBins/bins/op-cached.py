@@ -303,7 +303,7 @@ except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
 status, payload = parse_response(response)
 
 # A daemon from an earlier generation survives nixos-rebuild -- it holds the
-# socket until its idle timeout -- and it predates READ2, so it rejects us as
+# socket until it is killed -- and if it predates READ2 it rejects us as
 # "unknown command". Swap it for the current build and retry exactly once.
 if status == "ERR" and payload == b"unknown command":
     log("pre-READ2 daemon still listening, replacing it")

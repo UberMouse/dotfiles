@@ -29,8 +29,8 @@ recorded here; read them from the instance (`ha_get_overview`), they rot.
 - Both read the same 1Password item (personal account, `Private` vault, item
   `home-assistant`: `credential` = an admin long-lived token, `hostname` = the
   Nabu Casa URL) under ONE shared caller, `home-assistant`. A cold cache costs
-  two prompts (one per field); then nothing for 15 idle minutes, for either
-  tool. The URL lives in 1Password, not the repo, because the repo is public.
+  two prompts (one per field); then nothing for either tool until the
+  op-cached daemon dies (it never idles out — logout, reboot, or a kill). The URL lives in 1Password, not the repo, because the repo is public.
 - A wrapper change needs a switch AND `/mcp` → reconnect `home-assistant`:
   the running server keeps the environment it started with. A session that
   started before the server was registered cannot see its tools at all.

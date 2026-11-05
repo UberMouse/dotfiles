@@ -5,7 +5,6 @@ import socket
 import os
 import subprocess
 import base64
-import time
 import signal
 import sys
 import json
@@ -28,10 +27,15 @@ def log(msg):
 runtime_dir = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 sock_path = os.path.join(runtime_dir, "op-cached.sock")
 pid_path = os.path.join(runtime_dir, "op-cached.pid")
-ttl = int(os.environ.get("OP_CACHED_TTL", "900"))
-idle_timeout = int(os.environ.get("OP_CACHED_IDLE_TIMEOUT", "1800"))
+# There is NO cache ttl: a fetched secret is served from memory for as long as
+# this daemon lives, so each secret costs one 1Password prompt per daemon
+# lifetime (in practice per login session). For the same reason the daemon does
+# not idle out by default -- exiting would throw the cache away and turn the
+# next request into a prompt. OP_CACHED_IDLE_TIMEOUT (seconds, 0 = never) stays
+# as an opt-in so the test suite's daemons reap themselves if a test leaks one.
+idle_timeout = int(os.environ.get("OP_CACHED_IDLE_TIMEOUT", "0"))
 
-log(f"starting: sock={sock_path} ttl={ttl} idle={idle_timeout}")
+log(f"starting: sock={sock_path} idle={idle_timeout or 'never'}")
 
 # `op` is resolved ONCE, here, rather than looked up on PATH per request.
 #
@@ -188,7 +192,7 @@ os.chmod(sock_path, 0o600)
 # "this daemon is wedged, replace it", and that verdict is only sound if a live
 # daemon accepts immediately regardless of what it is currently doing.
 sock.listen(16)
-sock.settimeout(idle_timeout)
+sock.settimeout(idle_timeout or None)
 log("listening")
 
 try:
@@ -239,17 +243,10 @@ try:
             # meaningless if tool B could read a secret out of the cache that
             # tool A's authorization had fetched.
             key = f"{caller}\t{account}\t{uri}"
-            now = time.time()
 
-            if key in cache and now - cache[key][1] < ttl:
+            if key in cache:
                 log(f"cache hit for {uri} (caller={caller})")
-                encoded = cache[key][0]
-                # ttl measures IDLE time, not age: every hit slides the deadline
-                # forward, so a secret asked for more often than once per ttl is
-                # never re-fetched and never re-prompts. The 1Password grant the
-                # fetch was authorized under has the same shape (it lapses on
-                # inactivity), so an entry kept warm by use stays legitimate.
-                cache[key] = (encoded, now)
+                encoded = cache[key]
             else:
                 # Checked here, not at startup: an already-cached secret is
                 # still perfectly good, so only a fetch needs a working `op`.
@@ -267,7 +264,7 @@ try:
                     continue
                 log(f"op read succeeded, {len(value)} bytes")
                 encoded = base64.b64encode(value.rstrip(b"\n")).decode()
-                cache[key] = (encoded, now)
+                cache[key] = encoded
 
             log("sending OK response")
             conn.sendall(f"OK\t{encoded}\n".encode())

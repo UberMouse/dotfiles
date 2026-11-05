@@ -173,7 +173,7 @@ def mkenv(rd, extra=None):
     env["PATH"] = str(FAKEBIN) + os.pathsep + env.get("PATH", "")
     env["OP_CACHED_DEBUG"] = "1"
     # Belt-and-braces against a missed reap: any daemon this suite leaks
-    # idles out on its own instead of squatting for the default 1800s.
+    # idles out on its own (by default the daemon never does).
     env["OP_CACHED_IDLE_TIMEOUT"] = "120"
     if extra:
         env.update(extra)
@@ -268,8 +268,7 @@ def dump_logs():
 
 try:
     # 1. CACHE HIT vs MISS, PER-CALLER ISOLATION, ERR PROPAGATION, and the
-    #    wire's legacy replies -- one daemon, default (900s) ttl so nothing
-    #    here is clock-sensitive.
+    #    wire's legacy replies -- one daemon.
     RD = runtime("cache")
     uri = "op://vault/item/field"
     p = client(RD, "--as", "bk", "--account", "acct", uri)
@@ -317,25 +316,16 @@ try:
     want = "OK\t" + base64.b64encode(f"secret:unknown:{legacy_uri}".encode()).decode()
     check("legacy READ served as caller=unknown", got, want)
 
-    # 2. TTL SLIDES ON USE. ttl=2s; refetches at 1.1s intervals must stay
-    #    hits past the 2s mark (the slide), and 2.2s of silence must expire
-    #    the entry. Wall-clock timed, so a badly loaded box can flake the
-    #    hit assertions -- margins are ~0.9s.
-    RD = runtime("ttl")
-    uri = "op://vault/ttl/field"
-    ttl_env = {"OP_CACHED_TTL": "2"}
-    t0 = time.time()
-    client(RD, "--as", "bk", "--account", "acct", uri, extra=ttl_env)
-    time.sleep(1.1)
-    client(RD, "--as", "bk", "--account", "acct", uri, extra=ttl_env)
-    time.sleep(1.1)
-    client(RD, "--as", "bk", "--account", "acct", uri, extra=ttl_env)
-    elapsed = time.time() - t0
-    check("slide window really exceeded the ttl", elapsed > 2.0, True)
-    check("kept-warm entry never refetched", fetch_count(uri), 1)
-    time.sleep(2.2)
-    client(RD, "--as", "bk", "--account", "acct", uri, extra=ttl_env)
-    check("idle entry expired after ttl", fetch_count(uri), 2)
+    # 2. NO TTL: an entry lives as long as the daemon. The retired
+    #    OP_CACHED_TTL knob is set to 1s and then outwaited, so a ttl that
+    #    crept back in (honouring that env var) would refetch here.
+    RD = runtime("nottl")
+    uri = "op://vault/nottl/field"
+    old_ttl_env = {"OP_CACHED_TTL": "1"}
+    client(RD, "--as", "bk", "--account", "acct", uri, extra=old_ttl_env)
+    time.sleep(1.2)
+    p = client(RD, "--as", "bk", "--account", "acct", uri, extra=old_ttl_env)
+    check("entry outlives the old ttl", (p.returncode, fetch_count(uri)), (0, 1))
 
     # 3. PIDFILE OWNERSHIP ON EXIT. A daemon that still owns the pidfile
     #    removes both files; one that has been replaced (pidfile holds some
