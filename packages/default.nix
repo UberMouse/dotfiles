@@ -131,6 +131,16 @@ in
       # When stable drops openssl_1_1 too, this stops evaluating -- the fix
       # is then Jagex shipping a client built against OpenSSL 3.
       #
+      # gtk2 gets the same scoped treatment: the RS3 client links it too,
+      # which is why upstream adds `gtk2-x11` under `enableRS3`, and unstable
+      # marked gtk2 broken (seen in the 2026-11-06 bump) as a removal notice
+      # -- it still builds; nixpkgs#410814, gone before NixOS 27.05. Only
+      # Bolt's copy has the flag stripped, so no other package can pick gtk2
+      # up unannounced. It is unstable's gtk2, not stable's, on purpose:
+      # stable's would bring its own glib/pango/cairo into a process that
+      # already loads unstable's. When unstable deletes gtk2 this stops
+      # evaluating -- the fix is then Jagex dropping gtk2 from the client.
+      #
       # From the unstable base for the version: Bolt's plugin library hooks
       # the client's renderer, and stable's 0.21.1 predates the two engine
       # updates that broke it (fixed in 0.22.0 and 0.24.0).
@@ -141,6 +151,14 @@ in
               knownVulnerabilities = [ ];
             };
           });
+          unbreakGtk2 =
+            p:
+            if lib.getName p == "gtk+" then
+              p.overrideAttrs (o: {
+                meta = removeAttrs o.meta [ "problems" ];
+              })
+            else
+              p;
         in
         prev.bolt-launcher.override {
           enableRS3 = true;
@@ -149,7 +167,7 @@ in
             prev.buildFHSEnv (
               args
               // {
-                targetPkgs = pkgs: args.targetPkgs pkgs ++ [ openssl_1_1 ];
+                targetPkgs = pkgs: map unbreakGtk2 (args.targetPkgs pkgs) ++ [ openssl_1_1 ];
                 meta = removeAttrs args.meta [ "problems" ];
               }
             );
