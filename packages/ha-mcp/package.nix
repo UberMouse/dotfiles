@@ -3,8 +3,8 @@
 # nixpkgs does not carry at the versions it pins. Instead the launch is made
 # reproducible from both ends:
 #   - `version` pins ha-mcp itself (a PyPI release is immutable once published);
-#   - `excludeNewer` freezes the TRANSITIVE resolution to what existed on that
-#     date, so a dependency release can't change what runs between bumps. This
+#   - `excludeNewer` freezes the TRANSITIVE resolution to what existed at that
+#     UTC instant, so a dependency release can't change what runs between bumps. This
 #     thing holds an admin token for the house -- nothing in it floats.
 # The interpreter is nixpkgs' python313 with uv's own downloads disabled: a
 # uv-managed CPython is a generic-linux binary that NixOS can't be relied on
@@ -19,8 +19,8 @@
   python313,
 }:
 let
-  version = "9.0.0";
-  excludeNewer = "2026-11-01";
+  version = "9.1.2";
+  excludeNewer = "2026-11-08T20:53:06Z";
 in
 (writeShellApplication {
   name = "ha-mcp";

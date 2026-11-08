@@ -7,13 +7,13 @@
 }:
 stdenv.mkDerivation (finalAttrs: {
   pname = "whatpulse-pcap-service";
-  version = "1.5.1";
+  version = "1.5.2";
 
   src = fetchFromGitHub {
     owner = "whatpulse";
     repo = "linux-external-pcap-service";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-YeUqY9n2EN/LNn2eQyisJld8wwCkF5A96tkvCIlaapc=";
+    hash = "sha256-+KT728g+UGwnahj/PYORtCdPIKHGTBBXnE2LAJzJ2X8=";
   };
 
   # MODIFIED from upstream (the license's attribution terms require saying so):
