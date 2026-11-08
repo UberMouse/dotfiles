@@ -9,16 +9,23 @@ changelog_github: homeassistant-ai/ha-mcp
 
 `package.nix` is a uvx launcher, not a source build: there is no hash. The
 pin is TWO values that move together -- the `version = "X.Y.Z"` binding and
-the `excludeNewer = "YYYY-MM-DD"` binding (which freezes the transitive
-dependency resolution). Bumping one without the other either fails to
-resolve (an `excludeNewer` older than the release) or silently leaves the
+the `excludeNewer = "YYYY-MM-DDTHH:MM:SSZ"` binding (which freezes the
+transitive dependency resolution). Bumping one without the other either fails
+to resolve (an `excludeNewer` older than the release) or silently leaves the
 deps frozen at the previous bump's date.
+
+It must be a full UTC TIMESTAMP, never a bare date. uv reads a bare date as
+end-of-day in the LOCAL timezone, and `date -u +%F` lags NZ's date by up to
+13 hours — so on 2026-11-09 the old `date -u +%F` form pinned `2026-11-08`,
+which uv turned into `2026-11-08T11:00Z`, and excluded 9.1.2 (published
+15:48Z that same UTC day). The smoke test in step 3 is what caught it; the
+build in step 2 passes regardless.
 
 1. Set both bindings in `packages/ha-mcp/package.nix`:
    ```bash
    sed -i -E \
      -e 's/(version = )"[^"]*"/\1"${VERSION}"/' \
-     -e "s/(excludeNewer = )\"[^\"]*\"/\1\"$(date -u +%F)\"/" \
+     -e "s/(excludeNewer = )\"[^\"]*\"/\1\"$(date -u +%FT%TZ)\"/" \
      packages/ha-mcp/package.nix
    ```
 
