@@ -88,6 +88,7 @@ in
       pstree
       sysstat
       gnuplot
+      ffmpeg
       nautilus
       libnotify
 
