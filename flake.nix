@@ -11,7 +11,7 @@
     nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     playwright = {
       # pietdevries94/playwright-web-flake is the source for the playwright
-      # driver and browsers — pinned to 1.64.1 (moved here 2026-11-04 from its
+      # driver and browsers — pinned to 1.65.0 (moved here 2026-11-04 from its
       # fork Pentusha/playwright-web-flake, because upstream shipped 1.64.1
       # ~2 weeks before the fork did).
       #
@@ -30,7 +30,7 @@
       # browsers and must re-check the CLI coupling; both
       # packages/playwright/UPDATE.md and packages/playwright-cli/UPDATE.md
       # require explicit user permission first.
-      url = "github:pietdevries94/playwright-web-flake/9acc2817b9866a35ea2716b95edcf87e7492bde3";
+      url = "github:pietdevries94/playwright-web-flake/836f5814d91f0e6562ff7bac14347a97d13adfc5";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     home-manager = {
