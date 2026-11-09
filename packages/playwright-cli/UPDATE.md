@@ -66,9 +66,20 @@ Then decide:
      A source switch has its own proof bar (a full browser build, not a
      version match) — see `packages/playwright/UPDATE.md`.
 
-After a permitted flake bump, refresh the input with
-`nix flake update playwright` (the input is named `playwright`) and re-check (a)
-before continuing.
+After a permitted flake bump, repin the input BY HAND — `nix flake update
+playwright` is a silent no-op here, because the rev is hardcoded in the
+`inputs.playwright` URL in `flake.nix` (deliberately; see the comment there):
+
+```bash
+# the target rev (source HEAD; or a specific commit providing the wanted version):
+git ls-remote https://github.com/pietdevries94/playwright-web-flake HEAD
+nix eval --raw "github:pietdevries94/playwright-web-flake/<REV>#playwright-driver.version"
+```
+
+Replace the old rev in that `url = "github:pietdevries94/playwright-web-flake/…"`
+line with `<REV>`, update the "pinned to X.Y.Z" version in the comment above it,
+then `nix flake lock` (it notices the changed URL and relocks just that input)
+and re-check (a) before continuing.
 
 ## Steps (install the CLI version chosen above)
 
