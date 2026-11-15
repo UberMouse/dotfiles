@@ -1,0 +1,36 @@
+From febf4dadbe8128cb47d44ff14634aabd407bc06c Mon Sep 17 00:00:00 2001
+From: Taylor Lodge <taylor.lodge@koordinates.com>
+Date: Mon, 16 Nov 2026 10:56:03 +1300
+Subject: [PATCH 1/2] inbox: never hold the Code review and Shape switches back
+
+Upstream holds both switches back until 0.29 (heldSwitch/switchesHeld):
+Settings -> Capabilities shows them only to someone who already has the
+feature on, or under PLANNOTATOR_INBOX_PREVIEW=1. Code review gates every
+part of the context notes merged for #2588 (#2865), so without this they
+cannot be turned on from the UI.
+
+Drop this patch when upstream deletes switchesHeld at 0.29.
+---
+ packages/server/inbox.ts | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/packages/server/inbox.ts b/packages/server/inbox.ts
+index 722acc98b..376f960a1 100644
+--- a/packages/server/inbox.ts
++++ b/packages/server/inbox.ts
+@@ -1099,7 +1099,11 @@ function heldSwitch<K extends "code_review" | "shape">(key: K, on: boolean, told
+  * "code-review-offer-card") is never in the line while this says true. Delete it with `heldSwitch`.
+  */
+ function switchesHeld(): boolean {
+-  return process.env.PLANNOTATOR_INBOX_PREVIEW !== "1";
++  // dotfiles: never held. Code review (and with it #2588's context notes) and
++  // Shape are switchable in Settings -> Capabilities, as under
++  // PLANNOTATOR_INBOX_PREVIEW=1. Drop this patch when upstream deletes this
++  // function at 0.29.
++  return false;
+ }
+ 
+ /** Start the Inbox server and write the registry. */
+-- 
+2.54.0
+

@@ -63,9 +63,20 @@ in the `node_modules` derivation (add `patches` to it in `package.nix`) and
 its hash refreshed. That derivation deliberately gets the unpatched source,
 so a dependency change made only by a patch would build against the old tree.
 
-A patch to the guide viewer (`packages/guide-viewer`, `apps/guides-show`)
-changes the pinned viewer hashes, and exported guides then point at files
-guides.show doesn't serve. See the buildPhase comment.
+The guides.show viewer pin is built from the UNPATCHED source (`viewerPin`
+in `package.nix`), so patches never move it. The other side of that: an
+exported guide (Download portable guide, share links) shows upstream's
+viewer, not our patched one. The in-app Guide view is ours.
+
+## Current patches
+
+- `0001` un-holds the Inbox's Code review and Shape switches (#2588's
+  context notes are gated on Code review). Upstream deletes `switchesHeld`
+  at 0.29, so when this patch stops applying, check the switches show
+  without it and delete the patch rather than rebasing it.
+- `0002` turns on upstream's `fitFileHeights` in the review app's Guide
+  view (#2643): each file's box as tall as its diff, not a 620px scroller.
+  Upstream may adopt it or replace the 620px cap; check on rebase.
 
 ## Rebasing onto a new tag
 

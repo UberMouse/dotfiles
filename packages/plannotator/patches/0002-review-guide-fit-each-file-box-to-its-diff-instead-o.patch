@@ -1,0 +1,55 @@
+From 3fe91446987c7ccd00d276a59c712fafd884dd6b Mon Sep 17 00:00:00 2001
+From: Taylor Lodge <taylor.lodge@koordinates.com>
+Date: Mon, 16 Nov 2026 10:56:05 +1300
+Subject: [PATCH 2/2] review guide: fit each file box to its diff instead of a
+ 620px scroller
+
+#2643: in the review app's Guided Review each file's diff sat in a box
+capped at MAX_DIFF_HEIGHT (620px) that scrolled on its own, about 30% of
+a 4K viewport. The Inbox's guide readers already draw every box as tall
+as its diff against the page scroller (GuideView fitFileHeights); turn
+that on for the review app too, and give the host the diff style and
+whole-file arrow row the first estimate counts.
+---
+ packages/review-editor/components/guide/GuideScreen.tsx   | 4 ++++
+ .../review-editor/components/guide/ReviewGuideHost.tsx    | 8 +++++++-
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/packages/review-editor/components/guide/GuideScreen.tsx b/packages/review-editor/components/guide/GuideScreen.tsx
+index 514eb9060..b5daf3839 100644
+--- a/packages/review-editor/components/guide/GuideScreen.tsx
++++ b/packages/review-editor/components/guide/GuideScreen.tsx
+@@ -454,6 +454,10 @@ function ActiveGuide({
+           onFocusFile={setFocusedFile}
+           onRegenerate={guideLaunch.canLaunch && !regenerating ? handleRegenerate : undefined}
+           headerActions={<GuideExportButton jobId={jobId} />}
++          // dotfiles (#2643): each file's box as tall as its diff, against the
++          // page's scroller, as the Inbox's guide readers draw it -- not a
++          // 620px box (MAX_DIFF_HEIGHT) that scrolls on its own.
++          fitFileHeights
+         />
+       </ReviewGuideHost>
+       {globalAnchor && onAddGlobalComment && (
+diff --git a/packages/review-editor/components/guide/ReviewGuideHost.tsx b/packages/review-editor/components/guide/ReviewGuideHost.tsx
+index 4512642c3..e12b3e2a2 100644
+--- a/packages/review-editor/components/guide/ReviewGuideHost.tsx
++++ b/packages/review-editor/components/guide/ReviewGuideHost.tsx
+@@ -107,8 +107,14 @@ export const ReviewGuideHost: React.FC<{
+       diagramFoldStore: storage,
+       ...(globalComments ? { globalComments } : {}),
+       ...(collapseAll ? { collapseAll } : {}),
++      // dotfiles (#2643): what AllFilesCodeView draws, for a fitted file box's
++      // first height estimate (GuideView `fitFileHeights`) before it measures.
++      // Context expansion is on in the review app, so a changed file ends in
++      // an arrow row.
++      diffStyle: state.diffStyle,
++      opensWholeFiles: true,
+     }),
+-    [state.files, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch, state.generatedFiles, renderOverviewDiagram, renderChapterDiagram, globalComments, collapseAll],
++    [state.files, getDiffRendererProps, state.guideRevealFile, state.onGuideRevealFile, state.allFilesActiveSearchMatch, state.generatedFiles, renderOverviewDiagram, renderChapterDiagram, globalComments, collapseAll, state.diffStyle],
+   );
+ 
+   return <GuideHostProvider value={value}>{children}</GuideHostProvider>;
+-- 
+2.54.0
+
