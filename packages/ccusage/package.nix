@@ -6,9 +6,8 @@
 }:
 # The real ccusage, as upstream's prebuilt linux-x64 binary from the npm
 # registry (the `ccusage` npm package is only a node shim that execs this).
-# It is static-pie, so it needs no patchelf. It is NOT installed directly: the
-# `ccusage` on PATH is the caching wrapper in scriptBins/bins/ccusage.py, which
-# asks this binary only for the days it hasn't cached yet.
+# It is static-pie, so it needs no patchelf. Installed on PATH as-is (see the
+# package list in scriptBins/default.nix).
 stdenvNoCC.mkDerivation (finalAttrs: {
   pname = "ccusage";
   version = "20.0.51";

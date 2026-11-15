@@ -21,18 +21,3 @@ shim's: the shim is published alongside it, but the binary is what we fetch.
    ```bash
    nix build --no-link .#ccusage
    ```
-
-3. After switching, check the caching wrapper (`scriptBins/bins/ccusage.py`)
-   still agrees with the new binary. It renders daily/weekly/monthly itself
-   from cached `daily --json` rows, so it depends on that JSON shape and on
-   a `--since` run producing the same rows for its days as a full run. The
-   bump changes the binary's store path, which is part of the cache key, so
-   the first run recomputes every day (one full run); then:
-   ```bash
-   ccusage -b > /dev/null && ccusage --verify-cache
-   ```
-   It re-runs ccusage over the whole history (~35s) and compares every
-   cached day. A `tokens` mismatch means rows no longer partition by
-   `--since` (check the changelog for dedup or date-filter changes). A
-   `cost only` mismatch with exact tokens is online pricing drift since the
-   day was cached, not a wrapper bug.

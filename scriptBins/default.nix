@@ -451,13 +451,9 @@ assert builtins.all (n: builtins.elem (opTools.${n}.caller or n) opShimCallers) 
       # builds were being refused is what that looked like from outside.
       memlib = "${../scripts/cgroup-mem.py}";
     })
-    # `ccusage` on PATH is this caching wrapper; the real binary
-    # (packages/ccusage) is reachable only through it, so the two can't
-    # collide in the profile.
-    (py "ccusage" {
-      python3 = "${pkgs.python313}/bin/python3";
-      ccusage = "${unstable-pkgs.ccusage}/bin/ccusage";
-    })
+    # Upstream's binary, straight on PATH. A day-row caching wrapper used to
+    # sit in front of it; retired once 20.0.49 halved the report time.
+    unstable-pkgs.ccusage
   ]
   ++ lib.mapAttrsToList opWrapper opTools;
 
