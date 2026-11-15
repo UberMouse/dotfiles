@@ -19,8 +19,8 @@
   python313,
 }:
 let
-  version = "9.1.2";
-  excludeNewer = "2026-11-08T20:53:06Z";
+  version = "9.2.0";
+  excludeNewer = "2026-11-15T20:42:07Z";
 in
 (writeShellApplication {
   name = "ha-mcp";
