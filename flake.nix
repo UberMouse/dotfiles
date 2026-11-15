@@ -245,19 +245,21 @@
                 touch $out
               '';
 
-          # packages/default.nix sets CLAUDE_CODE_FORK_SUBAGENT=0 in the claude
-          # wrapper to switch off the agent_summary side-query. If a release
-          # renames the variable or drops its disable branch, the setting
-          # silently does nothing and ~16% of spend comes back unseen (those
-          # calls never reach a transcript). Pin the disable branch as it
-          # appears in the minified bundle -- property name, `===!1` and the
-          # "disabled" literal survive minification; the receiver does not.
-          claude-fork-gate =
-            checkPkgs.runCommand "claude-fork-gate" { nativeBuildInputs = [ checkPkgs.gnugrep ]; }
+          # packages/default.nix sets CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES=1
+          # in the claude wrapper to switch off the agent_summary side-query.
+          # If a release renames the variable or stops testing it where the
+          # summary timer is armed, the setting silently does nothing and ~16%
+          # of spend comes back unseen (those calls never reach a transcript).
+          # Pin the guard as it appears in the minified bundle -- `&&!`, the
+          # property name and the `;` survive minification; the receiver does
+          # not, hence the identifier class.
+          claude-summary-gate =
+            checkPkgs.runCommand "claude-summary-gate" { nativeBuildInputs = [ checkPkgs.gnugrep ]; }
               ''
-                grep -r -a -q -F '.CLAUDE_CODE_FORK_SUBAGENT===!1)return"disabled"' ${unstable-pkgs.claude-code}/bin/ || {
-                  echo 'claude-code no longer has the CLAUDE_CODE_FORK_SUBAGENT=0 disable branch;' >&2
-                  echo 'the wrapper setting in packages/default.nix may no longer stop agent_summary.' >&2
+                grep -r -a -q -E '&&![A-Za-z_$]+\.CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES;' ${unstable-pkgs.claude-code}/bin/ || {
+                  echo 'claude-code no longer guards the summary timer on' >&2
+                  echo 'CLAUDE_CODE_DISABLE_AGENT_PROGRESS_SUMMARIES; the wrapper setting in' >&2
+                  echo 'packages/default.nix may no longer stop agent_summary.' >&2
                   echo 'Re-check what gates enableSummarization before bumping.' >&2
                   exit 1
                 }
