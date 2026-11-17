@@ -60,6 +60,27 @@ in
       CPUAccounting = true;
       CPUQuota = "${toString ((facts.cpuCores - 4) * 100)}%";
 
+      # ...and below the quota, YIELD to everything outside the pool. The quota
+      # is a fixed ceiling: it reserves cores whether or not anything wants
+      # them, and gives nothing extra when the desktop wants MORE than the
+      # reserve. A low weight covers that gap without a control loop -- it is
+      # work-conserving (an idle desktop still hands the pool its whole quota)
+      # and acts at scheduler granularity, not on a governor tick. At par
+      # (100, the default, until 2026-11-17) a saturated pool split contended
+      # cores evenly with the browser/Slack in app.slice; at 30 the outside
+      # sibling wins ~3:1. 30 matches systemd's own background.slice -- builds
+      # are background work. Two limits on what this buys:
+      #   * it ranks the pool only against its SIBLINGS in user@.service
+      #     (app/session/claude/background slices). nix-daemon (system.slice)
+      #     and machine.slice compete at the root against user.slice as a
+      #     whole, so a nix build is not out-ranked by this.
+      #   * the agents fleet lives INSIDE the pool, so under desktop load the
+      #     interactive agent sessions yield along with the builds. That is the
+      #     intended order (desktop > agents), not a side effect.
+      # The dynamic-quota alternative (shrink cpu.max as outside load rises)
+      # was weighed the same day and held back: try this first.
+      CPUWeight = 30;
+
       # Soft memory throttle. This 27 GiB host is memory-OVERSUBSCRIBED when a
       # browser + N parallel worktree builds run (fleet working set ~14 GiB), so
       # this one number seesaws between two failure modes and neither fully wins:
