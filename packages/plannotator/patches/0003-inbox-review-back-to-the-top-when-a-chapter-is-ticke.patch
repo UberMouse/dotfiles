@@ -1,0 +1,83 @@
+From 4566a4cccdd2210ee5daad0487703e724e348bcb Mon Sep 17 00:00:00 2001
+From: Taylor Lodge <taylor.lodge@koordinates.com>
+Date: Tue, 17 Nov 2026 12:02:31 +1300
+Subject: [PATCH 3/3] inbox review: back to the top when a chapter is ticked
+ Reviewed
+
+Ticking a chapter Reviewed in the Inbox's review folds it. A long
+chapter folding up leaves the review pane's scroller wherever the fold
+dropped it: somewhere in the next chapters, or past the end. Go back to
+the top instead, through the top bar's own "back to top"
+(toChapter(null): smooth scroll of .ib-gbody, current chapter cleared),
+so the folded chapters line up above the next one to read.
+
+Only the review pane (ReviewPane) and only on a tick: un-ticking reopens
+the chapter in place, so the view stays. The review app, guides.show and
+the PR page (files mode, no ticks) are unchanged.
+---
+ packages/inbox/components/ReviewPane.tsx | 11 ++++++++++-
+ packages/inbox/reviewPaneGuide.test.tsx  | 22 ++++++++++++++++++++++
+ 2 files changed, 32 insertions(+), 1 deletion(-)
+
+diff --git a/packages/inbox/components/ReviewPane.tsx b/packages/inbox/components/ReviewPane.tsx
+index 3da7e75c1..9f5c15f65 100644
+--- a/packages/inbox/components/ReviewPane.tsx
++++ b/packages/inbox/components/ReviewPane.tsx
+@@ -375,6 +375,15 @@ export function ReviewPane({ thread, message, onBack, onClose, onSent, onPosted,
+     if (first) move(first.file);
+     else bodyRef.current?.querySelector(`[data-guide-section="${index}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+   };
++  // dotfiles: ticking a chapter Reviewed folds it, leaving the view wherever the fold dropped it; go back to the top
++  // (the top bar's "back to top", toChapter(null)), where the folded chapters line up above the next one to read.
++  // Un-ticking reopens the chapter in place, so the view stays. The same fallback GuideReader ticks from.
++  const tickReviewed = (next: boolean[]) => {
++    const was = (i: number) => reviewed[i] ?? readerSnapshot?.guide.reviewed[i] ?? false;
++    const marked = next.some((tick, i) => tick && !was(i));
++    changeReviewed(next);
++    if (marked) toChapter(null);
++  };
+   const toFile = (path: string) => {
+     jumped.current = true;
+     setFileSpot(path);
+@@ -1267,7 +1276,7 @@ export function ReviewPane({ thread, message, onBack, onClose, onSent, onPosted,
+               <GuideReader
+                 snapshot={readerSnapshot!}
+                 reviewed={reviewed}
+-                onReviewedChange={changeReviewed}
++                onReviewedChange={tickReviewed}
+                 chapterTicks={!walkthrough}
+                 comments={readerComments}
+                 mode={mode}
+diff --git a/packages/inbox/reviewPaneGuide.test.tsx b/packages/inbox/reviewPaneGuide.test.tsx
+index 9f2823ce2..458a0cb1c 100644
+--- a/packages/inbox/reviewPaneGuide.test.tsx
++++ b/packages/inbox/reviewPaneGuide.test.tsx
+@@ -350,3 +350,25 @@ test.skipIf(!hasDom)("a teammate's PR review: nothing in the decision's place un
+   // Not listed (closed, or not read): the agent's way, which for a teammate's PR is the reply.
+   expect(has('[data-review-write-reply]')).toBe(true);
+ });
++
++test.skipIf(!hasDom)('dotfiles: ticking a chapter Reviewed goes back to the top of the review; un-ticking stays where it is', async () => {
++  // The tick's save answers with what was saved (the stub above answers every POST as a reply).
++  const answers = globalThis.fetch;
++  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
++    String(input).endsWith('/guide/reviewed')
++      ? Response.json({ message_id: GUIDE, reviewed: JSON.parse(String(init!.body)).reviewed })
++      : answers(input, init)) as typeof fetch;
++  await render(true, true);
++  const body = document.querySelector<HTMLElement>('.ib-gbody')!;
++  const tops: unknown[] = [];
++  body.scrollTo = ((options: ScrollToOptions) => void tops.push(options.top)) as typeof body.scrollTo;
++  const tick = (next: boolean[]) =>
++    act(async () => {
++      (readerProps!.onReviewedChange as (next: boolean[]) => void)(next);
++      await new Promise((resolve) => setTimeout(resolve, 0));
++    });
++  await tick([true]);
++  expect(tops).toEqual([0]);
++  await tick([false]);
++  expect(tops).toEqual([0]);
++});
+-- 
+2.54.0
+

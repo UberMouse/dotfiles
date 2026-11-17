@@ -77,6 +77,10 @@ viewer, not our patched one. The in-app Guide view is ours.
 - `0002` turns on upstream's `fitFileHeights` in the review app's Guide
   view (#2643): each file's box as tall as its diff, not a 620px scroller.
   Upstream may adopt it or replace the 620px cap; check on rebase.
+- `0003` scrolls the Inbox's review back to the top when a chapter is ticked
+  Reviewed (the tick folds it, stranding the view). ReviewPane only, through
+  its own `toChapter(null)`; un-ticking stays put. Carries its own DOM test
+  in `reviewPaneGuide.test.tsx`.
 
 ## Rebasing onto a new tag
 

@@ -1,7 +1,7 @@
-From 3fe91446987c7ccd00d276a59c712fafd884dd6b Mon Sep 17 00:00:00 2001
+From 28c37b5490e5f001d0c2854bb96ed5b22806e020 Mon Sep 17 00:00:00 2001
 From: Taylor Lodge <taylor.lodge@koordinates.com>
 Date: Mon, 16 Nov 2026 10:56:05 +1300
-Subject: [PATCH 2/2] review guide: fit each file box to its diff instead of a
+Subject: [PATCH 2/3] review guide: fit each file box to its diff instead of a
  620px scroller
 
 #2643: in the review app's Guided Review each file's diff sat in a box
