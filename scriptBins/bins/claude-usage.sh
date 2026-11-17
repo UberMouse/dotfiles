@@ -1,11 +1,13 @@
 # claude-usage -- query Claude Code's server-side subscription usage
-# windows (5-hour + weekly) from the same undocumented endpoint that powers
-# the interactive `/usage` command, so you can watch or *gate* on your
-# weekly cap from scripts.
+# limits (weekly + the Fable-scoped weekly) from the same undocumented
+# endpoint that powers the interactive `/usage` command, so you can watch or
+# *gate* on your weekly cap from scripts.
 #
-#   claude-usage              human summary: weekly + 5h %, with reset times
+#   claude-usage              human summary: weekly + Fable %, with reset times
 #   claude-usage -w|--weekly  print JUST the weekly (7-day) utilisation %
-#   claude-usage --5h         print JUST the 5-hour utilisation %
+#   claude-usage --fable      print JUST the Fable weekly utilisation % (a
+#                             percentage of Fable's OWN allowance, not of the
+#                             whole weekly cap)
 #   claude-usage --json       print the raw cached JSON (jq it yourself)
 #   claude-usage --gate PCT   exit 0 if weekly < PCT, 1 if weekly >= PCT,
 #                             2 if usage couldn't be determined. Prints the
@@ -25,19 +27,28 @@ TTL=300
 ENDPOINT="https://api.anthropic.com/api/oauth/usage"
 
 # jq accessors, tolerant of shape drift: the oauth/usage endpoint returns
-# top-level {five_hour,seven_day}; the statusline stdin nests them under
-# .rate_limits; the percentage field has been seen as both `utilization`
-# and `used_percentage`.
+# a top-level seven_day; the statusline stdin nests it under .rate_limits;
+# the percentage field has been seen as both `utilization` and
+# `used_percentage`.
 JQ_WK='((.seven_day // .rate_limits.seven_day) // {}) | (.utilization // .used_percentage // empty)'
-JQ_5H='((.five_hour // .rate_limits.five_hour) // {}) | (.utilization // .used_percentage // empty)'
 JQ_WKR='((.seven_day // .rate_limits.seven_day) // {}) | (.resets_at // .reset_at // empty)'
-JQ_5HR='((.five_hour // .rate_limits.five_hour) // {}) | (.resets_at // .reset_at // empty)'
+# The 5-hour window is gone upstream (five_hour is now always null) and a
+# model-scoped weekly limit took its place. It has no legacy top-level key:
+# it exists only as an entry in the .limits array, {kind:"weekly_scoped",
+# scope:{model:{display_name:"Fable"}}, percent, resets_at}. Select it by
+# kind + name (case-insensitive), never by array index -- the array is a
+# list of every limit and its order is not a contract.
+JQ_FB_SEL='([(.limits // [])[] | select(.kind == "weekly_scoped" and ((.scope.model.display_name // "") | ascii_downcase) == "fable")][0] // {})'
+JQ_FB="$JQ_FB_SEL | (.percent // .utilization // .used_percentage // empty)"
+JQ_FBR="$JQ_FB_SEL | (.resets_at // .reset_at // empty)"
 
 force=0; mode="summary"; thresh=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -w|--weekly)            mode="weekly" ;;
-    --5h|--5hour|--five-hour) mode="5h" ;;
+    --fable)                mode="fable" ;;
+    --5h|--5hour|--five-hour)
+      echo "claude-usage: the 5-hour limit was removed upstream; use --fable for the Fable weekly limit" >&2; exit 2 ;;
     --json)                 mode="json" ;;
     --gate)                 mode="gate"; thresh="${2:-}"; shift ;;
     -f|--force)             force=1 ;;
@@ -137,10 +148,10 @@ case "$mode" in
     ensure_fresh || { echo "claude-usage: no usage data available" >&2; exit 2; }
     cat "$CACHE"
     ;;
-  weekly|5h)
+  weekly|fable)
     ensure_fresh || { echo "claude-usage: could not determine usage" >&2; exit 2; }
     if [ "$mode" = "weekly" ]; then val=$(jq -r "$JQ_WK" "$CACHE" 2>/dev/null)
-    else                            val=$(jq -r "$JQ_5H" "$CACHE" 2>/dev/null); fi
+    else                            val=$(jq -r "$JQ_FB" "$CACHE" 2>/dev/null); fi
     if [ -z "$val" ] || [ "$val" = "null" ]; then
       echo "claude-usage: $mode usage not present in response (try --json)" >&2; exit 2
     fi
@@ -162,10 +173,10 @@ case "$mode" in
   summary)
     ensure_fresh || { echo "claude-usage: no usage data available" >&2; exit 2; }
     wk=$(jq -r "$JQ_WK" "$CACHE" 2>/dev/null)
-    fh=$(jq -r "$JQ_5H" "$CACHE" 2>/dev/null)
+    fb=$(jq -r "$JQ_FB" "$CACHE" 2>/dev/null)
     wkr=$(jq -r "$JQ_WKR" "$CACHE" 2>/dev/null)
-    fhr=$(jq -r "$JQ_5HR" "$CACHE" 2>/dev/null)
+    fbr=$(jq -r "$JQ_FBR" "$CACHE" 2>/dev/null)
     printf 'weekly:  %5s%%   %s\n' "${wk:-?}" "$(fmt_reset "$wkr")"
-    printf '5-hour:  %5s%%   %s\n' "${fh:-?}" "$(fmt_reset "$fhr")"
+    printf 'fable:   %5s%%   %s\n' "${fb:-?}" "$(fmt_reset "$fbr")"
     ;;
 esac

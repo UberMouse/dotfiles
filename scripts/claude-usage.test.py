@@ -144,43 +144,85 @@ def curl_calls():
     return curl_argv().count("--CALL--")
 
 
-def shape_toplevel(wk=42, fh=12.5, wk_reset=None, fh_reset=None):
-    d = {"five_hour": {"utilization": fh}, "seven_day": {"utilization": wk}}
+def scoped_limit(name, pct, reset=None, kind="weekly_scoped"):
+    # Mirrors one real .limits[] entry (captured 2026-11-17).
+    return {"kind": kind, "group": "weekly", "percent": pct,
+            "severity": "normal", "resets_at": reset,
+            "scope": {"model": {"id": None, "display_name": name},
+                      "surface": None},
+            "is_active": False}
+
+
+def shape_toplevel(wk=42, fb=12.5, wk_reset=None, fb_reset=None,
+                   limits=None):
+    # five_hour is present-but-null, exactly as the endpoint returns it since
+    # the 5-hour window was retired; Fable lives only in .limits[].
+    d = {"five_hour": None, "seven_day": {"utilization": wk}}
     if wk_reset is not None:
         d["seven_day"]["resets_at"] = wk_reset
-    if fh_reset is not None:
-        d["five_hour"]["resets_at"] = fh_reset
+    if limits is None:
+        limits = [{"kind": "weekly_all", "group": "weekly", "percent": wk,
+                   "scope": None, "resets_at": wk_reset, "is_active": True},
+                  scoped_limit("Fable", fb, fb_reset)]
+    d["limits"] = limits
     return json.dumps(d)
 
 
-def shape_nested(wk=77, fh=5, wk_reset=None):
-    d = {"rate_limits": {"five_hour": {"used_percentage": fh},
-                         "seven_day": {"used_percentage": wk}}}
+def shape_nested(wk=77, wk_reset=None):
+    d = {"rate_limits": {"seven_day": {"used_percentage": wk}}}
     if wk_reset is not None:
         d["rate_limits"]["seven_day"]["reset_at"] = wk_reset
     return json.dumps(d)
 
 
-# 1. RESPONSE SHAPE A: top-level five_hour/seven_day with `utilization` (what
-#    the oauth/usage endpoint returns today).
+# 1. RESPONSE SHAPE A: top-level seven_day with `utilization` plus the
+#    .limits[] array (what the oauth/usage endpoint returns today).
 clear_cache()
 p = run("--weekly", "-f", body=shape_toplevel())
 check("weekly from top-level shape", (p.returncode, p.stdout.strip()),
       (0, "42"))
 clear_cache()
-p = run("--5h", "-f", body=shape_toplevel())
-check("5h from top-level shape", (p.returncode, p.stdout.strip()),
-      (0, "12.5"))
+p = run("--fable", "-f", body=shape_toplevel())
+check("fable from .limits[] weekly_scoped entry",
+      (p.returncode, p.stdout.strip()), (0, "12.5"))
+
+# 1b. FABLE SELECTION is by kind + display name, never by array position: a
+#     scoped limit for another model ahead of it, and a weekly_all entry that
+#     happens to carry a Fable scope, must both be skipped; the name match is
+#     case-insensitive; a 0% reading is a real value, not "absent".
+clear_cache()
+p = run("--fable", "-f", body=shape_toplevel(limits=[
+    scoped_limit("Fable", 99, kind="weekly_all"),
+    scoped_limit("Opus", 88),
+    scoped_limit("FABLE", 31),
+]))
+check("fable picked by kind+name, not index",
+      (p.returncode, p.stdout.strip()), (0, "31"))
+clear_cache()
+p = run("--fable", "-f", body=shape_toplevel(fb=0))
+check("fable at 0% prints 0, not absent", (p.returncode, p.stdout.strip()),
+      (0, "0"))
+clear_cache()
+p = run("--fable", "-f", body=shape_toplevel(limits=[scoped_limit("Opus", 5)]))
+check("fable absent from .limits[] exits 2", p.returncode, 2)
+check("fable absent names the missing limit",
+      "fable usage not present" in p.stderr, True)
+clear_cache()
+p = run("--fable", "-f", body=json.dumps({"seven_day": {"utilization": 1}}))
+check("no .limits array at all exits 2, not a jq crash", p.returncode, 2)
+
+# 1c. The retired 5-hour flag fails loudly and points at its replacement
+#     rather than printing a number that no longer exists.
+p = run("--5h")
+check("--5h is a usage error", p.returncode, 2)
+check("--5h points at --fable", "--fable" in p.stderr, True)
 
 # 2. RESPONSE SHAPE B: nested under .rate_limits with `used_percentage` (the
-#    statusline-stdin shape the accessors also tolerate).
+#    statusline-stdin shape the weekly accessor also tolerates).
 clear_cache()
 p = run("--weekly", "-f", body=shape_nested())
 check("weekly from rate_limits shape", (p.returncode, p.stdout.strip()),
       (0, "77"))
-clear_cache()
-p = run("--5h", "-f", body=shape_nested())
-check("5h from rate_limits shape", (p.returncode, p.stdout.strip()), (0, "5"))
 
 # 3. TOKEN HYGIENE. The bearer token travels to curl on stdin (--header @-),
 #    NEVER as an argv element -- /proc/<pid>/cmdline is world-readable for the
@@ -212,10 +254,14 @@ check("unparseable version falls back to UA claude-code/latest",
 #    many minutes cannot flip the printed bucket.
 clear_cache()
 epoch = int(time.time()) + 86400 + 2 * 3600 + 1800
-p = run("-f", body=shape_toplevel(wk_reset=epoch))
-check("summary shows both windows",
-      "weekly:" in p.stdout and "5-hour:" in p.stdout, True)
+p = run("-f", body=shape_toplevel(wk_reset=epoch,
+                                    fb_reset="2030-02-01T09:30:00Z"))
+check("summary shows weekly and fable",
+      "weekly:" in p.stdout and "fable:" in p.stdout, True)
+check("summary no longer shows a 5-hour line", "5-hour" in p.stdout, False)
 check("epoch reset renders a countdown", "(in 1d2h)" in p.stdout, True)
+check("fable line carries its own reset",
+      "resets 2030-02-01 09:30" in p.stdout, True)
 
 clear_cache()
 p = run("-f", body=shape_toplevel(wk_reset="2030-01-05T12:00:00Z"))
