@@ -41,6 +41,11 @@
       tail-rimu-logs = "tail -f ~/.config/Koordinates/logs/*.log";
       get-latest-rimu-log = "echo ~/.config/Koordinates/logs/$(ls -Art ~/.config/Koordinates/logs | tail -n 1)";
       search-latest-rimu-log = "cat $(get-latest-rimu-log) | grep";
+      # xss-lock locks on the X screensaver timer, so killing the timer stops
+      # auto-lock without touching the locker (manual lock still works). Lives
+      # in the X server, so it lasts until logout/reboot.
+      nolock = "xset s off -dpms";
+      relock = "xset s on +dpms";
       hms = "sudo nixos-rebuild switch --flake ~/dotfiles#ubermouse --cores 10 -j 10";
       # Raw browsers tree, not the gated one exported below: this is a human
       # waiting on a trace viewer, not agent work to queue behind builds.
